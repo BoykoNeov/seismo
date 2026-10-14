@@ -172,16 +172,27 @@ tracer.
 - **In the plane only.** Rays stay in the vertical plane of the cut; the part of the velocity
   gradient across the plane is ignored. Real rays drift a little sideways; at real strength the
   drift is small.
-- **Checked against the 1D tracer.** With no perturbation the bent rays land within 0.01° and
-  0.1 s of the closed-form 1D rays for all nine phases (0.1 s is the closed-form tracer's own
-  shell approximation, largest for SS). At real strength a bent ray's time, moved to the 1D
-  ray's landing point, matches the map's 1D time + delay within 0.3 s, so map and slice agree.
+- **Checked against the 1D tracer.** With no perturbation the bent rays land within 0.05° of
+  the closed-form 1D rays, and on time within 0.1 s at the same landing point, for all nine
+  phases from sources at 29 and 600 km (most within 0.02 s; the largest differences are for
+  shallow P and S rays and the surface-reflected PP and SS). Knife-edge rays, where a
+  1e-5 rad change of take-off angle moves the landing point by more than 0.05° (rays turning
+  just above a discontinuity or reflecting off it), are left out of that check. The bent fans
+  cover at least the 1D fans' distance ranges. At real strength a bent ray's time, moved to the
+  1D ray's landing point, matches the map's 1D time + delay within 0.3 s, so map and slice
+  agree.
+- **Grazing the core.** Rays that only just enter the core (the far end of PKP, towards 180°)
+  are very sensitive to the rock at the bottom of the mantle. Where it is faster above the
+  exit point than above the entry, ray theory reflects them back into the core and that end of
+  the branch is lost for that azimuth. Real waves diffract around such edges; the slice does
+  not model that.
 - **Above 1× the views differ in method.** The map scales the first-order delay linearly; the
   slice traces rays through a model scaled by the same factor, so at 10× or 20× the rays bend
   much more than the linear scaling assumes and the two views no longer match exactly. The
   velocity factor 1 + s·dlnV is kept at or above 0.2.
-- **Fewer rays.** Bent fans are seeded with at most 300 take-off angles from each 1D fan, then
-  refined where neighbouring rays land more than 60 km apart, up to 1500 rays per fan. Where the
+- **Fewer rays.** Bent fans are seeded with at most 300 take-off angles from each 1D fan, plus
+  its edges and probes just beyond them, then refined like the 1D fans (neighbours landing or
+  turning more than 60 km apart, edges bisected), up to 2000 rays per fan. Where the
   exaggerated model makes rays miss their phase (a P ray reaching the core, a PKP ray reaching
   the inner core), the ray is dropped and the front shows a gap.
 - **Computed per cut.** Bent fans depend on the event, the azimuth and the strength; they are
