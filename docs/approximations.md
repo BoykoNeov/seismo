@@ -22,9 +22,11 @@ PKP is the exception: it is stored as three phases, `PKPab`, `PKPbc` and `PKPdf`
   branches `PKP`. `tools/gen_tables.py` splits them by ray parameter. Along `PKP`, epicentral
   distance is smallest at the B caustic (~145° for a surface source). Rays with a larger ray
   parameter than the caustic ray turn higher in the outer core (**ab**); rays with a smaller
-  one turn deeper, down to grazing the inner core (**bc**). The script checks this split
-  against ObsPy ray paths (at 146°, the 3.80 s/deg ray turns at 4246 km depth and the
-  3.04 s/deg ray at 4625 km), and the anchor tests check it again through ObsPy's public API.
+  one turn deeper, down to grazing the inner core (**bc**). This rule was confirmed once
+  during development with ObsPy ray paths: at 146° from a surface source, the 3.80 s/deg ray
+  turns at 4246 km depth and the 3.04 s/deg ray at 4625 km. `gen_tables.py` itself does not
+  trace ray paths. The anchor tests re-check the split at 150° through ObsPy's public API,
+  where, with both branches present, the larger ray parameter is taken as ab.
 - `PKPdf` is ObsPy's `PKIKP`.
 
 ## Direct P and S include the upgoing legs (p and s)
@@ -46,9 +48,9 @@ stop there. For the Tōhoku test event (29 km source):
 | direct S | 99.95° | 99.75° |
 
 The table value is lower because the table is sampled every 0.25°, and a bilinear lookup needs
-all four surrounding cells. The often-quoted "~103°" is the onset of the shadow in observed
-data, where diffracted P is still strong; ak135's geometric cutoff for this depth is near
-99.5°. Nothing in the code or tests assumes 103°.
+all four surrounding cells. The commonly quoted figure for the start of the P shadow is
+~103°; in ak135, as computed by ObsPy for this source depth, direct P ends near 99.5°. SEISMO
+uses whatever the generated table says. Nothing in the code or tests assumes 103°.
 
 ## Bilinear lookup returns nothing at branch edges
 
