@@ -12,10 +12,10 @@ use chrono::{DateTime, TimeZone, Utc};
 use eframe::{egui, wgpu};
 use sim::slice::{PhaseLabel, SliceFans, SliceLine};
 use sim::tables::{EarthModel, TravelTimeTable};
-use sim::{EARTH_RADIUS_KM, Event, EventKind, RayPhase, Simulation};
+use sim::{EARTH_RADIUS_KM, Event, EventKind, RayPhase, Simulation, Wave};
 
 use clock::{MAX_SPEED, MIN_SPEED, SimClock, secs};
-use mantle::MantleDelays;
+use mantle::{CutKey, MantleWorker, Ready};
 
 static TABLE_BYTES: &[u8] = include_bytes!("../../../assets/ak135.tt");
 static MODEL_BYTES: &[u8] = include_bytes!("../../../assets/ak135_model.csv");
@@ -85,6 +85,8 @@ struct SliceSettings {
     /// Fainter copies of the fronts at earlier times, as a trail.
     trail_fronts: usize,
     labels: bool,
+    /// Which wave's speed the mantle shading shows; `None` hides it.
+    rock: Option<Wave>,
     style: render::SliceStyle,
 }
 
@@ -97,6 +99,7 @@ impl Default for SliceSettings {
             paths_per_phase: 8,
             trail_fronts: 3,
             labels: true,
+            rock: Some(Wave::S),
             style: render::SliceStyle::default(),
         }
     }
@@ -104,8 +107,8 @@ impl Default for SliceSettings {
 
 struct SeismoApp {
     sim: Simulation,
-    /// 3D-mantle delays per event, computed on a worker thread.
-    delays: MantleDelays,
+    /// 3D-mantle map delays and slice rock, computed on a worker thread.
+    mantle: MantleWorker,
     /// Ray fans for the selected event's source depth, built on first use.
     fans: Option<SliceFans>,
     slice: SliceSettings,
@@ -152,7 +155,7 @@ impl SeismoApp {
 
         let events = vec![tohoku()];
         let sim = Simulation::new(table, model, events).context("ray tracer")?;
-        let delays = MantleDelays::spawn(sim.tracer().clone(), sim.boundaries().to_vec());
+        let mantle = MantleWorker::spawn(sim.tracer().clone(), sim.boundaries().to_vec());
         // Debug/screenshot flags:
         //   --start-offset <s>  start the clock that many seconds after the event's origin
         //   --speed <x>         initial clock speed
@@ -195,7 +198,7 @@ impl SeismoApp {
         let now = Instant::now();
         Ok(Self {
             sim,
-            delays,
+            mantle,
             fans: None,
             slice,
             clock,
@@ -234,6 +237,7 @@ impl SeismoApp {
     }
 
     fn slice_controls(&mut self, ui: &mut egui::Ui) {
+        let three_d = self.style.mantle_strength > 0.0;
         let s = &mut self.slice;
         ui.add(
             egui::Slider::new(&mut s.azimuth_deg, 0.0..=360.0)
@@ -242,7 +246,22 @@ impl SeismoApp {
         );
         ui.colored_label(
             GREEN_DIM,
-            "The model is the same in every direction, so azimuth only moves the cut on the map.",
+            if three_d {
+                "Each azimuth cuts through different rock; the other half of the circle is at \
+                 azimuth + 180°."
+            } else {
+                "1D: every azimuth looks the same; azimuth only moves the cut on the map."
+            },
+        );
+        ui.horizontal(|ui| {
+            ui.label("rock:");
+            ui.radio_value(&mut s.rock, None, "off");
+            ui.radio_value(&mut s.rock, Some(Wave::S), "S speed");
+            ui.radio_value(&mut s.rock, Some(Wave::P), "P speed");
+        });
+        ui.add_enabled(
+            s.rock.is_some() && three_d,
+            egui::Slider::new(&mut s.style.rock_gain, 0.0..=3.0).text("rock shading"),
         );
         ui.horizontal_wrapped(|ui| {
             for (on, phase) in s.phases.iter_mut().zip(RayPhase::ALL) {
@@ -262,7 +281,8 @@ impl SeismoApp {
         ui.colored_label(
             GREEN_DIM,
             "Solid: P (compression). Dashed: S (shear). Dotted: ray paths. \
-             Half of the cut is shown; the other half is its mirror image.",
+             Shown: from the epicentre along the azimuth to the antipode. Brighter rock is \
+             faster (±1% spans the shading). Rays are still the 1D ak135 rays.",
         );
     }
 
@@ -294,13 +314,15 @@ impl SeismoApp {
         } else {
             ui.label(format!("Weakened ×{s:.1}"));
         }
-        let status = self.delays.status(self.selected);
+        let status = self.mantle.status(self.selected);
         if !status.is_empty() {
             ui.colored_label(GREEN_DIM, status);
         }
         ui.colored_label(
             GREEN_DIM,
-            "Fast and slow rock in the mantle (SP12RTS, Koelemeijer et al. 2016) moves the map              fronts earlier or later. Times are nudged along the 1D rays; the slice is still 1D.",
+            "Fast and slow rock in the mantle (SP12RTS, Koelemeijer et al. 2016) moves the map \
+             fronts earlier or later. Times are nudged along the 1D rays. The slice shades the \
+             rock; its rays are not bent yet.",
         );
     }
 
@@ -455,16 +477,26 @@ impl SeismoApp {
         let on_map: Vec<usize> = map_events.iter().map(|m| m.index).collect();
         for &i in &on_map {
             let e = &self.sim.events[i];
-            self.delays.request(i, e.lat, e.lon, e.depth_km);
+            self.mantle.request_delays(i, e.lat, e.lon, e.depth_km);
         }
-        self.delays.collect(&on_map, |slot, grid| {
-            self.renderer.map.upload_delays(&rs.queue, slot, grid)
-        });
+        if let Some(wave) = self.slice.rock {
+            let e = &self.sim.events[self.selected];
+            let key = CutKey::new(self.selected, self.slice.azimuth_deg, wave);
+            self.mantle.request_cut(key, e.lat, e.lon);
+        }
+        for ready in self.mantle.collect(&on_map) {
+            match ready {
+                Ready::Delays { slot, grid } => {
+                    self.renderer.map.upload_delays(&rs.queue, slot, &grid)
+                }
+                Ready::Cut(grid) => self.renderer.slice.upload_cut(&rs.queue, &grid),
+            }
+        }
         let events: Vec<render::MapEventInstance> = map_events
             .into_iter()
             .map(|m| {
                 let e = &self.sim.events[m.index];
-                let slot = self.delays.slot(m.index);
+                let slot = self.mantle.slot(m.index);
                 render::MapEventInstance {
                     lat: e.lat as f32,
                     lon: e.lon as f32,
@@ -498,6 +530,9 @@ impl SeismoApp {
             self.slice.ray_paths,
             self.slice.paths_per_phase,
         );
+        let rock_shading = self.slice.rock.is_some()
+            && self.style.mantle_strength > 0.0
+            && self.mantle.cut_current();
         let fans = self.fans();
         let fronts = fans.fronts_at(t);
         let labels: Vec<PhaseLabel> = fronts
@@ -539,6 +574,7 @@ impl SeismoApp {
             source_depth_km: depth_km,
             boundaries: self.sim.boundaries(),
             layers: &layers,
+            rock_shading,
         };
 
         let seek = self.clock.seek_count();

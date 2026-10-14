@@ -88,8 +88,16 @@ What the slice leaves out:
   land and turn within 60 km of each other. A front is broken where neighbours are more than
   400 km apart. Cusps and folds at triplications and caustics are real, but are only as sharp
   as the ray spacing allows.
-- **Mirror image.** The 1D model is the same in every direction, so the slice shows half of the
-  great circle. The azimuth only moves the cut on the map.
+- **Half the circle at a time.** The slice shows the half of the great circle from the
+  epicentre along the chosen azimuth to the antipode; the other half is at azimuth + 180°. That
+  half holds the rays leaving along the azimuth until they pass the antipode, and the rays
+  leaving the opposite way once they have passed it. With the 1D rays these are the same rays,
+  so in 1D every azimuth looks the same.
+- **Rock shading.** With the 3D mantle on, the mantle part of the slice is shaded by the model's
+  shear (or, if chosen, compressional) perturbation along the cut: brighter is faster, ±1% spans
+  the shading, sampled every 1° along the cut and every 25 km in depth. The shading is a display
+  of the model at its real amplitude; the strength setting does not scale it. The rays drawn are
+  still the 1D ak135 rays.
 - **Brightness is not amplitude.** Line brightness is fixed per phase for legibility. The
   fainter fronts behind each front are copies at earlier times, a display trail, not a coda.
 

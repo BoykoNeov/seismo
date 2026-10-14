@@ -1,9 +1,11 @@
 //! The vertical slice: ray fans per phase from one source depth, and the wavefronts and ray
 //! paths they give at a time.
 //!
-//! In a 1D Earth every vertical plane through the source looks the same, and the picture is
-//! mirror-symmetric about the source's vertical. Positions are therefore given as radius and
-//! epicentral distance δ in [0°, 180°] (angles past 180° fold back).
+//! The slice shows half of the great circle through the epicentre at one azimuth: from the
+//! epicentre (δ = 0°) along that azimuth to the antipode (δ = 180°). Positions are radius and
+//! epicentral distance δ. That half holds the rays leaving along the azimuth until they pass the
+//! antipode (the forward fans), and the rays leaving the opposite way once they have passed it
+//! (the back fans, folded onto δ = 360° − θ). In a 1D Earth the two are the same rays.
 
 use crate::geo::EARTH_RADIUS_KM;
 use crate::raytrace::{PathPoint, Ray, RayPhase, RayTracer, Wave, fold_rad};
@@ -102,15 +104,37 @@ pub fn named_boundaries(model: &EarthModel) -> Vec<Boundary> {
     out
 }
 
-/// The rays of one phase, ordered by take-off angle.
+/// Which way a fan's rays leave the source, relative to the slice's azimuth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    /// Along the azimuth: drawn while the ray is between the epicentre and the antipode.
+    Forward,
+    /// Opposite the azimuth: drawn once the ray has passed the antipode.
+    Back,
+}
+
+impl Side {
+    /// Whether a ray point `theta_rad` from the source along its own great circle lies in the
+    /// slice's half.
+    pub fn shows(self, theta_rad: f64) -> bool {
+        let x = theta_rad.rem_euclid(2.0 * PI);
+        match self {
+            Side::Forward => x <= PI,
+            Side::Back => x > PI,
+        }
+    }
+}
+
+/// The rays of one phase leaving one way, ordered by take-off angle.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Fan {
     pub phase: RayPhase,
+    pub side: Side,
     pub rays: Vec<Ray>,
 }
 
-/// Ray fans of every slice phase for one source depth. Build once per depth and reuse: the
-/// fans depend only on the model and the depth.
+/// Ray fans of every slice phase for one source depth, forward fans first. Build once per depth
+/// and reuse: in the 1D model the fans depend only on the model and the depth.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SliceFans {
     pub depth_km: f64,
@@ -119,14 +143,28 @@ pub struct SliceFans {
 }
 
 impl SliceFans {
+    /// Fans through the 1D model: the back fans are the forward fans' rays.
     pub fn build(tracer: &RayTracer, depth_km: f64) -> Self {
-        let fans = RayPhase::ALL
+        let forward: Vec<Fan> = RayPhase::ALL
             .into_iter()
             .map(|phase| Fan {
                 phase,
+                side: Side::Forward,
                 rays: build_fan(tracer, phase, depth_km),
             })
             .collect();
+        let back: Vec<Fan> = forward
+            .iter()
+            .map(|f| Fan {
+                side: Side::Back,
+                ..f.clone()
+            })
+            .collect();
+        Self::from_fans(tracer, depth_km, forward.into_iter().chain(back).collect())
+    }
+
+    /// Fans traced elsewhere (forward fans first).
+    pub fn from_fans(tracer: &RayTracer, depth_km: f64, fans: Vec<Fan>) -> Self {
         Self {
             depth_km,
             r_cmb: tracer.cmb_radius_km(),
@@ -143,8 +181,9 @@ impl SliceFans {
     }
 
     /// Wavefronts `t` seconds after origin. Each fan's front joins the positions of
-    /// neighbouring rays at `t`; it breaks where a ray has finished (reached the surface) or is
-    /// still on a path another fan draws, and where neighbours are far apart.
+    /// neighbouring rays at `t`; it breaks where a ray has finished (reached the surface), is
+    /// still on a path another fan draws, or is outside the slice's half, and where neighbours
+    /// are far apart. Each phase is labelled once, on its forward fan if that shows it.
     pub fn fronts_at(&self, t: f64) -> SliceFronts {
         let mut out = SliceFronts::default();
         if t < 0.0 {
@@ -169,6 +208,7 @@ impl SliceFans {
                 let here = (t >= ray.shared_until_s)
                     .then(|| ray.point_at(t))
                     .flatten()
+                    .filter(|q| fan.side.shows(q.theta_rad))
                     .map(|q| SlicePoint::from_path(&q));
                 let Some(pt) = here else {
                     flush(&mut current, current_wave, &mut out);
@@ -192,7 +232,7 @@ impl SliceFans {
                 current.push(pt);
             }
             flush(&mut current, current_wave, &mut out);
-            if !labelled.is_empty() {
+            if !labelled.is_empty() && !out.labels.iter().any(|l| l.phase == fan.phase) {
                 out.labels.push(PhaseLabel {
                     phase: fan.phase,
                     at: labelled[labelled.len() / 2],
@@ -203,7 +243,8 @@ impl SliceFans {
     }
 
     /// The part of each fan's rays travelled by time `t`, for about `per_fan` rays per fan
-    /// spread evenly through it. Lines break where the wave type changes.
+    /// spread evenly through it, inside the slice's half. Lines break where the wave type
+    /// changes.
     pub fn ray_paths_until(&self, t: f64, per_fan: usize) -> Vec<SliceLine> {
         let mut out = Vec::new();
         if t <= 0.0 || per_fan == 0 {
@@ -228,6 +269,17 @@ impl SliceFans {
                 let mut line: Vec<SlicePoint> = Vec::new();
                 let mut wave = fan.phase.mantle_wave();
                 for w in pts.windows(2) {
+                    if !(fan.side.shows(w[0].theta_rad) && fan.side.shows(w[1].theta_rad)) {
+                        if line.len() >= 2 {
+                            out.push(SliceLine {
+                                phase: fan.phase,
+                                wave,
+                                points: std::mem::take(&mut line),
+                            });
+                        }
+                        line.clear();
+                        continue;
+                    }
                     let mid = 0.5 * (w[0].r_km + w[1].r_km);
                     let seg_wave = self.wave_at(fan.phase, mid);
                     if seg_wave != wave && !line.is_empty() {
@@ -452,6 +504,40 @@ mod tests {
         let len = |v: &Vec<SliceLine>| v.iter().map(|l| l.points.len()).sum::<usize>();
         assert!(!a.is_empty());
         assert!(len(&b) > len(&a));
+    }
+
+    #[test]
+    fn halves_show_each_one_dimensional_front_point_once() {
+        // In 1D the forward and back fans are the same rays; between them every point of every
+        // ray at time t is drawn exactly once, on one side or the other.
+        let f = fans(29.0);
+        for t in [300.0, 900.0, 1200.0] {
+            let fronts = f.fronts_at(t);
+            let drawn: usize = fronts.lines.iter().map(|l| l.points.len()).sum();
+            let expected: usize = f
+                .fans
+                .iter()
+                .filter(|fan| fan.side == Side::Forward)
+                .flat_map(|fan| &fan.rays)
+                .filter(|r| t >= r.shared_until_s && r.point_at(t).is_some())
+                .count();
+            // Fronts drop isolated points and repeat a point where the wave type changes.
+            assert!(
+                drawn.abs_diff(expected) <= 60,
+                "t={t}: drew {drawn} of {expected}"
+            );
+            let mut phases: Vec<RayPhase> = fronts.labels.iter().map(|l| l.phase).collect();
+            phases.sort_by_key(|p| p.name());
+            phases.dedup();
+            assert_eq!(phases.len(), fronts.labels.len(), "a phase labelled twice");
+        }
+    }
+
+    #[test]
+    fn sides_split_at_the_antipode() {
+        assert!(Side::Forward.shows(0.0) && Side::Forward.shows(PI));
+        assert!(!Side::Back.shows(PI) && Side::Back.shows(PI + 1e-9));
+        assert!(Side::Back.shows(1.5 * PI) && Side::Forward.shows(2.0 * PI + 0.1));
     }
 
     #[test]

@@ -90,6 +90,10 @@ no dependence on the working directory.
 - Slice: `sim` computes a ray fan per (source depth, phase) — per ray, not per
   pixel — cached, since a 1D model depends only on source depth. The wavefront
   at time t is the line through the points at time t along neighbouring rays.
+  The slice shows one half of the great circle (epicentre → antipode along the
+  azimuth, slider 0–360°): forward fans up to the antipode plus back fans past
+  it. With the 3D mantle on, a per-cut dlnV grid (1° × 25 km, computed on the
+  worker, never per pixel) shades the mantle; greens only.
 - The feed runs on a tokio runtime in its own thread and talks to the app via
   `crossbeam_channel`. The UI thread is synchronous.
 - Every new feature touching physics gets a unit test in `sim` or `tables`.

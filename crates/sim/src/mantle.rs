@@ -13,7 +13,7 @@
 use crate::geo::{EARTH_RADIUS_KM, destination};
 use crate::raytrace::{Ray, RayPhase, RayTracer, Wave, fold_rad};
 use crate::slice::{Boundary, build_fan};
-use crate::tables::MantleModel;
+use crate::tables::{MantleModel, SPH_R_BOTTOM_KM};
 
 use std::f64::consts::PI;
 
@@ -204,6 +204,46 @@ fn phase_grid(
     (best_t, delay)
 }
 
+/// Distance spacing (deg) of a [`CutGrid`], from 0° to 180°.
+pub const CUT_DELTA_STEP_DEG: f64 = 1.0;
+pub const CUT_DELTA_COUNT: usize = 181;
+/// Radius range (km) of a [`CutGrid`]: the bottom of the 3D model to the surface.
+pub const CUT_R_BOTTOM_KM: f64 = SPH_R_BOTTOM_KM;
+pub const CUT_R_TOP_KM: f64 = EARTH_RADIUS_KM;
+pub const CUT_R_COUNT: usize = 117;
+
+/// The perturbation of one wave type over the slice's half: `CUT_R_COUNT` rows (radius, bottom
+/// first, evenly spaced) of `CUT_DELTA_COUNT` values (epicentral distance along the azimuth).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CutGrid {
+    pub values: Vec<f32>,
+}
+
+impl CutGrid {
+    /// Radius (km) of row `i`.
+    pub fn radius_km(i: usize) -> f64 {
+        CUT_R_BOTTOM_KM + (CUT_R_TOP_KM - CUT_R_BOTTOM_KM) * i as f64 / (CUT_R_COUNT - 1) as f64
+    }
+
+    pub fn at(&self, r_index: usize, delta_index: usize) -> f32 {
+        self.values[r_index * CUT_DELTA_COUNT + delta_index]
+    }
+}
+
+/// dlnV of `wave` on the half great circle from (`lat`, `lon`) along `azimuth_deg`, for shading
+/// the slice. Cheap: about 21 000 grid lookups.
+pub fn cut_grid(mantle: &Mantle3d, wave: Wave, lat: f64, lon: f64, azimuth_deg: f64) -> CutGrid {
+    let mut values = Vec::with_capacity(CUT_R_COUNT * CUT_DELTA_COUNT);
+    for i in 0..CUT_R_COUNT {
+        let r = CutGrid::radius_km(i);
+        for j in 0..CUT_DELTA_COUNT {
+            let (la, lo) = destination(lat, lon, azimuth_deg, CUT_DELTA_STEP_DEG * j as f64);
+            values.push(mantle.dlnv(wave, r, la, lo) as f32);
+        }
+    }
+    CutGrid { values }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,6 +355,27 @@ mod tests {
         // model itself starts at 24.4 km).
         assert_eq!(m.dlnv(Wave::S, r(30.0), 60.0, -100.0), 0.0);
         assert!(m.dlnv(Wave::S, r(40.0), 60.0, -100.0) > 0.01);
+    }
+
+    #[test]
+    fn cut_grid_samples_the_model_along_the_azimuth() {
+        let model = earth();
+        let m = mantle(&model);
+        let (lat, lon, _) = TOHOKU;
+        let a = cut_grid(&m, Wave::S, lat, lon, 30.0);
+        let b = cut_grid(&m, Wave::S, lat, lon, 210.0);
+        assert_eq!(a.values.len(), CUT_R_COUNT * CUT_DELTA_COUNT);
+        assert_eq!(CutGrid::radius_km(CUT_R_COUNT - 1), EARTH_RADIUS_KM);
+        for i in [0, 40, 100] {
+            let r = CutGrid::radius_km(i);
+            // Under the epicentre every azimuth sees the same rock; elsewhere the halves differ.
+            assert_eq!(a.at(i, 0), b.at(i, 0));
+            let (la, lo) = destination(lat, lon, 30.0, 70.0);
+            assert_eq!(a.at(i, 70), m.dlnv(Wave::S, r, la, lo) as f32);
+        }
+        assert!((0..CUT_DELTA_COUNT).any(|j| (a.at(60, j) - b.at(60, j)).abs() > 0.002));
+        // Crust rows are zero.
+        assert!((0..CUT_DELTA_COUNT).all(|j| a.at(CUT_R_COUNT - 1, j) == 0.0));
     }
 
     #[test]

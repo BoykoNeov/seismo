@@ -1,5 +1,6 @@
 // Slice pass, background: the half-disc cross-section of the Earth along a great circle, with
-// the surface, layer boundaries, faint region fills, distance ticks and the source.
+// the surface, layer boundaries, faint region fills, the 3D mantle's fast and slow rock,
+// distance ticks and the source.
 // The epicentre is at the left end of the flat edge, the antipode at the right end; epicentral
 // distance delta runs over the arc. All values are display-space intensities.
 
@@ -17,9 +18,36 @@ struct Uniforms {
     phosphor: vec4<f32>,
     // background rgb, unused
     background: vec4<f32>,
+    // rock shading on (0/1), display gain, Moho fraction (top of the shading; < 0 = surface),
+    // bottom of the grid as a fraction of the Earth radius
+    rock: vec4<f32>,
+    // rock grid: delta step (deg), delta count, radius count (radius rows run evenly from the
+    // bottom fraction to the surface), unused
+    rock_axis: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
+// R32Float dlnV over the shown half: width = epicentral distance, height = radius.
+@group(0) @binding(1) var rock: texture_2d<f32>;
+
+// Manual bilinear lookup of the rock grid at radius fraction `r` and distance `delta` (deg).
+fn rock_lookup(r: f32, delta: f32) -> f32 {
+    let nd = u.rock_axis.y;
+    let nr = u.rock_axis.z;
+    let fu = clamp(delta / u.rock_axis.x, 0.0, nd - 1.0);
+    let fv = clamp((r - u.rock.w) / (1.0 - u.rock.w) * (nr - 1.0), 0.0, nr - 1.0);
+    let i = min(floor(fu), nd - 2.0);
+    let j = min(floor(fv), nr - 2.0);
+    let fx = fu - i;
+    let fy = fv - j;
+    let x = i32(i);
+    let y = i32(j);
+    let c00 = textureLoad(rock, vec2<i32>(x, y), 0).r;
+    let c10 = textureLoad(rock, vec2<i32>(x + 1, y), 0).r;
+    let c01 = textureLoad(rock, vec2<i32>(x, y + 1), 0).r;
+    let c11 = textureLoad(rock, vec2<i32>(x + 1, y + 1), 0).r;
+    return mix(mix(c00, c10, fx), mix(c01, c11, fx), fy);
+}
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -72,6 +100,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             fill = 0.6;
         }
         level = u.style.y * fill;
+        // Fast rock brighter, slow rock darker, around a dim mantle level; +-1% spans the range.
+        let top = select(1.0, u.rock.z, u.rock.z > 0.0);
+        if (u.rock.x > 0.5 && r >= u.rock.w && r <= top) {
+            let x = clamp(rock_lookup(r, delta) / 0.01, -1.0, 1.0);
+            level = max(level, u.rock.y * 0.09 * (1.0 + x));
+        }
     }
     if (upper) {
         // Boundaries; the core boundaries a little brighter.

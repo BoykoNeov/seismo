@@ -1,11 +1,14 @@
 //! Slice pass: the half-disc cross-section along a great circle through the epicentre, with
-//! wavefronts and ray paths from `sim`'s ray fans.
+//! the 3D mantle's fast and slow rock as shading, and wavefronts and ray paths from `sim`'s ray
+//! fans.
 //!
-//! The 1D Earth is mirror-symmetric about the source's vertical, so half of the great circle
-//! shows everything: the epicentre sits at the left end of the flat edge, the antipode at the
-//! right end, and epicentral distance runs over the arc.
+//! The half shown runs from the epicentre, at the left end of the flat edge, along the slice's
+//! azimuth to the antipode at the right end; epicentral distance runs over the arc.
 
 use bytemuck::{Pod, Zeroable};
+use sim::mantle::{
+    CUT_DELTA_COUNT, CUT_DELTA_STEP_DEG, CUT_R_BOTTOM_KM, CUT_R_COUNT, CUT_R_TOP_KM, CutGrid,
+};
 use sim::slice::{Boundary, SliceLine};
 use sim::{EARTH_RADIUS_KM, RayPhase, Wave};
 
@@ -76,6 +79,8 @@ pub struct SliceScene<'a> {
     pub source_depth_km: f64,
     pub boundaries: &'a [Boundary],
     pub layers: &'a [SliceLayer<'a>],
+    /// Shade the mantle with the grid last given to [`SlicePass::upload_cut`].
+    pub rock_shading: bool,
 }
 
 /// Look of the slice pass.
@@ -89,6 +94,9 @@ pub struct SliceStyle {
     pub boundary_brightness: f32,
     /// Brightness of the faint region fills, [0, 1].
     pub fill_brightness: f32,
+    /// Display gain of the rock shading: fast rock brighter, slow rock darker. A look
+    /// setting, independent of the 3D strength.
+    pub rock_gain: f32,
 }
 
 impl Default for SliceStyle {
@@ -98,6 +106,7 @@ impl Default for SliceStyle {
             path_width_px: 1.0,
             boundary_brightness: 0.45,
             fill_brightness: 0.06,
+            rock_gain: 1.0,
         }
     }
 }
@@ -123,6 +132,8 @@ struct DiscUniforms {
     style: [f32; 4],
     phosphor: [f32; 4],
     background: [f32; 4],
+    rock: [f32; 4],
+    rock_axis: [f32; 4],
 }
 
 #[repr(C)]
@@ -214,6 +225,7 @@ pub struct SlicePass {
     line_uniforms: wgpu::Buffer,
     disc_bind_group: wgpu::BindGroup,
     line_bind_group: wgpu::BindGroup,
+    cut_texture: wgpu::Texture,
     vertices: wgpu::Buffer,
     vertex_capacity: usize,
 }
@@ -229,7 +241,13 @@ impl SlicePass {
                 }],
             })
         };
-        let disc_layout = uniform_layout("slice disc", wgpu::ShaderStages::FRAGMENT);
+        let disc_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("slice disc"),
+            entries: &[
+                gpu::uniform_entry(0),
+                gpu::texture_entry(1, wgpu::TextureViewDimension::D2),
+            ],
+        });
         let line_layout = uniform_layout(
             "slice lines",
             wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
@@ -268,7 +286,35 @@ impl SlicePass {
                 }],
             })
         };
-        let disc_bind_group = bind("slice disc", &disc_layout, &disc_uniforms);
+        let cut_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("slice rock"),
+            size: wgpu::Extent3d {
+                width: CUT_DELTA_COUNT as u32,
+                height: CUT_R_COUNT as u32,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let cut_view = cut_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let disc_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("slice disc"),
+            layout: &disc_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: disc_uniforms.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&cut_view),
+                },
+            ],
+        });
         let line_bind_group = bind("slice lines", &line_layout, &line_uniforms);
         let vertex_capacity = 4096;
         Self {
@@ -278,9 +324,28 @@ impl SlicePass {
             line_uniforms,
             disc_bind_group,
             line_bind_group,
+            cut_texture,
             vertices: vertex_buffer(device, vertex_capacity),
             vertex_capacity,
         }
+    }
+
+    /// The rock to shade: dlnV over the slice's half.
+    pub fn upload_cut(&self, queue: &wgpu::Queue, grid: &CutGrid) {
+        queue.write_texture(
+            self.cut_texture.as_image_copy(),
+            bytemuck::cast_slice(&grid.values),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * CUT_DELTA_COUNT as u32),
+                rows_per_image: Some(CUT_R_COUNT as u32),
+            },
+            wgpu::Extent3d {
+                width: CUT_DELTA_COUNT as u32,
+                height: CUT_R_COUNT as u32,
+                depth_or_array_layers: 1,
+            },
+        );
     }
 
     /// Draw into `viewport` of `target`, keeping the rest of the target.
@@ -323,6 +388,18 @@ impl SlicePass {
             style: [style.boundary_brightness, style.fill_brightness, 0.0, 0.0],
             phosphor: [pr, pg, pb, 0.0],
             background: [br, bg, bb, 0.0],
+            rock: [
+                if scene.rock_shading { 1.0 } else { 0.0 },
+                style.rock_gain,
+                find("Moho"),
+                (CUT_R_BOTTOM_KM / CUT_R_TOP_KM) as f32,
+            ],
+            rock_axis: [
+                CUT_DELTA_STEP_DEG as f32,
+                CUT_DELTA_COUNT as f32,
+                CUT_R_COUNT as f32,
+                0.0,
+            ],
         };
         queue.write_buffer(&self.disc_uniforms, 0, bytemuck::bytes_of(&disc));
         let lines = LineUniforms {
