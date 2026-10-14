@@ -19,6 +19,8 @@ use std::fmt;
 use crate::geo::EARTH_RADIUS_KM;
 use crate::tables::EarthModel;
 
+pub mod bend;
+
 /// Thickest integration shell (km). Velocities are linear in depth between model samples;
 /// each shell replaces that with a power law between its end values.
 const MAX_SHELL_KM: f64 = 10.0;
@@ -265,6 +267,26 @@ impl Shell {
 #[derive(Debug, Clone)]
 struct Profile {
     shells: Vec<Shell>,
+    /// The model's own description: velocity linear in depth between samples, surface first
+    /// (the shells approximate this). Used by the bent-ray tracer.
+    intervals: Vec<Interval>,
+}
+
+/// Velocity linear in depth between two model samples, r_bot < r ≤ r_top.
+#[derive(Debug, Clone, Copy)]
+struct Interval {
+    r_top: f64,
+    r_bot: f64,
+    v_top: f64,
+    v_bot: f64,
+}
+
+impl Interval {
+    /// Velocity (km/s) and its radial derivative (per s) at `r`, extrapolating past the ends.
+    fn velocity(&self, r: f64) -> (f64, f64) {
+        let slope = (self.v_top - self.v_bot) / (self.r_top - self.r_bot);
+        (self.v_bot + slope * (r - self.r_bot), slope)
+    }
 }
 
 impl Profile {
@@ -292,17 +314,52 @@ impl Profile {
                 ));
             }
         }
-        Self { shells }
+        let intervals = model
+            .points()
+            .windows(2)
+            .filter(|w| w[1].depth_km > w[0].depth_km)
+            .map(|w| Interval {
+                r_top: EARTH_RADIUS_KM - w[0].depth_km,
+                r_bot: EARTH_RADIUS_KM - w[1].depth_km,
+                v_top: velocity(&w[0]),
+                v_bot: velocity(&w[1]),
+            })
+            .collect();
+        Self { shells, intervals }
     }
 
     /// Velocity just below radius `r` (the lower side at a discontinuity).
     fn velocity_at(&self, r: f64) -> f64 {
-        let s = self
-            .shells
-            .iter()
-            .find(|s| s.r_bot < r)
-            .unwrap_or_else(|| self.shells.last().expect("non-empty profile"));
+        let s = self.shell_below(r);
         s.velocity(r.min(s.r_top))
+    }
+
+    /// The shell just below radius `r` (the lower one at a shell boundary); the innermost
+    /// shell for `r` at or below the centre.
+    fn shell_below(&self, r: f64) -> &Shell {
+        // Shells run from the surface down, so `r_bot` decreases.
+        let i = self.shells.partition_point(|s| s.r_bot >= r);
+        &self.shells[i.min(self.shells.len() - 1)]
+    }
+
+    /// The linear interval just below radius `r`.
+    fn interval_below(&self, r: f64) -> &Interval {
+        let i = self.intervals.partition_point(|s| s.r_bot >= r);
+        &self.intervals[i.min(self.intervals.len() - 1)]
+    }
+
+    /// Radii (km) of the model samples, where the velocity gradient changes.
+    fn sample_radii(&self) -> impl Iterator<Item = f64> + '_ {
+        self.intervals.iter().flat_map(|i| [i.r_top, i.r_bot])
+    }
+
+    /// Radii (km) where the velocity jumps between neighbouring shells.
+    fn discontinuities(&self) -> Vec<f64> {
+        self.shells
+            .windows(2)
+            .filter(|w| (w[0].velocity(w[0].r_bot) - w[1].velocity(w[1].r_top)).abs() > 1e-6)
+            .map(|w| w[0].r_bot)
+            .collect()
     }
 }
 

@@ -96,8 +96,7 @@ What the slice leaves out:
 - **Rock shading.** With the 3D mantle on, the mantle part of the slice is shaded by the model's
   shear (or, if chosen, compressional) perturbation along the cut: brighter is faster, ±1% spans
   the shading, sampled every 1° along the cut and every 25 km in depth. The shading is a display
-  of the model at its real amplitude; the strength setting does not scale it. The rays drawn are
-  still the 1D ak135 rays.
+  of the model at its real amplitude; the strength setting does not scale it.
 - **Brightness is not amplitude.** Line brightness is fixed per phase for legibility. The
   fainter fronts behind each front are copies at earlier times, a display trail, not a coda.
 
@@ -160,3 +159,31 @@ strength setting (0 = 1D, 1 = real, up to 20× exaggerated; the screen says EXAG
 - **Crust and core are 1D.** Perturbations start below ak135's Moho (35 km) and stop at the
   core-mantle boundary.
 - The P and S distances shown in the side panel are the 1D values.
+
+## Slice: rays bent through the 3D mantle, in the plane of the cut
+
+With the 3D mantle on, the slice's rays are traced through v = v₁(r)·(1 + s·dlnV), where v₁ is
+ak135 (velocity linear in depth between its samples), dlnV is SP12RTS along the cut and s the
+strength. Each ray is integrated with fixed-step RK4 (4 s, 0.5 s near turning points), ending
+steps exactly on every model sample depth and velocity discontinuity; at discontinuities the
+ray refracts by Snell's law, reflects, or is rejected by the same per-phase rules as the 1D
+tracer.
+
+- **In the plane only.** Rays stay in the vertical plane of the cut; the part of the velocity
+  gradient across the plane is ignored. Real rays drift a little sideways; at real strength the
+  drift is small.
+- **Checked against the 1D tracer.** With no perturbation the bent rays land within 0.01° and
+  0.1 s of the closed-form 1D rays for all nine phases (0.1 s is the closed-form tracer's own
+  shell approximation, largest for SS). At real strength a bent ray's time, moved to the 1D
+  ray's landing point, matches the map's 1D time + delay within 0.3 s, so map and slice agree.
+- **Above 1× the views differ in method.** The map scales the first-order delay linearly; the
+  slice traces rays through a model scaled by the same factor, so at 10× or 20× the rays bend
+  much more than the linear scaling assumes and the two views no longer match exactly. The
+  velocity factor 1 + s·dlnV is kept at or above 0.2.
+- **Fewer rays.** Bent fans are seeded with at most 300 take-off angles from each 1D fan, then
+  refined where neighbouring rays land more than 60 km apart, up to 1500 rays per fan. Where the
+  exaggerated model makes rays miss their phase (a P ray reaching the core, a PKP ray reaching
+  the inner core), the ray is dropped and the front shows a gap.
+- **Computed per cut.** Bent fans depend on the event, the azimuth and the strength; they are
+  rebuilt on a worker thread when any of these changes (about 2–3 s), and the 1D fans are drawn
+  until they are ready.

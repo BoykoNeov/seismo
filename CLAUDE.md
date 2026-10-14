@@ -88,7 +88,11 @@ no dependence on the working directory.
 - Map events are culled before upload: only events whose waves are still on the
   globe, capped (default 32, largest magnitude first).
 - Slice: `sim` computes a ray fan per (source depth, phase) — per ray, not per
-  pixel — cached, since a 1D model depends only on source depth. The wavefront
+  pixel — cached, since a 1D model depends only on source depth. With the 3D
+  mantle on, fans are bent through it in the plane of the cut
+  (`sim::raytrace::bend`, seeded from the 1D fans) and cached per (event,
+  azimuth, strength), built on the app's worker (fans in parallel; `sim` itself
+  stays thread-free); 1D fans show until ready. The wavefront
   at time t is the line through the points at time t along neighbouring rays.
   The slice shows one half of the great circle (epicentre → antipode along the
   azimuth, slider 0–360°): forward fans up to the antipode plus back fans past

@@ -57,6 +57,12 @@ impl Mantle3d {
         &self.model
     }
 
+    /// Radii (km) between which the perturbations can be non-zero: the bottom of the 3D model
+    /// and the 1D model's Moho.
+    pub fn radius_range_km(&self) -> (f64, f64) {
+        (SPH_R_BOTTOM_KM, EARTH_RADIUS_KM - self.moho_depth_km)
+    }
+
     /// Fractional velocity perturbation of `wave` at radius `r_km` below (`lat`, `lon`).
     pub fn dlnv(&self, wave: Wave, r_km: f64, lat: f64, lon: f64) -> f64 {
         if EARTH_RADIUS_KM - r_km < self.moho_depth_km {

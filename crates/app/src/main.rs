@@ -15,7 +15,7 @@ use sim::tables::{EarthModel, TravelTimeTable};
 use sim::{EARTH_RADIUS_KM, Event, EventKind, RayPhase, Simulation, Wave};
 
 use clock::{MAX_SPEED, MIN_SPEED, SimClock, secs};
-use mantle::{CutKey, MantleWorker, Ready};
+use mantle::{BendKey, CutKey, MantleWorker, Ready};
 
 static TABLE_BYTES: &[u8] = include_bytes!("../../../assets/ak135.tt");
 static MODEL_BYTES: &[u8] = include_bytes!("../../../assets/ak135_model.csv");
@@ -111,6 +111,8 @@ struct SeismoApp {
     mantle: MantleWorker,
     /// Ray fans for the selected event's source depth, built on first use.
     fans: Option<SliceFans>,
+    /// Ray fans bent through the 3D mantle, for the slice as it was when asked for.
+    bent: Option<(BendKey, SliceFans)>,
     slice: SliceSettings,
     clock: SimClock,
     selected: usize,
@@ -200,6 +202,7 @@ impl SeismoApp {
             sim,
             mantle,
             fans: None,
+            bent: None,
             slice,
             clock,
             selected: 0,
@@ -220,7 +223,23 @@ impl SeismoApp {
     }
 
     /// The ray fans for the selected event, rebuilt when its depth changes.
+    /// The bent fans for the slice as it is now, if the 3D mantle is on.
+    fn bend_key(&self) -> Option<BendKey> {
+        let s = self.style.mantle_strength;
+        (s > 0.0).then(|| BendKey::new(self.selected, self.slice.azimuth_deg, s))
+    }
+
+    /// Whether the slice is drawn with rays bent for its current settings.
+    fn bent_current(&self) -> bool {
+        self.bend_key()
+            .is_some_and(|k| self.bent.as_ref().is_some_and(|(b, _)| *b == k))
+    }
+
+    /// The ray fans to draw: bent ones when they match the slice, otherwise the 1D fans.
     fn fans(&mut self) -> &SliceFans {
+        if self.bent_current() {
+            return &self.bent.as_ref().expect("checked").1;
+        }
         let depth = self.sim.events[self.selected].depth_km;
         if self.fans.as_ref().is_none_or(|f| f.depth_km != depth) {
             let started = Instant::now();
@@ -282,7 +301,8 @@ impl SeismoApp {
             GREEN_DIM,
             "Solid: P (compression). Dashed: S (shear). Dotted: ray paths. \
              Shown: from the epicentre along the azimuth to the antipode. Brighter rock is \
-             faster (±1% spans the shading). Rays are still the 1D ak135 rays.",
+             faster (±1% spans the shading). With the 3D mantle on, rays bend through the \
+             rock in the plane of the cut.",
         );
     }
 
@@ -318,11 +338,14 @@ impl SeismoApp {
         if !status.is_empty() {
             ui.colored_label(GREEN_DIM, status);
         }
+        if s > 0.0 && !self.bent_current() {
+            ui.colored_label(GREEN_DIM, "Bending slice rays… (1D rays shown meanwhile)");
+        }
         ui.colored_label(
             GREEN_DIM,
             "Fast and slow rock in the mantle (SP12RTS, Koelemeijer et al. 2016) moves the map \
-             fronts earlier or later. Times are nudged along the 1D rays. The slice shades the \
-             rock; its rays are not bent yet.",
+             fronts earlier or later (times nudged along the 1D rays). In the slice the rays \
+             bend through the rock.",
         );
     }
 
@@ -479,6 +502,10 @@ impl SeismoApp {
             let e = &self.sim.events[i];
             self.mantle.request_delays(i, e.lat, e.lon, e.depth_km);
         }
+        if let Some(key) = self.bend_key() {
+            let e = &self.sim.events[self.selected];
+            self.mantle.request_bend(key, e.lat, e.lon, e.depth_km);
+        }
         if let Some(wave) = self.slice.rock {
             let e = &self.sim.events[self.selected];
             let key = CutKey::new(self.selected, self.slice.azimuth_deg, wave);
@@ -490,6 +517,7 @@ impl SeismoApp {
                     self.renderer.map.upload_delays(&rs.queue, slot, &grid)
                 }
                 Ready::Cut(grid) => self.renderer.slice.upload_cut(&rs.queue, &grid),
+                Ready::Bend(key, fans) => self.bent = Some((key, fans)),
             }
         }
         let events: Vec<render::MapEventInstance> = map_events
