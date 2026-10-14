@@ -106,6 +106,17 @@ impl EarthModel {
             .map(|w| w[0].depth_km)
             .collect()
     }
+
+    /// Top and bottom depth (km) of the fluid layer (S velocity zero throughout): the outer
+    /// core, bounded by the core-mantle and inner-core boundaries. `None` if there is none.
+    pub fn fluid_core(&self) -> Option<(f64, f64)> {
+        let mut fluid = self.points.windows(2).filter(|w| {
+            w[0].depth_km < w[1].depth_km && w[0].vs_km_s == 0.0 && w[1].vs_km_s == 0.0
+        });
+        let first = fluid.next()?;
+        let last = fluid.next_back().unwrap_or(first);
+        Some((first[0].depth_km, last[1].depth_km))
+    }
 }
 
 #[cfg(test)]
@@ -124,6 +135,24 @@ mod tests {
         assert_eq!(m.points().len(), 4);
         assert_eq!(m.points()[2].vp_km_s, 6.5);
         assert_eq!(m.discontinuities(), vec![20.0]);
+    }
+
+    #[test]
+    fn finds_fluid_core() {
+        let text = format!(
+            "{HEADER}\n0,5.8,3.4,2.7\n100,8.0,4.5,3.3\n100,8.0,0.0,9.9\n300,9.0,0.0,11.0\n\
+             300,11.0,3.5,12.7\n400,11.2,3.6,13.0\n"
+        );
+        let m = EarthModel::from_csv_str(&text).unwrap();
+        assert_eq!(m.fluid_core(), Some((100.0, 300.0)));
+        assert_eq!(EarthModel::from_csv_str(SAMPLE).unwrap().fluid_core(), None);
+    }
+
+    #[test]
+    fn real_model_core_boundaries() {
+        let m = EarthModel::from_bytes(include_bytes!("../../../assets/ak135_model.csv")).unwrap();
+        assert_eq!(m.fluid_core(), Some((2891.5, 5153.5)));
+        assert_eq!(m.points().last().unwrap().depth_km, 6371.0);
     }
 
     #[test]

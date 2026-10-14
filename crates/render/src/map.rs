@@ -20,6 +20,16 @@ pub struct MapEventInstance {
     pub magnitude: f32,
 }
 
+/// The great circle the slice view cuts along, drawn on the map from the epicentre to its
+/// antipode.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MapSliceLine {
+    pub lat: f32,
+    pub lon: f32,
+    /// Degrees clockwise from north.
+    pub azimuth_deg: f32,
+}
+
 /// Look of the map pass.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MapStyle {
@@ -61,6 +71,7 @@ struct Uniforms {
     style: [f32; 4],
     phosphor: [f32; 4],
     background: [f32; 4],
+    slice: [f32; 4],
     events: [GpuEvent; MAX_MAP_EVENTS],
 }
 
@@ -128,16 +139,18 @@ impl MapPass {
         }
     }
 
-    /// Draw into `target`. At most [`MAX_MAP_EVENTS`] events are drawn; the caller culls and
-    /// orders them.
+    /// Draw into `viewport` of `target`, clearing the whole target first. At most
+    /// [`MAX_MAP_EVENTS`] events are drawn; the caller culls and orders them.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &self,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
-        size: (u32, u32),
+        viewport: gpu::Viewport,
         events: &[MapEventInstance],
         style: &MapStyle,
+        slice: Option<MapSliceLine>,
     ) {
         let n = events.len().min(MAX_MAP_EVENTS);
         let mut gpu_events = [GpuEvent::zeroed(); MAX_MAP_EVENTS];
@@ -150,7 +163,7 @@ impl MapPass {
         let [pr, pg, pb] = crate::PHOSPHOR;
         let [br, bg, bb] = crate::BACKGROUND;
         let uniforms = Uniforms {
-            view: [size.0 as f32, size.1 as f32, n as f32, 0.0],
+            view: [viewport.w, viewport.h, n as f32, 0.0],
             depth_axis: self.depth_axis,
             dist_axis: self.dist_axis,
             layers: self.layers,
@@ -162,6 +175,7 @@ impl MapPass {
             ],
             phosphor: [pr, pg, pb, 0.0],
             background: [br, bg, bb, 0.0],
+            slice: slice.map_or([0.0; 4], |l| [l.lat, l.lon, l.azimuth_deg, 1.0]),
             events: gpu_events,
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
@@ -174,6 +188,7 @@ impl MapPass {
             occlusion_query_set: None,
             multiview_mask: None,
         });
+        viewport.apply(&mut pass);
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.draw(0..3, 0..1);

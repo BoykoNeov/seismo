@@ -60,6 +60,39 @@ distance step (0.25°) and one depth step (5 km) short of where ObsPy would put 
 Interpolation is also not smooth across branch splits and triplications, where the first
 arrival switches from one branch to another inside a cell.
 
+## Slice view: ray-traced fronts
+
+The slice draws wavefronts inside the Earth from rays traced through the ak135 velocity model
+(`sim::raytrace`), not from the table. The model is cut into shells at most 10 km thick, with
+velocity a power law of radius inside each shell. Velocities are linear in depth between the
+model's samples, and each shell replaces that with a power law between its end values. A test
+checks the traced surface arrival times against the table within 1 s: P and S at 30°, 60° and
+90°; PKIKP at 150° and 180°; PcP, ScS, SKS, PP, SS and both PKP branches at one distance each.
+
+What the slice leaves out:
+
+- **Only nine phases:** P, S, PcP, ScS, PKP, PKIKP, SKS, PP and SS, P and S including the rays
+  that leave a buried source upward. Rays that cannot get through the velocity jump at the
+  410 or 660 bounce off its top (total reflection) and stay part of P and S, as in ObsPy. There
+  are no partial reflections (a ray that gets through leaves no reflected copy), no reflections
+  off the underside of a layer, no surface reflections other than PP and SS, no conversions
+  other than those named (no PcS, no SKP, no S in the inner core), and no depth phases (pP, sP).
+- **No diffraction, no head waves.** Fronts end where the rays end. There is no Pdiff or Sdiff
+  creeping along the core, so beyond about 100° the slice shows only the core phases and the surface
+  reflections PP and SS, and there is no Pn running along the Moho.
+- **Shared paths drawn once.** Before they reach the core, PcP, PKP and PKIKP rays follow the
+  same path down. That part is drawn as one front (the PcP fan), and PKP and PKIKP start at the
+  core-mantle boundary. Likewise PP and SS start where P and S reach the surface. Labels sit on
+  the leg that gives a phase its name.
+- **Fronts join neighbouring rays with straight lines.** Rays are refined until neighbours
+  land and turn within 60 km of each other. A front is broken where neighbours are more than
+  400 km apart. Cusps and folds at triplications and caustics are real, but are only as sharp
+  as the ray spacing allows.
+- **Mirror image.** The 1D model is the same in every direction, so the slice shows half of the
+  great circle. The azimuth only moves the cut on the map.
+- **Brightness is not amplitude.** Line brightness is fixed per phase for legibility. The
+  fainter fronts behind each front are copies at earlier times, a display trail, not a coda.
+
 ## Surface waves at constant group velocity, not dispersive
 
 (Not drawn yet.) Rayleigh and Love waves will be rings expanding at a constant group velocity

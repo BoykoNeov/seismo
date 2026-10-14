@@ -30,6 +30,8 @@ struct Uniforms {
     phosphor: vec4<f32>,
     // background rgb, unused
     background: vec4<f32>,
+    // slice great circle: epicentre lat_deg, lon_deg, azimuth_deg, enabled (0/1)
+    slice: vec4<f32>,
     events: array<MapEvent, MAX_EVENTS>,
 };
 
@@ -158,6 +160,22 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let dot = 1.0 - smoothstep(2.0, 3.0, r);
         let ring = 1.0 - smoothstep(0.5, 1.5, abs(r - 7.0));
         level = max(level, max(1.4 * dot, ring));
+    }
+
+    // The slice's great circle, epicentre to antipode: dotted, brighter every 30 deg.
+    if (u.slice.w > 0.5) {
+        let da = distance_azimuth(u.slice.x, u.slice.y, lat, lon);
+        let px_deg = max(px.y, px.x * cos(lat * DEG));
+        let rel = da.y - u.slice.z * DEG;
+        let cross = abs(asin(clamp(sin(da.x * DEG) * sin(rel), -1.0, 1.0))) / DEG;
+        if (cos(rel) >= 0.0 || da.x > 179.0) {
+            let on_line = 1.0 - smoothstep(0.5 * px_deg, 1.5 * px_deg, cross);
+            let dots = step(fract(da.x / 1.5), 0.5);
+            let to_tick = abs(da.x - 30.0 * round(da.x / 30.0));
+            let tick = (1.0 - smoothstep(2.0 * px_deg, 3.0 * px_deg, to_tick))
+                * (1.0 - smoothstep(3.0 * px_deg, 4.0 * px_deg, cross));
+            level = max(level, max(0.55 * on_line * dots, 0.9 * tick));
+        }
     }
 
     let colour = mix(u.background.rgb, u.phosphor.rgb, clamp(level, 0.0, 1.0)) * max(1.0, level);

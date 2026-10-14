@@ -9,8 +9,9 @@ use std::time::Instant;
 use anyhow::{Context as _, anyhow};
 use chrono::{DateTime, TimeZone, Utc};
 use eframe::{egui, wgpu};
+use sim::slice::{PhaseLabel, SliceFans, SliceLine};
 use sim::tables::{EarthModel, TravelTimeTable};
-use sim::{Event, EventKind, Simulation};
+use sim::{EARTH_RADIUS_KM, Event, EventKind, RayPhase, Simulation};
 
 use clock::{MAX_SPEED, MIN_SPEED, SimClock, secs};
 
@@ -67,8 +68,40 @@ fn tohoku() -> Event {
     )
 }
 
+/// Slice view settings.
+struct SliceSettings {
+    /// Direction of the cut from the epicentre, degrees clockwise from north.
+    azimuth_deg: f64,
+    /// Phases drawn, in `RayPhase::ALL` order.
+    phases: [bool; RayPhase::ALL.len()],
+    ray_paths: bool,
+    /// Ray paths per phase when shown.
+    paths_per_phase: usize,
+    /// Fainter copies of the fronts at earlier times, as a trail.
+    trail_fronts: usize,
+    labels: bool,
+    style: render::SliceStyle,
+}
+
+impl Default for SliceSettings {
+    fn default() -> Self {
+        Self {
+            azimuth_deg: 90.0,
+            phases: [true; RayPhase::ALL.len()],
+            ray_paths: true,
+            paths_per_phase: 8,
+            trail_fronts: 3,
+            labels: true,
+            style: render::SliceStyle::default(),
+        }
+    }
+}
+
 struct SeismoApp {
     sim: Simulation,
+    /// Ray fans for the selected event's source depth, built on first use.
+    fans: Option<SliceFans>,
+    slice: SliceSettings,
     clock: SimClock,
     selected: usize,
     renderer: render::SceneRenderer,
@@ -111,6 +144,7 @@ impl SeismoApp {
         cc.egui_ctx.set_visuals(phosphor_visuals());
 
         let events = vec![tohoku()];
+        let sim = Simulation::new(table, model, events).context("ray tracer")?;
         // Debug/screenshot flags:
         //   --start-offset <s>  start the clock that many seconds after the event's origin
         //   --speed <x>         initial clock speed
@@ -119,7 +153,7 @@ impl SeismoApp {
         let offset = arg("--start-offset")
             .and_then(|s| s.parse::<f64>().ok())
             .unwrap_or(0.0);
-        let mut clock = SimClock::new(events[0].origin + secs(offset));
+        let mut clock = SimClock::new(sim.events[0].origin + secs(offset));
         if let Some(speed) = arg("--speed").and_then(|s| s.parse::<f64>().ok()) {
             clock.set_speed(speed);
         }
@@ -131,6 +165,11 @@ impl SeismoApp {
                 .unwrap_or(3.0);
             (std::path::PathBuf::from(p), after)
         });
+        //   --azimuth <deg>     direction of the slice from the epicentre
+        let mut slice = SliceSettings::default();
+        if let Some(az) = arg("--azimuth").and_then(|s| s.parse::<f64>().ok()) {
+            slice.azimuth_deg = az.rem_euclid(360.0);
+        }
         let mut crt = render::CrtSettings::default();
         for flag in arg("--crt").unwrap_or_default().split(',') {
             match flag {
@@ -142,7 +181,9 @@ impl SeismoApp {
         }
         let now = Instant::now();
         Ok(Self {
-            sim: Simulation::new(table, events),
+            sim,
+            fans: None,
+            slice,
             clock,
             selected: 0,
             renderer,
@@ -159,6 +200,56 @@ impl SeismoApp {
 
     fn origin(&self) -> DateTime<Utc> {
         self.sim.events[self.selected].origin
+    }
+
+    /// The ray fans for the selected event, rebuilt when its depth changes.
+    fn fans(&mut self) -> &SliceFans {
+        let depth = self.sim.events[self.selected].depth_km;
+        if self.fans.as_ref().is_none_or(|f| f.depth_km != depth) {
+            let started = Instant::now();
+            let fans = self.sim.slice_fans(depth);
+            tracing::info!(
+                depth_km = depth,
+                rays = fans.fans.iter().map(|f| f.rays.len()).sum::<usize>(),
+                ms = started.elapsed().as_millis() as u64,
+                "built slice ray fans"
+            );
+            self.fans = Some(fans);
+        }
+        self.fans.as_ref().expect("just built")
+    }
+
+    fn slice_controls(&mut self, ui: &mut egui::Ui) {
+        let s = &mut self.slice;
+        ui.add(
+            egui::Slider::new(&mut s.azimuth_deg, 0.0..=360.0)
+                .text("azimuth °")
+                .max_decimals(0),
+        );
+        ui.colored_label(
+            GREEN_DIM,
+            "The model is the same in every direction, so azimuth only moves the cut on the map.",
+        );
+        ui.horizontal_wrapped(|ui| {
+            for (on, phase) in s.phases.iter_mut().zip(RayPhase::ALL) {
+                ui.checkbox(on, phase.name());
+            }
+        });
+        ui.checkbox(&mut s.labels, "labels");
+        ui.checkbox(&mut s.ray_paths, "ray paths");
+        ui.add_enabled(
+            s.ray_paths,
+            egui::Slider::new(&mut s.paths_per_phase, 1..=40).text("rays/phase"),
+        );
+        ui.add(egui::Slider::new(&mut s.trail_fronts, 0..=6).text("trail fronts"));
+        ui.add(egui::Slider::new(&mut s.style.front_width_px, 1.0..=6.0).text("front px"));
+        ui.add(egui::Slider::new(&mut s.style.boundary_brightness, 0.0..=1.0).text("layers"));
+        ui.add(egui::Slider::new(&mut s.style.fill_brightness, 0.0..=0.3).text("fill"));
+        ui.colored_label(
+            GREEN_DIM,
+            "Solid: P (compression). Dashed: S (shear). Dotted: ray paths. \
+             Half of the cut is shown; the other half is its mirror image.",
+        );
     }
 
     fn controls(&mut self, ui: &mut egui::Ui) {
@@ -226,7 +317,7 @@ impl SeismoApp {
         ui.monospace(format!("t   {:9.1} s", state.t));
         ui.monospace(format!("P   {}", fmt(state.p_front_deg)));
         ui.monospace(format!("S   {}", fmt(state.s_front_deg)));
-        ui.colored_label(GREEN_DIM, "P solid, S dashed. Direct waves only.");
+        ui.colored_label(GREEN_DIM, "Map: P solid, S dashed. Direct waves only.");
 
         ui.separator();
         egui::CollapsingHeader::new("CRT")
@@ -255,6 +346,10 @@ impl SeismoApp {
                 });
             });
 
+        egui::CollapsingHeader::new("Slice")
+            .default_open(true)
+            .show(ui, |ui| self.slice_controls(ui));
+
         egui::CollapsingHeader::new("Map")
             .default_open(false)
             .show(ui, |ui| {
@@ -275,10 +370,10 @@ impl SeismoApp {
             return;
         };
 
-        // Largest 2:1 rectangle in the available space, centred.
+        // Largest square in the available space, centred: the 2:1 map above the 2:1 slice.
         let avail = ui.available_rect_before_wrap();
-        let w = avail.width().min(avail.height() * 2.0).max(1.0);
-        let rect = egui::Rect::from_center_size(avail.center(), egui::vec2(w, w / 2.0));
+        let w = avail.width().min(avail.height()).max(1.0);
+        let rect = egui::Rect::from_center_size(avail.center(), egui::vec2(w, w));
         let ppp = ui.ctx().pixels_per_point();
         let px = (
             (rect.width() * ppp).round() as u32,
@@ -313,6 +408,70 @@ impl SeismoApp {
             })
             .collect();
 
+        // Slice: fronts now, fainter fronts at earlier times as a trail, and ray paths so far.
+        let event = &self.sim.events[self.selected];
+        let (t, depth_km) = (event.t_at(now), event.depth_km);
+        let slice_line = Some(render::MapSliceLine {
+            lat: event.lat as f32,
+            lon: event.lon as f32,
+            azimuth_deg: self.slice.azimuth_deg as f32,
+        });
+        let enabled = self.slice.phases;
+        let keep = |lines: Vec<SliceLine>| -> Vec<SliceLine> {
+            lines
+                .into_iter()
+                .filter(|l| enabled[phase_index(l.phase)])
+                .collect()
+        };
+        let (trail_s, trail_strength) = (self.style.trail_s as f64, self.style.trail_strength);
+        let (trail_fronts, ray_paths, per_phase) = (
+            self.slice.trail_fronts,
+            self.slice.ray_paths,
+            self.slice.paths_per_phase,
+        );
+        let fans = self.fans();
+        let fronts = fans.fronts_at(t);
+        let labels: Vec<PhaseLabel> = fronts
+            .labels
+            .iter()
+            .filter(|l| enabled[phase_index(l.phase)])
+            .copied()
+            .collect();
+        let front_lines = keep(fronts.lines);
+        let spacing = trail_s / 2.0;
+        let ghosts: Vec<(f32, Vec<SliceLine>)> = (1..=trail_fronts)
+            .map(|k| {
+                let dt = spacing * k as f64;
+                let gain = trail_strength * (-dt / trail_s).exp() as f32;
+                (gain, keep(fans.fronts_at(t - dt).lines))
+            })
+            .collect();
+        let paths = if ray_paths {
+            keep(fans.ray_paths_until(t, per_phase))
+        } else {
+            Vec::new()
+        };
+        let mut layers = vec![render::SliceLayer {
+            lines: &paths,
+            kind: render::StrokeKind::Path,
+            intensity: 0.3,
+        }];
+        layers.extend(ghosts.iter().map(|(gain, lines)| render::SliceLayer {
+            lines,
+            kind: render::StrokeKind::Front,
+            intensity: *gain,
+        }));
+        layers.push(render::SliceLayer {
+            lines: &front_lines,
+            kind: render::StrokeKind::Front,
+            intensity: 1.0,
+        });
+        let slice_scene = render::SliceScene {
+            source_depth_km: depth_km,
+            boundaries: self.sim.boundaries(),
+            layers: &layers,
+        };
+
         let seek = self.clock.seek_count();
         let time = render::FrameTime {
             dt_s: real_dt as f32,
@@ -327,10 +486,14 @@ impl SeismoApp {
                 label: Some("scene"),
             });
         self.renderer.render(
+            &rs.device,
             &rs.queue,
             &mut encoder,
             &events,
             &self.style,
+            slice_line,
+            &slice_scene,
+            &self.slice.style,
             &self.crt,
             time,
         );
@@ -353,7 +516,89 @@ impl SeismoApp {
             rect,
             egui::Image::new(egui::load::SizedTexture::new(self.texture_id, rect.size())),
         );
+        self.slice_labels(ui, rect, &labels);
     }
+
+    /// Text over the slice, drawn by egui on top of the scene (undistorted): distances along
+    /// the surface, layer names, and phase names at their fronts.
+    fn slice_labels(&self, ui: &egui::Ui, rect: egui::Rect, labels: &[PhaseLabel]) {
+        let vp = self.renderer.slice_viewport();
+        let view = render::SliceView::new((vp.w, vp.h));
+        // Scene pixels to UI points.
+        let scale = rect.width() / self.renderer.size().0.max(1) as f32;
+        let to_ui = |p: [f32; 2]| rect.min + egui::vec2(p[0] + vp.x, p[1] + vp.y) * scale;
+        let at = |r_km: f64, delta_deg: f64| to_ui(view.project(r_km, delta_deg));
+        let painter = ui.painter_at(rect);
+        let font = egui::FontId::monospace(11.0);
+        let text = |pos: egui::Pos2, align: egui::Align2, s: &str, colour: egui::Color32| {
+            painter.text(pos, align, s, font.clone(), colour);
+        };
+
+        // Distance from the epicentre, outside the arc; the two ends of the flat edge.
+        for d in (0..=180).step_by(30) {
+            let p = at(EARTH_RADIUS_KM * 1.08, f64::from(d));
+            text(p, egui::Align2::CENTER_CENTER, &format!("{d}°"), GREEN_DIM);
+        }
+        let under = egui::vec2(0.0, 14.0);
+        text(
+            at(EARTH_RADIUS_KM, 0.0) + under,
+            egui::Align2::LEFT_CENTER,
+            "EPICENTRE",
+            GREEN_DIM,
+        );
+        text(
+            at(EARTH_RADIUS_KM, 180.0) + under,
+            egui::Align2::RIGHT_CENTER,
+            "ANTIPODE",
+            GREEN_DIM,
+        );
+
+        // Region and boundary names.
+        let bounds = self.sim.boundaries();
+        let depth = |name: &str| bounds.iter().find(|b| b.name == name).map(|b| b.depth_km);
+        if let (Some(cmb), Some(icb)) = (depth("CMB"), depth("ICB")) {
+            let (r_cmb, r_icb) = (EARTH_RADIUS_KM - cmb, EARTH_RADIUS_KM - icb);
+            let centre = egui::Align2::CENTER_CENTER;
+            text(
+                at(0.5 * (EARTH_RADIUS_KM + r_cmb), 90.0),
+                centre,
+                "MANTLE",
+                GREEN_DIM,
+            );
+            text(
+                at(0.5 * (r_cmb + r_icb), 90.0),
+                centre,
+                "OUTER CORE (LIQUID)",
+                GREEN_DIM,
+            );
+            text(at(0.45 * r_icb, 90.0), centre, "INNER CORE", GREEN_DIM);
+        }
+        for name in ["660", "CMB", "ICB"] {
+            if let Some(d) = depth(name) {
+                let p = at(EARTH_RADIUS_KM - d, 125.0);
+                text(p, egui::Align2::LEFT_BOTTOM, name, GREEN_DIM);
+            }
+        }
+
+        if self.slice.labels {
+            for l in labels {
+                let p = at(l.at.r_km, l.at.delta_deg);
+                text(
+                    p + egui::vec2(4.0, -4.0),
+                    egui::Align2::LEFT_BOTTOM,
+                    l.phase.name(),
+                    GREEN,
+                );
+            }
+        }
+    }
+}
+
+fn phase_index(phase: RayPhase) -> usize {
+    RayPhase::ALL
+        .iter()
+        .position(|&p| p == phase)
+        .expect("every phase is in ALL")
 }
 
 impl eframe::App for SeismoApp {

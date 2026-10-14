@@ -157,3 +157,34 @@ pub fn color_attachment(view: &wgpu::TextureView) -> Option<wgpu::RenderPassColo
         },
     })
 }
+
+/// Like [`color_attachment`] but keeps what is already in the target (for a pass that draws
+/// into one viewport of a shared target).
+pub fn color_attachment_load(
+    view: &wgpu::TextureView,
+) -> Option<wgpu::RenderPassColorAttachment<'_>> {
+    Some(wgpu::RenderPassColorAttachment {
+        view,
+        depth_slice: None,
+        resolve_target: None,
+        ops: wgpu::Operations {
+            load: wgpu::LoadOp::Load,
+            store: wgpu::StoreOp::Store,
+        },
+    })
+}
+
+/// A pixel rectangle of a target: x, y (top-left), width, height.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Viewport {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+impl Viewport {
+    pub fn apply(&self, pass: &mut wgpu::RenderPass<'_>) {
+        pass.set_viewport(self.x, self.y, self.w, self.h, 0.0, 1.0);
+    }
+}

@@ -1,4 +1,4 @@
-//! `render`: wgpu passes (map, CRT post-process; later slice and traces).
+//! `render`: wgpu passes (map, slice, CRT post-process; later traces).
 //! Allowed dependencies: `sim` (tables via `sim::tables`), wgpu, bytemuck. No egui, no I/O.
 //!
 //! Colours are display-space (gamma-encoded) values written to non-sRGB targets, so
@@ -7,9 +7,15 @@
 mod crt;
 mod gpu;
 mod map;
+mod slice;
 
 pub use crt::{CrtPass, CrtSettings, FrameTime};
-pub use map::{MAX_MAP_EVENTS, MapEventInstance, MapPass, MapStyle};
+pub use gpu::Viewport;
+pub use map::{MAX_MAP_EVENTS, MapEventInstance, MapPass, MapSliceLine, MapStyle};
+pub use slice::{
+    MAX_SLICE_BOUNDARIES, SliceLayer, SlicePass, SliceScene, SliceStyle, SliceView, StrokeKind,
+    phase_gain,
+};
 
 /// Phosphor green `#33ff33`, display space.
 pub const PHOSPHOR: [f32; 3] = [0x33 as f32 / 255.0, 1.0, 0x33 as f32 / 255.0];
@@ -21,9 +27,11 @@ pub const SCENE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// Format of the displayed texture; egui-wgpu requires Rgba8Unorm for native textures.
 pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
-/// Map pass + CRT pass with their offscreen targets, sized together.
+/// The scene: the map (2:1) in the top half and the slice (2:1 half-disc) in the bottom half
+/// of one square-ish target, then one CRT pass over the whole of it.
 pub struct SceneRenderer {
     pub map: MapPass,
+    pub slice: SlicePass,
     pub crt: CrtPass,
     size: (u32, u32),
     scene: gpu::Target,
@@ -38,10 +46,12 @@ impl SceneRenderer {
     ) -> Self {
         let size = (size.0.max(1), size.1.max(1));
         let map = MapPass::new(device, queue, table);
+        let slice = SlicePass::new(device);
         let scene = gpu::Target::new(device, "scene", size, SCENE_FORMAT);
         let crt = CrtPass::new(device, size, &scene.view);
         Self {
             map,
+            slice,
             crt,
             size,
             scene,
@@ -50,6 +60,29 @@ impl SceneRenderer {
 
     pub fn size(&self) -> (u32, u32) {
         self.size
+    }
+
+    /// Where the map is drawn in the scene (pixels): the top half.
+    pub fn map_viewport(&self) -> Viewport {
+        let (w, h) = (self.size.0 as f32, self.size.1 as f32);
+        Viewport {
+            x: 0.0,
+            y: 0.0,
+            w,
+            h: (h / 2.0).floor().max(1.0),
+        }
+    }
+
+    /// Where the slice is drawn in the scene (pixels): the bottom half.
+    pub fn slice_viewport(&self) -> Viewport {
+        let (w, h) = (self.size.0 as f32, self.size.1 as f32);
+        let top = (h / 2.0).floor();
+        Viewport {
+            x: 0.0,
+            y: top,
+            w,
+            h: (h - top).max(1.0),
+        }
     }
 
     /// Recreate the targets for a new size; returns true if anything changed (the output view
@@ -75,18 +108,40 @@ impl SceneRenderer {
         self.crt.read_output(device, queue)
     }
 
-    /// Encode one frame: map into the scene texture, then CRT into the output.
+    /// Encode one frame: map and slice into the scene texture, then CRT into the output.
+    #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
+        device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         events: &[MapEventInstance],
         style: &MapStyle,
+        slice_line: Option<MapSliceLine>,
+        slice: &SliceScene,
+        slice_style: &SliceStyle,
         crt: &CrtSettings,
         time: FrameTime,
     ) {
-        self.map
-            .draw(queue, encoder, &self.scene.view, self.size, events, style);
+        let (map_vp, slice_vp) = (self.map_viewport(), self.slice_viewport());
+        self.map.draw(
+            queue,
+            encoder,
+            &self.scene.view,
+            map_vp,
+            events,
+            style,
+            slice_line,
+        );
+        self.slice.draw(
+            device,
+            queue,
+            encoder,
+            &self.scene.view,
+            slice_vp,
+            slice,
+            slice_style,
+        );
         self.crt.draw(queue, encoder, self.size, crt, time);
     }
 }

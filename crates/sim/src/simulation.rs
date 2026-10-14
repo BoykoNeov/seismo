@@ -3,13 +3,17 @@
 use chrono::{DateTime, Utc};
 
 use crate::event::Event;
-use crate::tables::TravelTimeTable;
+use crate::raytrace::{RayTraceError, RayTracer};
+use crate::slice::{Boundary, SliceFans, named_boundaries};
+use crate::tables::{EarthModel, TravelTimeTable};
 
-/// Events and the table their waves are timed by. Pure: `state_at` depends only on the
-/// events, the table and `now`.
+/// Events, the table their surface arrivals are timed by, and the velocity model their rays
+/// are traced through. Pure: `state_at` depends only on the events, the table and `now`.
 #[derive(Debug, Clone)]
 pub struct Simulation {
     table: TravelTimeTable,
+    tracer: RayTracer,
+    boundaries: Vec<Boundary>,
     pub events: Vec<Event>,
 }
 
@@ -43,12 +47,36 @@ pub struct MapEvent {
 }
 
 impl Simulation {
-    pub fn new(table: TravelTimeTable, events: Vec<Event>) -> Self {
-        Self { table, events }
+    pub fn new(
+        table: TravelTimeTable,
+        model: EarthModel,
+        events: Vec<Event>,
+    ) -> Result<Self, RayTraceError> {
+        Ok(Self {
+            table,
+            tracer: RayTracer::new(&model)?,
+            boundaries: named_boundaries(&model),
+            events,
+        })
     }
 
     pub fn table(&self) -> &TravelTimeTable {
         &self.table
+    }
+
+    pub fn tracer(&self) -> &RayTracer {
+        &self.tracer
+    }
+
+    /// Named discontinuities of the velocity model (Moho, 410, 660, CMB, ICB).
+    pub fn boundaries(&self) -> &[Boundary] {
+        &self.boundaries
+    }
+
+    /// Ray fans for the slice view from a source at `depth_km`. Takes a fraction of a second;
+    /// callers cache the result per depth.
+    pub fn slice_fans(&self, depth_km: f64) -> SliceFans {
+        SliceFans::build(&self.tracer, depth_km)
     }
 
     /// The state of every event at `now`.
@@ -134,8 +162,15 @@ mod tests {
         Utc.with_ymd_and_hms(2011, 3, 11, 5, 46, 24).unwrap()
     }
 
+    static MODEL: &[u8] = include_bytes!("../../../assets/ak135_model.csv");
+
     fn sim(events: Vec<Event>) -> Simulation {
-        Simulation::new(TravelTimeTable::from_bytes(TABLE).unwrap(), events)
+        Simulation::new(
+            TravelTimeTable::from_bytes(TABLE).unwrap(),
+            EarthModel::from_bytes(MODEL).unwrap(),
+            events,
+        )
+        .unwrap()
     }
 
     fn tohoku() -> Event {
