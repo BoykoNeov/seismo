@@ -4,21 +4,33 @@
 
 mod clock;
 mod mantle;
+mod traces;
 
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context as _, anyhow};
 use chrono::{DateTime, TimeZone, Utc};
 use eframe::{egui, wgpu};
+use sim::mantle::DelayGrid;
+use sim::seismogram::Component;
 use sim::slice::{PhaseLabel, SliceFans, SliceLine};
 use sim::tables::{EarthModel, TravelTimeTable};
-use sim::{EARTH_RADIUS_KM, Event, EventKind, RayPhase, Simulation, Wave};
+use sim::{EARTH_RADIUS_KM, Event, EventKind, RayPhase, Simulation, Wave, azimuth_deg};
 
 use clock::{MAX_SPEED, MIN_SPEED, SimClock, secs};
 use mantle::{BendKey, CutKey, MantleWorker, Ready};
+use traces::{MAX_TRACES, Traces};
 
 static TABLE_BYTES: &[u8] = include_bytes!("../../../assets/ak135.tt");
 static MODEL_BYTES: &[u8] = include_bytes!("../../../assets/ak135_model.csv");
+static STATIONS_BYTES: &[u8] = include_bytes!("../../../assets/stations.csv");
+
+/// Narrowest traces column (points) beside the map and slice.
+const MIN_TRACES_WIDTH: f32 = 260.0;
+/// A click within this many points of a station marker picks the station.
+const PICK_RADIUS: f32 = 9.0;
 
 /// Largest 3D-mantle strength offered (×real).
 const MAX_MANTLE_STRENGTH: f32 = 20.0;
@@ -114,6 +126,12 @@ struct SeismoApp {
     /// Ray fans bent through the 3D mantle, for the slice as it was when asked for.
     bent: Option<(BendKey, SliceFans)>,
     slice: SliceSettings,
+    /// Virtual seismograph stations and their traces.
+    traces: Traces,
+    trace_style: render::TraceStyle,
+    /// CPU copies of the events' 3D-mantle delays (the map has them on the GPU), so traces put
+    /// P and S where the map does.
+    delay_grids: HashMap<usize, Arc<DelayGrid>>,
     clock: SimClock,
     selected: usize,
     renderer: render::SceneRenderer,
@@ -127,6 +145,8 @@ struct SeismoApp {
     frame_time_s: f64,
     /// `--capture <file.ppm>` / `--capture-after <s>`: save the scene once, then quit.
     capture: Option<(std::path::PathBuf, f64)>,
+    /// `--capture-ui <file.ppm>`: the whole window, egui text included; true once asked for.
+    capture_ui: Option<(std::path::PathBuf, f64, bool)>,
 }
 
 impl SeismoApp {
@@ -155,8 +175,11 @@ impl SeismoApp {
 
         cc.egui_ctx.set_visuals(phosphor_visuals());
 
+        let stations = sim::parse_stations(STATIONS_BYTES).context("embedded stations.csv")?;
         let events = vec![tohoku()];
         let sim = Simulation::new(table, model, events).context("ray tracer")?;
+        let mut traces = Traces::new(stations);
+        traces.pick_defaults(&sim.events[0]);
         let mantle = MantleWorker::spawn(sim.tracer().clone(), sim.boundaries().to_vec());
         // Debug/screenshot flags:
         //   --start-offset <s>  start the clock that many seconds after the event's origin
@@ -178,6 +201,13 @@ impl SeismoApp {
                 .unwrap_or(3.0);
             (std::path::PathBuf::from(p), after)
         });
+        //   --capture-ui <file.ppm>  the same for the whole window, controls and labels included
+        let capture_ui = arg("--capture-ui").map(|p| {
+            let after = arg("--capture-after")
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(3.0);
+            (std::path::PathBuf::from(p), after, false)
+        });
         //   --mantle <x>        3D-mantle strength (0 = 1D, 1 = real)
         let mut style = render::MapStyle::default();
         if let Some(x) = arg("--mantle").and_then(|s| s.parse::<f32>().ok()) {
@@ -197,6 +227,15 @@ impl SeismoApp {
                 _ => {}
             }
         }
+        //   --traces <list>     comma-separated: off, side (transverse), shared (one scale)
+        for flag in arg("--traces").unwrap_or_default().split(',') {
+            match flag {
+                "off" => traces.show = false,
+                "side" => traces.component = Component::Transverse,
+                "shared" => traces.shared_scale = true,
+                _ => {}
+            }
+        }
         let now = Instant::now();
         Ok(Self {
             sim,
@@ -204,6 +243,9 @@ impl SeismoApp {
             fans: None,
             bent: None,
             slice,
+            traces,
+            trace_style: render::TraceStyle::default(),
+            delay_grids: HashMap::new(),
             clock,
             selected: 0,
             renderer,
@@ -215,6 +257,7 @@ impl SeismoApp {
             last_seek_count: 0,
             frame_time_s: 1.0 / 60.0,
             capture,
+            capture_ui,
         })
     }
 
@@ -303,6 +346,103 @@ impl SeismoApp {
              Shown: from the epicentre along the azimuth to the antipode. Brighter rock is \
              faster (±1% spans the shading). With the 3D mantle on, rays bend through the \
              rock in the plane of the cut.",
+        );
+    }
+
+    fn trace_controls(&mut self, ui: &mut egui::Ui) {
+        let event = self.sim.events[self.selected].clone();
+        let tr = &mut self.traces;
+        ui.checkbox(&mut tr.show, "show traces");
+        ui.horizontal(|ui| {
+            ui.label("shaking:");
+            ui.radio_value(&mut tr.component, Component::Vertical, "up-down");
+            ui.radio_value(&mut tr.component, Component::Transverse, "side-to-side");
+        });
+        ui.horizontal(|ui| {
+            ui.label("scale:");
+            ui.radio_value(&mut tr.shared_scale, false, "each row");
+            ui.radio_value(&mut tr.shared_scale, true, "shared");
+        });
+        ui.add(
+            egui::Slider::new(&mut tr.gain, 0.25..=20.0)
+                .logarithmic(true)
+                .text("gain")
+                .max_decimals(2),
+        );
+        ui.add(
+            egui::Slider::new(&mut tr.window_min, 5.0..=120.0)
+                .text("window min")
+                .max_decimals(0),
+        );
+        ui.checkbox(&mut tr.click_to_place, "click empty map: add a station");
+
+        // Shown stations, nearest first, each with aim-the-slice and remove buttons.
+        let mut rows: Vec<(usize, f64)> = tr
+            .chosen
+            .iter()
+            .map(|&i| {
+                let s = &tr.stations[i];
+                (i, sim::great_circle_deg(event.lat, event.lon, s.lat, s.lon))
+            })
+            .collect();
+        rows.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let (mut toggle, mut delete, mut aim) = (None, None, None);
+        for (i, dist) in rows {
+            let s = &tr.stations[i];
+            ui.horizontal(|ui| {
+                ui.monospace(format!("{:<9}{dist:6.1}°", s.label()));
+                if ui
+                    .small_button("aim")
+                    .on_hover_text("Turn the slice towards this station")
+                    .clicked()
+                {
+                    aim = Some(azimuth_deg(event.lat, event.lon, s.lat, s.lon));
+                }
+                if ui.small_button("hide").clicked() {
+                    toggle = Some(i);
+                }
+                if s.is_user() && ui.small_button("delete").clicked() {
+                    delete = Some(i);
+                }
+            });
+        }
+        egui::ComboBox::from_id_salt("add station")
+            .selected_text("add a station…")
+            .width(220.0)
+            .show_ui(ui, |ui| {
+                for (i, s) in tr.stations.iter().enumerate() {
+                    if !tr.chosen.contains(&i)
+                        && ui
+                            .selectable_label(false, format!("{} {}", s.label(), s.name))
+                            .clicked()
+                    {
+                        toggle = Some(i);
+                    }
+                }
+            });
+        if ui.button("Default stations").clicked() {
+            tr.pick_defaults(&event);
+        }
+        if let Some(i) = toggle {
+            tr.toggle(i);
+        }
+        if let Some(i) = delete {
+            tr.remove_user(i);
+        }
+        if let Some(az) = aim {
+            self.slice.azimuth_deg = az;
+        }
+        let tr = &self.traces;
+        if let Some(note) = &tr.note {
+            ui.colored_label(GREEN, note);
+        }
+        ui.colored_label(
+            GREEN_DIM,
+            format!(
+                "Synthetic traces: display-plausible, not waveform-accurate. Up to {MAX_TRACES}. \
+                 Click a station on the map to show or hide it. Triangles: real stations \
+                 (Global Seismographic Network); diamonds: yours. Ticks mark arrivals."
+            ),
         );
     }
 
@@ -448,6 +588,10 @@ impl SeismoApp {
                 });
             });
 
+        egui::CollapsingHeader::new("Seismographs")
+            .default_open(true)
+            .show(ui, |ui| self.trace_controls(ui));
+
         egui::CollapsingHeader::new("Slice")
             .default_open(true)
             .show(ui, |ui| self.slice_controls(ui));
@@ -472,17 +616,35 @@ impl SeismoApp {
             return;
         };
 
-        // Largest square in the available space, centred: the 2:1 map above the 2:1 slice.
+        // A square block (the 2:1 map above the 2:1 slice), with the traces column filling the
+        // rest of the width; without traces, the largest square, centred.
         let avail = ui.available_rect_before_wrap();
-        let w = avail.width().min(avail.height()).max(1.0);
-        let rect = egui::Rect::from_center_size(avail.center(), egui::vec2(w, w));
+        let (rect, traces_pts) = if self.traces.show {
+            let side = avail
+                .height()
+                .min(avail.width() - MIN_TRACES_WIDTH)
+                .max(1.0);
+            let traces_w = (avail.width() - side).max(0.0);
+            let rect = egui::Rect::from_min_size(
+                egui::pos2(avail.left(), avail.center().y - side / 2.0),
+                egui::vec2(side + traces_w, side),
+            );
+            (rect, traces_w)
+        } else {
+            let w = avail.width().min(avail.height()).max(1.0);
+            (
+                egui::Rect::from_center_size(avail.center(), egui::vec2(w, w)),
+                0.0,
+            )
+        };
         let ppp = ui.ctx().pixels_per_point();
         let px = (
             (rect.width() * ppp).round() as u32,
             (rect.height() * ppp).round() as u32,
         );
+        let traces_px = (traces_pts * ppp).round() as u32;
 
-        if self.renderer.resize(&rs.device, px) {
+        if self.renderer.resize(&rs.device, px, traces_px) {
             tracing::debug!(w = px.0, h = px.1, "scene resized");
             rs.renderer.write().update_egui_texture_from_wgpu_texture(
                 &rs.device,
@@ -513,8 +675,9 @@ impl SeismoApp {
         }
         for ready in self.mantle.collect(&on_map) {
             match ready {
-                Ready::Delays { slot, grid } => {
-                    self.renderer.map.upload_delays(&rs.queue, slot, &grid)
+                Ready::Delays { event, slot, grid } => {
+                    self.renderer.map.upload_delays(&rs.queue, slot, &grid);
+                    self.delay_grids.insert(event, Arc::new(grid));
                 }
                 Ready::Cut(grid) => self.renderer.slice.upload_cut(&rs.queue, &grid),
                 Ready::Bend(key, fans) => self.bent = Some((key, fans)),
@@ -605,6 +768,104 @@ impl SeismoApp {
             rock_shading,
         };
 
+        // Traces: rebuilt when their inputs change, squeezed to the column's pixels each frame
+        // and drawn up to the pen (now).
+        if !self.traces.user_picked && self.traces.chosen.is_empty() {
+            self.traces.pick_defaults(&self.sim.events[self.selected]);
+        }
+        self.traces.update(
+            &self.sim,
+            self.selected,
+            &self.delay_grids,
+            f64::from(self.style.mantle_strength),
+        );
+        let trace_vp = self.renderer.traces_viewport();
+        let shown = self.traces.shown();
+        let layout = render::TraceLayout::new(
+            trace_vp.map_or((1.0, 1.0), |v| (v.w, v.h)),
+            shown.len(),
+            ppp,
+        );
+        let (from, to) = self.traces.window();
+        let frac = |s: f64| ((s - from) / (to - from)) as f32;
+        let shared = shown.iter().fold(0.0f32, |m, t| m.max(t.seismogram.peak));
+        let component = self.traces.component;
+        let columns: Vec<Vec<[f32; 2]>> = shown
+            .iter()
+            .map(|tr| {
+                let scale = if self.traces.shared_scale {
+                    shared
+                } else {
+                    tr.seismogram.peak
+                };
+                tr.seismogram.columns(from, to, layout.columns(), t, scale)
+            })
+            .collect();
+        // Arrivals this component shows, inside the window: ticks, and labels for the overlay.
+        let picks: Vec<Vec<(f32, &'static str)>> = shown
+            .iter()
+            .map(|tr| {
+                tr.arrivals
+                    .iter()
+                    .filter(|a| a.motion.weight(component) > 0.0)
+                    .map(|a| (frac(a.time_s), a.phase))
+                    .filter(|(f, _)| (0.0..=1.0).contains(f))
+                    .collect()
+            })
+            .collect();
+        let ticks: Vec<Vec<f32>> = picks
+            .iter()
+            .map(|p| p.iter().map(|(f, _)| *f).collect())
+            .collect();
+        let rows: Vec<render::TraceRow> = columns
+            .iter()
+            .zip(&ticks)
+            .map(|(c, k)| render::TraceRow {
+                columns: c,
+                ticks: k,
+            })
+            .collect();
+        let step_s = if to - from > 40.0 * 60.0 {
+            600.0
+        } else {
+            120.0
+        };
+        let grid_times: Vec<f64> = (0..)
+            .map(|k| k as f64 * step_s)
+            .take_while(|&s| s <= to)
+            .collect();
+        let grid: Vec<f32> = grid_times.iter().map(|&s| frac(s)).collect();
+        let trace_scene = render::TraceScene {
+            rows: &rows,
+            gain: self.traces.gain,
+            pen: Some(frac(t)),
+            grid: &grid,
+            px_per_pt: ppp,
+        };
+        let trace_labels: Vec<TraceLabel> = shown
+            .iter()
+            .zip(picks)
+            .map(|(tr, picks)| {
+                let s = &self.traces.stations[tr.station];
+                TraceLabel {
+                    text: format!("{}  {:.1}°  {}", s.label(), tr.dist_deg, s.name),
+                    picks,
+                }
+            })
+            .collect();
+        let markers: Vec<render::MapMarker> = self
+            .traces
+            .stations
+            .iter()
+            .enumerate()
+            .map(|(i, s)| render::MapMarker {
+                lat: s.lat as f32,
+                lon: s.lon as f32,
+                selected: self.traces.chosen.contains(&i),
+                user: s.is_user(),
+            })
+            .collect();
+
         let seek = self.clock.seek_count();
         let time = render::FrameTime {
             dt_s: real_dt as f32,
@@ -625,8 +886,11 @@ impl SeismoApp {
             &events,
             &self.style,
             slice_line,
+            &markers,
             &slice_scene,
             &self.slice.style,
+            &trace_scene,
+            &self.trace_style,
             &self.crt,
             time,
         );
@@ -645,11 +909,16 @@ impl SeismoApp {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
-        ui.put(
+        let response = ui.put(
             rect,
-            egui::Image::new(egui::load::SizedTexture::new(self.texture_id, rect.size())),
+            egui::Image::new(egui::load::SizedTexture::new(self.texture_id, rect.size()))
+                .sense(egui::Sense::click()),
         );
         self.slice_labels(ui, rect, &labels);
+        if let Some(vp) = trace_vp {
+            self.trace_labels(ui, rect, vp, &layout, &trace_labels, &grid_times, from, to);
+        }
+        self.station_picking(ui, rect, &response);
         if self.style.mantle_strength > 1.0 {
             let map_h = self.renderer.map_viewport().h * rect.width()
                 / self.renderer.size().0.max(1) as f32;
@@ -659,6 +928,183 @@ impl SeismoApp {
                 format!("3D MANTLE EXAGGERATED ×{:.1}", self.style.mantle_strength),
                 egui::FontId::monospace(13.0),
                 GREEN,
+            );
+        }
+    }
+
+    /// The map's projection and where its viewport sits in UI points.
+    fn map_frame(&self, rect: egui::Rect) -> (render::MapProjection, egui::Pos2, f32) {
+        let vp = self.renderer.map_viewport();
+        let scale = rect.width() / self.renderer.size().0.max(1) as f32;
+        (
+            render::MapProjection { size: (vp.w, vp.h) },
+            rect.min + egui::vec2(vp.x, vp.y) * scale,
+            scale,
+        )
+    }
+
+    /// The station whose map marker is under `pos` (UI points), if any.
+    fn station_at(&self, rect: egui::Rect, pos: egui::Pos2) -> Option<usize> {
+        let (proj, origin, scale) = self.map_frame(rect);
+        self.traces
+            .stations
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let [x, y] = proj.pixel(s.lat, s.lon);
+                (i, (origin + egui::vec2(x, y) * scale).distance(pos))
+            })
+            .filter(|(_, d)| *d <= PICK_RADIUS)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(i, _)| i)
+    }
+
+    /// Map clicks show or hide a station's trace, or place a new station; hovering a marker
+    /// names it. Shown stations are labelled on the map.
+    fn station_picking(&mut self, ui: &egui::Ui, rect: egui::Rect, response: &egui::Response) {
+        let (proj, origin, scale) = self.map_frame(rect);
+        let painter = ui.painter_at(rect);
+        let font = egui::FontId::monospace(11.0);
+        for &i in &self.traces.chosen {
+            let s = &self.traces.stations[i];
+            let [x, y] = proj.pixel(s.lat, s.lon);
+            painter.text(
+                origin + egui::vec2(x, y) * scale + egui::vec2(7.0, 0.0),
+                egui::Align2::LEFT_CENTER,
+                &s.code,
+                font.clone(),
+                GREEN,
+            );
+        }
+        if let Some(pos) = response.hover_pos()
+            && let Some(i) = self.station_at(rect, pos)
+        {
+            let s = &self.traces.stations[i];
+            painter.text(
+                pos + egui::vec2(10.0, -10.0),
+                egui::Align2::LEFT_BOTTOM,
+                format!("{}  {}", s.label(), s.name),
+                font,
+                GREEN,
+            );
+        }
+        if !response.clicked() || !self.traces.show {
+            return;
+        }
+        let Some(pos) = response.interact_pointer_pos() else {
+            return;
+        };
+        if let Some(i) = self.station_at(rect, pos) {
+            self.traces.toggle(i);
+        } else if self.traces.click_to_place {
+            // Scene pixels; the scene has no barrel distortion yet to undo.
+            let px = (pos - origin) / scale;
+            if let Some((lat, lon)) = proj.lat_lon([px.x, px.y]) {
+                self.traces.place(lat, lon);
+            }
+        }
+    }
+
+    /// Text over the traces column: title, station names, phase names at their ticks, and the
+    /// time axis.
+    #[allow(clippy::too_many_arguments)]
+    fn trace_labels(
+        &self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        vp: render::Viewport,
+        layout: &render::TraceLayout,
+        rows: &[TraceLabel],
+        grid_times: &[f64],
+        from: f64,
+        to: f64,
+    ) {
+        let scale = rect.width() / self.renderer.size().0.max(1) as f32;
+        let to_ui = |x: f32, y: f32| rect.min + egui::vec2(x + vp.x, y + vp.y) * scale;
+        let painter = ui.painter_at(rect);
+        let font = egui::FontId::monospace(11.0);
+        let small = egui::FontId::monospace(9.5);
+        let component = match self.traces.component {
+            Component::Vertical => "UP-DOWN (Z)",
+            Component::Transverse => "SIDE-TO-SIDE (T)",
+        };
+        let scaling = if self.traces.shared_scale {
+            "shared scale"
+        } else {
+            "each row scaled"
+        };
+        let header = to_ui(layout.plot_x().0, 0.0);
+        painter.text(
+            header + egui::vec2(0.0, 3.0),
+            egui::Align2::LEFT_TOP,
+            format!("SEISMOGRAMS  {component}  {scaling}"),
+            font.clone(),
+            GREEN,
+        );
+        painter.text(
+            header + egui::vec2(0.0, 17.0),
+            egui::Align2::LEFT_TOP,
+            "synthetic: display-plausible, not waveform-accurate",
+            small.clone(),
+            GREEN_DIM,
+        );
+        if rows.is_empty() {
+            painter.text(
+                to_ui(layout.plot_x().0, layout.label_y(0) + 8.0),
+                egui::Align2::LEFT_TOP,
+                "No stations chosen: click one on the map.",
+                font.clone(),
+                GREEN_DIM,
+            );
+        }
+        for (i, row) in rows.iter().enumerate() {
+            painter.text(
+                to_ui(layout.plot_x().0, layout.label_y(i)),
+                egui::Align2::LEFT_TOP,
+                &row.text,
+                font.clone(),
+                GREEN_DIM,
+            );
+            // Phase names at their ticks, skipping any that would overlap the previous one.
+            let (base, half) = layout.band(i);
+            let mut last_x = f32::NEG_INFINITY;
+            for &(f, name) in &row.picks {
+                let x = layout.x_at(f);
+                if (x - last_x) * scale < 26.0 {
+                    continue;
+                }
+                last_x = x;
+                painter.text(
+                    to_ui(x + 2.0, base - half),
+                    egui::Align2::LEFT_TOP,
+                    name,
+                    small.clone(),
+                    GREEN_DIM,
+                );
+            }
+        }
+        let frac = |s: f64| ((s - from) / (to - from)) as f32;
+        for &s in grid_times {
+            let label = if s == 0.0 {
+                "origin".to_owned()
+            } else {
+                format!("+{:.0} min", s / 60.0)
+            };
+            // Labels at the ends of the axis lean inwards so they stay on screen.
+            let f = frac(s);
+            let align = if f < 0.05 {
+                egui::Align2::LEFT_TOP
+            } else if f > 0.95 {
+                egui::Align2::RIGHT_TOP
+            } else {
+                egui::Align2::CENTER_TOP
+            };
+            painter.text(
+                to_ui(layout.x_at(f), layout.axis_y()) + egui::vec2(0.0, 6.0),
+                align,
+                label,
+                small.clone(),
+                GREEN_DIM,
             );
         }
     }
@@ -738,6 +1184,12 @@ impl SeismoApp {
     }
 }
 
+/// Overlay text for one trace row: the station line and its phases at their ticks.
+struct TraceLabel {
+    text: String,
+    picks: Vec<(f32, &'static str)>,
+}
+
 fn phase_index(phase: RayPhase) -> usize {
     RayPhase::ALL
         .iter()
@@ -757,13 +1209,44 @@ impl eframe::App for SeismoApp {
             .resizable(false)
             .exact_size(260.0)
             .show(ui, |ui| {
-                self.controls(ui);
+                egui::ScrollArea::vertical().show(ui, |ui| self.controls(ui));
             });
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(BACKGROUND))
             .show(ui, |ui| self.scene(ui, frame, real_dt));
 
+        self.capture_window(ui.ctx());
         ui.ctx().request_repaint();
+    }
+}
+
+impl SeismoApp {
+    /// `--capture-ui`: ask egui for a screenshot of the window once it is due, save it when it
+    /// arrives, then quit.
+    fn capture_window(&mut self, ctx: &egui::Context) {
+        let Some((path, after, asked)) = &mut self.capture_ui else {
+            return;
+        };
+        if !*asked && self.started.elapsed().as_secs_f64() >= *after {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
+            *asked = true;
+        }
+        let image = ctx.input(|i| {
+            i.raw.events.iter().find_map(|e| match e {
+                egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                _ => None,
+            })
+        });
+        if let Some(image) = image {
+            let [w, h] = image.size;
+            let rgba: Vec<u8> = image.pixels.iter().flat_map(|c| c.to_array()).collect();
+            match write_ppm(path, w as u32, h as u32, &rgba) {
+                Ok(()) => tracing::info!(path = %path.display(), w, h, "captured window"),
+                Err(e) => tracing::error!(path = %path.display(), "capture failed: {e}"),
+            }
+            self.capture_ui = None;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
     }
 }
 

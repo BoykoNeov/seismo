@@ -1,5 +1,5 @@
-// Slice pass, lines: wavefronts and ray paths as anti-aliased quads (one quad per polyline
-// segment, built on the CPU per ray, not per pixel). Blended with max so overlaps do not
+// Lines for the slice, traces and map markers: anti-aliased quads (one quad per polyline
+// segment, built on the CPU per line, not per pixel). Blended with max so overlaps do not
 // brighten.
 
 struct Uniforms {

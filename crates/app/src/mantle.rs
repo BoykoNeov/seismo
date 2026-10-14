@@ -89,8 +89,12 @@ enum Output {
 
 /// A result ready to upload.
 pub enum Ready {
-    /// An event's map delays, for GPU slot `slot`.
-    Delays { slot: u32, grid: DelayGrid },
+    /// `event`'s map delays, for GPU slot `slot`.
+    Delays {
+        event: usize,
+        slot: u32,
+        grid: DelayGrid,
+    },
     /// The rock grid for the slice as it is now.
     Cut(CutGrid),
     /// Bent ray fans for the slice as it is now.
@@ -308,6 +312,7 @@ impl MantleWorker {
                             }
                             self.slots[i] = Some((event, grid.max_abs_s));
                             out.push(Ready::Delays {
+                                event,
                                 slot: i as u32,
                                 grid,
                             });

@@ -1,9 +1,11 @@
-//! Map pass: equirectangular graticule, epicentres and table-driven wavefronts.
+//! Map pass: equirectangular graticule, epicentres and table-driven wavefronts, with the
+//! seismograph stations marked on top.
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
 use crate::gpu;
+use crate::lines::{DASH_SOLID, LineBatch, LineVertex, push_polyline};
 use sim::mantle::{
     DELAY_AZ_COUNT, DELAY_AZ_STEP_DEG, DELAY_DIST_COUNT, DELAY_DIST_STEP_DEG, DELAY_PHASES,
     DelayGrid,
@@ -37,6 +39,68 @@ pub struct MapSliceLine {
     pub lon: f32,
     /// Degrees clockwise from north.
     pub azimuth_deg: f32,
+}
+
+/// The map's equirectangular projection over a viewport of `size` pixels: longitude -180 deg at
+/// the left edge to 180 deg at the right, latitude 90 deg at the top to -90 deg at the bottom.
+/// The same mapping as `fs_main` in `map.wgsl`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MapProjection {
+    pub size: (f32, f32),
+}
+
+impl MapProjection {
+    /// Viewport pixel (y down) of a point.
+    pub fn pixel(&self, lat: f64, lon: f64) -> [f32; 2] {
+        [
+            ((lon + 180.0) / 360.0) as f32 * self.size.0,
+            ((90.0 - lat) / 180.0) as f32 * self.size.1,
+        ]
+    }
+
+    /// Latitude and longitude (deg) under a viewport pixel, or `None` off the map. The scene
+    /// has no barrel distortion yet; when the CRT pass gets one, a pick must undo it before
+    /// calling this.
+    pub fn lat_lon(&self, px: [f32; 2]) -> Option<(f64, f64)> {
+        let (u, v) = (px[0] / self.size.0, px[1] / self.size.1);
+        if !(0.0..=1.0).contains(&u) || !(0.0..=1.0).contains(&v) {
+            return None;
+        }
+        let lon = f64::from(u) * 360.0 - 180.0;
+        let lat = 90.0 - f64::from(v) * 180.0;
+        Some((lat, sim::normalise_lon(lon)))
+    }
+}
+
+/// A seismograph station marked on the map: a triangle for a bundled station, a diamond for a
+/// user-placed one; larger and brighter when its trace is shown.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MapMarker {
+    pub lat: f32,
+    pub lon: f32,
+    pub selected: bool,
+    pub user: bool,
+}
+
+fn marker_vertices(projection: &MapProjection, markers: &[MapMarker]) -> Vec<LineVertex> {
+    let mut out = Vec::new();
+    for m in markers {
+        let [x, y] = projection.pixel(f64::from(m.lat), f64::from(m.lon));
+        let (r, intensity) = if m.selected { (6.0, 1.0) } else { (3.5, 0.45) };
+        let shape: Vec<[f32; 2]> = if m.user {
+            vec![[x, y - r], [x + r, y], [x, y + r], [x - r, y], [x, y - r]]
+        } else {
+            let h = 0.5 * r;
+            vec![
+                [x, y - r],
+                [x + 0.87 * r, y + h],
+                [x - 0.87 * r, y + h],
+                [x, y - r],
+            ]
+        };
+        push_polyline(&mut out, &shape, 0.5, intensity, DASH_SOLID);
+    }
+    out
 }
 
 /// Look of the map pass.
@@ -92,6 +156,7 @@ struct Uniforms {
 
 pub struct MapPass {
     pipeline: wgpu::RenderPipeline,
+    markers: LineBatch,
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     delay_texture: wgpu::Texture,
@@ -171,6 +236,7 @@ impl MapPass {
         let layer = |name: &str| table.phase_index(name).map_or(-1.0, |i| i as f32);
         Self {
             pipeline,
+            markers: LineBatch::new(device, "map markers"),
             uniform_buffer,
             bind_group,
             delay_texture,
@@ -218,7 +284,8 @@ impl MapPass {
     /// [`MAX_MAP_EVENTS`] events are drawn; the caller culls and orders them.
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
-        &self,
+        &mut self,
+        device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         target: &wgpu::TextureView,
@@ -226,7 +293,17 @@ impl MapPass {
         events: &[MapEventInstance],
         style: &MapStyle,
         slice: Option<MapSliceLine>,
+        markers: &[MapMarker],
     ) {
+        let projection = MapProjection {
+            size: (viewport.w, viewport.h),
+        };
+        self.markers.upload(
+            device,
+            queue,
+            projection.size,
+            &marker_vertices(&projection, markers),
+        );
         let n = events.len().min(MAX_MAP_EVENTS);
         let mut gpu_events = [GpuEvent::zeroed(); MAX_MAP_EVENTS];
         for (g, e) in gpu_events.iter_mut().zip(&events[..n]) {
@@ -280,6 +357,7 @@ impl MapPass {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.draw(0..3, 0..1);
+        self.markers.draw(&mut pass);
     }
 }
 
@@ -320,4 +398,49 @@ fn upload_table(
         dimension: Some(wgpu::TextureViewDimension::D2Array),
         ..Default::default()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn projection_round_trips_and_matches_the_shader() {
+        let p = MapProjection {
+            size: (1000.0, 500.0),
+        };
+        assert_eq!(p.pixel(90.0, -180.0), [0.0, 0.0]);
+        assert_eq!(p.pixel(0.0, 0.0), [500.0, 250.0]);
+        for (lat, lon) in [(34.9, -106.5), (-41.3, 174.7), (0.0, -180.0), (89.0, 0.1)] {
+            let (la, lo) = p.lat_lon(p.pixel(lat, lon)).unwrap();
+            assert!(
+                (la - lat).abs() < 1e-3 && (lo - lon).abs() < 1e-3,
+                "{lat},{lon}"
+            );
+        }
+        assert!(p.lat_lon([-1.0, 10.0]).is_none());
+        assert!(p.lat_lon([10.0, 501.0]).is_none());
+        // The right edge is 180 deg, normalised to -180.
+        assert_eq!(p.lat_lon([1000.0, 250.0]).unwrap().1, -180.0);
+    }
+
+    #[test]
+    fn markers_grow_when_selected() {
+        let p = MapProjection {
+            size: (360.0, 180.0),
+        };
+        let m = |selected, user| MapMarker {
+            lat: 0.0,
+            lon: 0.0,
+            selected,
+            user,
+        };
+        let extent =
+            |v: Vec<LineVertex>| v.iter().fold(0.0f32, |e, q| e.max((q.pos[1] - 90.0).abs()));
+        assert!(
+            extent(marker_vertices(&p, &[m(true, false)]))
+                > extent(marker_vertices(&p, &[m(false, false)]))
+        );
+        assert_eq!(marker_vertices(&p, &[m(false, true)]).len(), 4 * 6);
+    }
 }

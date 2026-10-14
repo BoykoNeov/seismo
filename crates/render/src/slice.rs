@@ -13,6 +13,7 @@ use sim::slice::{Boundary, SliceLine};
 use sim::{EARTH_RADIUS_KM, RayPhase, Wave};
 
 use crate::gpu;
+use crate::lines::{DASH_DASHED, DASH_DOTTED, DASH_SOLID, LineBatch, LineVertex, push_polyline};
 
 /// Most boundaries the disc shader draws; matches `rings_a` + `rings_b` in `slice_disc.wgsl`.
 pub const MAX_SLICE_BOUNDARIES: usize = 8;
@@ -136,64 +137,6 @@ struct DiscUniforms {
     rock_axis: [f32; 4],
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct LineUniforms {
-    view: [f32; 4],
-    phosphor: [f32; 4],
-    background: [f32; 4],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
-struct LineVertex {
-    pos: [f32; 2],
-    along_across: [f32; 2],
-    params: [f32; 4],
-}
-
-const DASH_SOLID: f32 = 0.0;
-const DASH_DASHED: f32 = 1.0;
-const DASH_DOTTED: f32 = 2.0;
-
-/// Append one anti-aliased quad per segment of `points` (viewport pixels). Each quad reaches
-/// one pixel beyond the half width for the soft edge and overlaps its neighbours at the
-/// joints; the max blend hides the overlap.
-fn push_polyline(
-    out: &mut Vec<LineVertex>,
-    points: &[[f32; 2]],
-    half_w: f32,
-    intensity: f32,
-    dash: f32,
-) {
-    let ext = half_w + 1.0;
-    let mut along = 0.0f32;
-    for w in points.windows(2) {
-        let (a, b) = (w[0], w[1]);
-        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
-        let len = dx.hypot(dy);
-        if len < 1e-3 {
-            continue;
-        }
-        let (ux, uy) = (dx / len, dy / len);
-        let (nx, ny) = (-uy, ux);
-        let v = |p: [f32; 2], s_along: f32, s_across: f32, along_px: f32| LineVertex {
-            pos: [
-                p[0] + ux * s_along + nx * s_across,
-                p[1] + uy * s_along + ny * s_across,
-            ],
-            along_across: [along_px, s_across],
-            params: [half_w, intensity, dash, 0.0],
-        };
-        let a0 = v(a, -ext, ext, along - ext);
-        let a1 = v(a, -ext, -ext, along - ext);
-        let b0 = v(b, ext, ext, along + len + ext);
-        let b1 = v(b, ext, -ext, along + len + ext);
-        out.extend_from_slice(&[a0, a1, b0, b0, a1, b1]);
-        along += len;
-    }
-}
-
 /// Build the vertex list for every layer.
 fn build_vertices(view: &SliceView, scene: &SliceScene, style: &SliceStyle) -> Vec<LineVertex> {
     let mut out = Vec::new();
@@ -220,27 +163,14 @@ fn build_vertices(view: &SliceView, scene: &SliceScene, style: &SliceStyle) -> V
 
 pub struct SlicePass {
     disc_pipeline: wgpu::RenderPipeline,
-    line_pipeline: wgpu::RenderPipeline,
     disc_uniforms: wgpu::Buffer,
-    line_uniforms: wgpu::Buffer,
     disc_bind_group: wgpu::BindGroup,
-    line_bind_group: wgpu::BindGroup,
     cut_texture: wgpu::Texture,
-    vertices: wgpu::Buffer,
-    vertex_capacity: usize,
+    lines: LineBatch,
 }
 
 impl SlicePass {
     pub fn new(device: &wgpu::Device) -> Self {
-        let uniform_layout = |label: &str, visibility| {
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some(label),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    visibility,
-                    ..gpu::uniform_entry(0)
-                }],
-            })
-        };
         let disc_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("slice disc"),
             entries: &[
@@ -248,10 +178,6 @@ impl SlicePass {
                 gpu::texture_entry(1, wgpu::TextureViewDimension::D2),
             ],
         });
-        let line_layout = uniform_layout(
-            "slice lines",
-            wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-        );
 
         let disc_pipeline = gpu::fullscreen_pipeline(
             device,
@@ -264,28 +190,13 @@ impl SlicePass {
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         );
-        let line_pipeline = line_pipeline(device, &line_layout);
 
-        let uniforms = |label: &str, size: usize| {
-            device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(label),
-                size: size as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            })
-        };
-        let disc_uniforms = uniforms("slice disc uniforms", size_of::<DiscUniforms>());
-        let line_uniforms = uniforms("slice line uniforms", size_of::<LineUniforms>());
-        let bind = |label: &str, layout: &wgpu::BindGroupLayout, buffer: &wgpu::Buffer| {
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some(label),
-                layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: buffer.as_entire_binding(),
-                }],
-            })
-        };
+        let disc_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("slice disc uniforms"),
+            size: size_of::<DiscUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let cut_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("slice rock"),
             size: wgpu::Extent3d {
@@ -315,18 +226,12 @@ impl SlicePass {
                 },
             ],
         });
-        let line_bind_group = bind("slice lines", &line_layout, &line_uniforms);
-        let vertex_capacity = 4096;
         Self {
             disc_pipeline,
-            line_pipeline,
             disc_uniforms,
-            line_uniforms,
             disc_bind_group,
-            line_bind_group,
             cut_texture,
-            vertices: vertex_buffer(device, vertex_capacity),
-            vertex_capacity,
+            lines: LineBatch::new(device, "slice lines"),
         }
     }
 
@@ -402,21 +307,9 @@ impl SlicePass {
             ],
         };
         queue.write_buffer(&self.disc_uniforms, 0, bytemuck::bytes_of(&disc));
-        let lines = LineUniforms {
-            view: [viewport.w, viewport.h, 0.0, 0.0],
-            phosphor: disc.phosphor,
-            background: disc.background,
-        };
-        queue.write_buffer(&self.line_uniforms, 0, bytemuck::bytes_of(&lines));
-
         let vertices = build_vertices(&view, scene, style);
-        if vertices.len() > self.vertex_capacity {
-            self.vertex_capacity = vertices.len().next_power_of_two();
-            self.vertices = vertex_buffer(device, self.vertex_capacity);
-        }
-        if !vertices.is_empty() {
-            queue.write_buffer(&self.vertices, 0, bytemuck::cast_slice(&vertices));
-        }
+        self.lines
+            .upload(device, queue, (viewport.w, viewport.h), &vertices);
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("slice"),
@@ -430,73 +323,8 @@ impl SlicePass {
         pass.set_pipeline(&self.disc_pipeline);
         pass.set_bind_group(0, &self.disc_bind_group, &[]);
         pass.draw(0..3, 0..1);
-        if !vertices.is_empty() {
-            pass.set_pipeline(&self.line_pipeline);
-            pass.set_bind_group(0, &self.line_bind_group, &[]);
-            pass.set_vertex_buffer(0, self.vertices.slice(..));
-            pass.draw(0..vertices.len() as u32, 0..1);
-        }
+        self.lines.draw(&mut pass);
     }
-}
-
-fn vertex_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("slice vertices"),
-        size: (capacity * size_of::<LineVertex>()) as u64,
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    })
-}
-
-fn line_pipeline(device: &wgpu::Device, layout: &wgpu::BindGroupLayout) -> wgpu::RenderPipeline {
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("slice lines"),
-        source: wgpu::ShaderSource::Wgsl(
-            include_str!("../../../assets/shaders/slice_lines.wgsl").into(),
-        ),
-    });
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some("slice lines"),
-        bind_group_layouts: &[Some(layout)],
-        immediate_size: 0,
-    });
-    let max = wgpu::BlendComponent {
-        src_factor: wgpu::BlendFactor::One,
-        dst_factor: wgpu::BlendFactor::One,
-        operation: wgpu::BlendOperation::Max,
-    };
-    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some("slice lines"),
-        layout: Some(&pipeline_layout),
-        vertex: wgpu::VertexState {
-            module: &module,
-            entry_point: Some("vs_main"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            buffers: &[Some(wgpu::VertexBufferLayout {
-                array_stride: size_of::<LineVertex>() as u64,
-                step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4],
-            })],
-        },
-        primitive: wgpu::PrimitiveState::default(),
-        depth_stencil: None,
-        multisample: wgpu::MultisampleState::default(),
-        fragment: Some(wgpu::FragmentState {
-            module: &module,
-            entry_point: Some("fs_main"),
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            targets: &[Some(wgpu::ColorTargetState {
-                format: crate::SCENE_FORMAT,
-                blend: Some(wgpu::BlendState {
-                    color: max,
-                    alpha: max,
-                }),
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-        }),
-        multiview_mask: None,
-        cache: None,
-    })
 }
 
 #[cfg(test)]
@@ -517,24 +345,5 @@ mod tests {
         assert_eq!(centre, v.centre);
         // The half-disc fits in the viewport.
         assert!(src[0] >= 0.0 && anti[0] <= 800.0 && top[1] >= 0.0 && v.centre[1] <= 400.0);
-    }
-
-    #[test]
-    fn polyline_quads_carry_distance_along() {
-        let mut out = Vec::new();
-        push_polyline(
-            &mut out,
-            &[[0.0, 0.0], [10.0, 0.0], [10.0, 5.0]],
-            1.0,
-            1.0,
-            0.0,
-        );
-        assert_eq!(out.len(), 12);
-        // Second segment starts 10 px along the line (minus the cap overlap).
-        assert!((out[6].along_across[0] - (10.0 - 2.0)).abs() < 1e-6);
-        // Degenerate segments are skipped.
-        let mut none = Vec::new();
-        push_polyline(&mut none, &[[1.0, 1.0], [1.0, 1.0]], 1.0, 1.0, 0.0);
-        assert!(none.is_empty());
     }
 }
