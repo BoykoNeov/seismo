@@ -87,6 +87,19 @@ pub fn fullscreen_pipeline(
         label: Some(label),
         source: wgpu::ShaderSource::Wgsl(source.into()),
     });
+    fullscreen_pipeline_entry(device, label, &module, "fs_main", layout, targets)
+}
+
+/// Like [`fullscreen_pipeline`], for one fragment entry point of an already built module
+/// (`vs_main` is the vertex entry point).
+pub fn fullscreen_pipeline_entry(
+    device: &wgpu::Device,
+    label: &str,
+    module: &wgpu::ShaderModule,
+    fs_entry: &str,
+    layout: &wgpu::BindGroupLayout,
+    targets: &[Option<wgpu::ColorTargetState>],
+) -> wgpu::RenderPipeline {
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some(label),
         bind_group_layouts: &[Some(layout)],
@@ -96,7 +109,7 @@ pub fn fullscreen_pipeline(
         label: Some(label),
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
-            module: &module,
+            module,
             entry_point: Some("vs_main"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             buffers: &[],
@@ -105,8 +118,8 @@ pub fn fullscreen_pipeline(
         depth_stencil: None,
         multisample: wgpu::MultisampleState::default(),
         fragment: Some(wgpu::FragmentState {
-            module: &module,
-            entry_point: Some("fs_main"),
+            module,
+            entry_point: Some(fs_entry),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets,
         }),
@@ -142,6 +155,30 @@ pub fn texture_entry(
             view_dimension: dimension,
             multisampled: false,
         },
+        count: None,
+    }
+}
+
+/// Bind group layout entry for a filterable float 2D texture read with a sampler.
+pub fn filterable_texture_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
+        },
+        count: None,
+    }
+}
+
+/// Bind group layout entry for a filtering sampler.
+pub fn sampler_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::FRAGMENT,
+        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
         count: None,
     }
 }

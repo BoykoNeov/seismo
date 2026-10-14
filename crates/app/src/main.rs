@@ -199,7 +199,8 @@ impl SeismoApp {
         //                       after its origin (without it the clock starts at now, live)
         //   --offline           no network: events come from the saved copy only
         //   --speed <x>         initial clock speed
-        //   --crt <list>        comma-separated: off, noscan, nopersist
+        //   --crt <list>        comma-separated: off, noscan, nopersist,
+        //                       nobloom, nobarrel, noflicker
         let arg = |name: &str| std::env::args().skip_while(|a| a != name).nth(1);
         let flag = |name: &str| std::env::args().any(|a| a == name);
         let feed = feed::spawn(feed::FeedConfig {
@@ -276,6 +277,9 @@ impl SeismoApp {
                 "off" => crt.enabled = false,
                 "noscan" => crt.scanlines = false,
                 "nopersist" => crt.persistence = false,
+                "nobloom" => crt.bloom = false,
+                "nobarrel" => crt.barrel = false,
+                "noflicker" => crt.flicker = false,
                 _ => {}
             }
         }
@@ -800,7 +804,25 @@ impl SeismoApp {
                             .logarithmic(true)
                             .text("decay s"),
                     );
-                    ui.colored_label(GREEN_DIM, "bloom, barrel, flicker: phase 2");
+                    ui.checkbox(&mut c.bloom, "bloom (glow)");
+                    ui.add_enabled(
+                        c.bloom,
+                        egui::Slider::new(&mut c.bloom_intensity, 0.0..=2.0).text("strength"),
+                    );
+                    ui.add_enabled(
+                        c.bloom,
+                        egui::Slider::new(&mut c.bloom_radius_px, 2.0..=24.0).text("radius px"),
+                    );
+                    ui.checkbox(&mut c.barrel, "barrel (curved glass)");
+                    ui.add_enabled(
+                        c.barrel,
+                        egui::Slider::new(&mut c.barrel_amount, 0.0..=0.2).text("bulge"),
+                    );
+                    ui.checkbox(&mut c.flicker, "flicker");
+                    ui.add_enabled(
+                        c.flicker,
+                        egui::Slider::new(&mut c.flicker_amount, 0.0..=0.2).text("amount"),
+                    );
                 });
             });
 
@@ -1149,10 +1171,9 @@ impl SeismoApp {
         }
         self.station_picking(ui, rect, &response);
         if self.style.mantle_strength > 1.0 {
-            let map_h = self.renderer.map_viewport().h * rect.width()
-                / self.renderer.size().0.max(1) as f32;
+            let map_h = self.renderer.map_viewport().h;
             ui.painter_at(rect).text(
-                rect.min + egui::vec2(8.0, map_h - 8.0),
+                self.scene_to_ui(rect, [12.0, map_h - 12.0]),
                 egui::Align2::LEFT_BOTTOM,
                 format!("3D MANTLE EXAGGERATED ×{:.1}", self.style.mantle_strength),
                 egui::FontId::monospace(13.0),
@@ -1161,28 +1182,43 @@ impl SeismoApp {
         }
     }
 
-    /// The map's projection and where its viewport sits in UI points.
-    fn map_frame(&self, rect: egui::Rect) -> (render::MapProjection, egui::Pos2, f32) {
+    /// Where scene pixel `p` appears in UI points, through the CRT's barrel distortion.
+    fn scene_to_ui(&self, rect: egui::Rect, p: [f32; 2]) -> egui::Pos2 {
+        let size = self.renderer.size();
+        let scale = rect.width() / size.0.max(1) as f32;
+        let [x, y] = self.crt.scene_to_display(size, p);
+        rect.min + egui::vec2(x, y) * scale
+    }
+
+    /// The scene pixel under `pos` (UI points), undoing the barrel distortion; `None` off the
+    /// curved glass.
+    fn ui_to_scene(&self, rect: egui::Rect, pos: egui::Pos2) -> Option<[f32; 2]> {
+        let size = self.renderer.size();
+        let scale = rect.width() / size.0.max(1) as f32;
+        let d = (pos - rect.min) / scale;
+        self.crt.display_to_scene(size, [d.x, d.y])
+    }
+
+    /// The map's projection and the UI point of a station's marker.
+    fn map_frame(&self) -> (render::MapProjection, render::Viewport) {
         let vp = self.renderer.map_viewport();
-        let scale = rect.width() / self.renderer.size().0.max(1) as f32;
-        (
-            render::MapProjection { size: (vp.w, vp.h) },
-            rect.min + egui::vec2(vp.x, vp.y) * scale,
-            scale,
-        )
+        (render::MapProjection { size: (vp.w, vp.h) }, vp)
+    }
+
+    /// Where the map point `lat`, `lon` appears in UI points.
+    fn map_to_ui(&self, rect: egui::Rect, lat: f64, lon: f64) -> egui::Pos2 {
+        let (proj, vp) = self.map_frame();
+        let [x, y] = proj.pixel(lat, lon);
+        self.scene_to_ui(rect, [x + vp.x, y + vp.y])
     }
 
     /// The station whose map marker is under `pos` (UI points), if any.
     fn station_at(&self, rect: egui::Rect, pos: egui::Pos2) -> Option<usize> {
-        let (proj, origin, scale) = self.map_frame(rect);
         self.traces
             .stations
             .iter()
             .enumerate()
-            .map(|(i, s)| {
-                let [x, y] = proj.pixel(s.lat, s.lon);
-                (i, (origin + egui::vec2(x, y) * scale).distance(pos))
-            })
+            .map(|(i, s)| (i, self.map_to_ui(rect, s.lat, s.lon).distance(pos)))
             .filter(|(_, d)| *d <= PICK_RADIUS)
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(i, _)| i)
@@ -1191,14 +1227,12 @@ impl SeismoApp {
     /// Map clicks show or hide a station's trace, or place a new station; hovering a marker
     /// names it. Shown stations are labelled on the map.
     fn station_picking(&mut self, ui: &egui::Ui, rect: egui::Rect, response: &egui::Response) {
-        let (proj, origin, scale) = self.map_frame(rect);
         let painter = ui.painter_at(rect);
         let font = egui::FontId::monospace(11.0);
         for &i in &self.traces.chosen {
             let s = &self.traces.stations[i];
-            let [x, y] = proj.pixel(s.lat, s.lon);
             painter.text(
-                origin + egui::vec2(x, y) * scale + egui::vec2(7.0, 0.0),
+                self.map_to_ui(rect, s.lat, s.lon) + egui::vec2(7.0, 0.0),
                 egui::Align2::LEFT_CENTER,
                 &s.code,
                 font.clone(),
@@ -1225,10 +1259,11 @@ impl SeismoApp {
         };
         if let Some(i) = self.station_at(rect, pos) {
             self.traces.toggle(i);
-        } else if self.traces.click_to_place {
-            // Scene pixels; the scene has no barrel distortion yet to undo.
-            let px = (pos - origin) / scale;
-            if let Some((lat, lon)) = proj.lat_lon([px.x, px.y]) {
+        } else if self.traces.click_to_place
+            && let Some([x, y]) = self.ui_to_scene(rect, pos)
+        {
+            let (proj, vp) = self.map_frame();
+            if let Some((lat, lon)) = proj.lat_lon([x - vp.x, y - vp.y]) {
                 self.traces.place(lat, lon);
             }
         }
@@ -1249,7 +1284,7 @@ impl SeismoApp {
         to: f64,
     ) {
         let scale = rect.width() / self.renderer.size().0.max(1) as f32;
-        let to_ui = |x: f32, y: f32| rect.min + egui::vec2(x + vp.x, y + vp.y) * scale;
+        let to_ui = |x: f32, y: f32| self.scene_to_ui(rect, [x + vp.x, y + vp.y]);
         let painter = ui.painter_at(rect);
         let font = egui::FontId::monospace(11.0);
         let small = egui::FontId::monospace(9.5);
@@ -1348,8 +1383,7 @@ impl SeismoApp {
         let vp = self.renderer.slice_viewport();
         let view = render::SliceView::new((vp.w, vp.h));
         // Scene pixels to UI points.
-        let scale = rect.width() / self.renderer.size().0.max(1) as f32;
-        let to_ui = |p: [f32; 2]| rect.min + egui::vec2(p[0] + vp.x, p[1] + vp.y) * scale;
+        let to_ui = |p: [f32; 2]| self.scene_to_ui(rect, [p[0] + vp.x, p[1] + vp.y]);
         let at = |r_km: f64, delta_deg: f64| to_ui(view.project(r_km, delta_deg));
         let painter = ui.painter_at(rect);
         let font = egui::FontId::monospace(11.0);

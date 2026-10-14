@@ -29,7 +29,7 @@ pub const PHOSPHOR: [f32; 3] = [0x33 as f32 / 255.0, 1.0, 0x33 as f32 / 255.0];
 /// Background `#050805`, display space.
 pub const BACKGROUND: [f32; 3] = [5.0 / 255.0, 8.0 / 255.0, 5.0 / 255.0];
 
-/// Format of the scene and persistence textures (HDR so bloom can use values > 1 later).
+/// Format of the scene and persistence textures (HDR, so bright lines can exceed 1 before bloom).
 pub const SCENE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 /// Format of the displayed texture; egui-wgpu requires Rgba8Unorm for native textures.
 pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
