@@ -189,6 +189,17 @@ pub struct Arrival {
     pub takeoff_rad: f64,
 }
 
+/// Where one ray reaches the surface.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Landing {
+    pub takeoff_rad: f64,
+    /// Epicentral distance, deg, folded into [0, 180].
+    pub dist_deg: f64,
+    pub time_s: f64,
+    /// Ray parameter, s/rad.
+    pub p_s_rad: f64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RayTraceError {
     NoFluidCore,
@@ -585,6 +596,24 @@ impl RayTracer {
         let r_s = EARTH_RADIUS_KM - depth_km;
         let eta_s = r_s / self.profile(phase.mantle_wave()).velocity_at(r_s);
         (eta_s * takeoff_rad.sin()).max(MIN_RAY_PARAM)
+    }
+
+    /// Slowness radius η = r/v (s/rad) of `wave` at the surface: a ray of parameter `p` meets
+    /// the surface at arcsin(p/η) from the vertical.
+    pub fn surface_eta(&self, wave: Wave) -> f64 {
+        EARTH_RADIUS_KM / self.profile(wave).velocity_at(EARTH_RADIUS_KM)
+    }
+
+    /// Where a ray of `phase` leaving at `takeoff_rad` lands, without recording its path:
+    /// cheaper than [`Self::trace`]. `None` if this ray is not part of the phase.
+    pub fn landing(&self, phase: RayPhase, depth_km: f64, takeoff_rad: f64) -> Option<Landing> {
+        let ray = self.trace_inner(phase, depth_km, takeoff_rad, false)?;
+        Some(Landing {
+            takeoff_rad,
+            dist_deg: fold_rad(ray.end().theta_rad).to_degrees(),
+            time_s: ray.arrival_s(),
+            p_s_rad: ray.p_s_rad,
+        })
     }
 
     /// Trace a ray of `phase` from a source at `depth_km` with take-off angle `takeoff_rad`

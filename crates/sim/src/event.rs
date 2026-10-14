@@ -13,6 +13,41 @@ pub enum EventKind {
     Impact,
 }
 
+/// How a kind of source shakes the ground: relative amplitudes of its P, S and surface waves
+/// on synthetic seismograms, and the depths it can occur at. Display-plausible weights, not
+/// source physics (see `docs/approximations.md`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SourceProfile {
+    pub p: f64,
+    pub s: f64,
+    pub surface: f64,
+    /// Depth range (km) the kind occurs at.
+    pub min_depth_km: f64,
+    pub max_depth_km: f64,
+}
+
+impl EventKind {
+    pub fn profile(self) -> SourceProfile {
+        let (p, s, surface, max_depth_km) = match self {
+            // Shear faulting: S several times P, strong surface waves when shallow.
+            EventKind::Earthquake => (1.0, 3.0, 1.0, 700.0),
+            // An explosion pushes outwards in every direction: P-dominant, weak S and surface.
+            EventKind::NuclearTest => (1.0, 0.3, 0.3, 2.0),
+            EventKind::VolcanicTremor => (0.5, 1.0, 1.5, 20.0),
+            EventKind::Landslide => (0.2, 0.6, 2.0, 1.0),
+            // At the surface: strong surface waves.
+            EventKind::Impact => (0.5, 0.5, 3.0, 0.0),
+        };
+        SourceProfile {
+            p,
+            s,
+            surface,
+            min_depth_km: 0.0,
+            max_depth_km,
+        }
+    }
+}
+
 /// A source: where, when, how big.
 ///
 /// Built through [`Event::new`], which normalises coordinates to the project conventions.

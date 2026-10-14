@@ -20,9 +20,11 @@ seismo/               # = repo root
     ak135.tt          # travel-time tables (generated, committed)
     ak135_model.csv   # ak135 velocity model: depth_km, vp_km_s, vs_km_s, density_g_cm3 (generated, committed)
     sp12rts/          # SP12RTS 3D mantle model (authors' .sph files, unchanged; README has citation + checksums)
+    stations.csv      # bundled real seismograph stations (GSN, IU + II; generated, committed, provenance in header)
     shaders/          # WGSL
   tools/
     gen_tables.py     # ObsPy script that produces both ak135 assets
+    gen_stations.py   # FDSN station query that produces stations.csv (stdlib only)
     requirements.txt  # pinned obspy version
   docs/
     approximations.md
@@ -145,6 +147,11 @@ S at 30° ≈ 11 min, S at 90° ≈ 23 min, PKIKP at 180° ≈ 20 min. A test th
 disagrees with ObsPy by > 0.5 s fails. Compare at grid nodes, and off-node only
 away from branch splits and triplications, where interpolation is not smooth.
 
+Stations (decided 2026-10-14): both a bundled list of real stations
+(`assets/stations.csv`) and user-placed ones (click the map). A few chosen
+stations at a time are shown as stacked traces, sorted by distance, with a
+vertical/transverse component switch and a per-trace or shared amplitude scale.
+
 Seismogram synthesis: each arrival is a wavelet (Ricker) scaled by magnitude,
 geometric spreading, and depth; traces are display-plausible, not
 waveform-accurate. Say so in the UI. Geometric spreading comes from the ray
@@ -209,8 +216,6 @@ python tools/gen_tables.py              # regenerates both ak135 assets (slow: m
 
 ## Open questions (ask before deciding)
 
-- Where virtual seismograph stations come from: user-placed, a bundled list of
-  real stations, or both.
 - How non-earthquake USGS types (explosion, quarry blast, ice quake, …) map to
   `EventKind`.
 - Whether surface waves ever become truly dispersive (period-dependent speed).

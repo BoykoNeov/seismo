@@ -110,6 +110,24 @@ impl DelayGrid {
     pub fn at(&self, layer: usize, az_index: usize, dist_index: usize) -> f32 {
         self.delays[layer][az_index * DELAY_DIST_COUNT + dist_index]
     }
+
+    /// Delay (s) of phase layer `layer` at `dist_deg` and `azimuth_deg`, bilinear and wrapping
+    /// in azimuth: the same lookup as `delay_lookup` in `map.wgsl`, so a seismogram and the map
+    /// put a front at the same time.
+    pub fn sample(&self, layer: usize, dist_deg: f64, azimuth_deg: f64) -> f64 {
+        let (nd, na) = (DELAY_DIST_COUNT as f64, DELAY_AZ_COUNT as f64);
+        let fu = (dist_deg / DELAY_DIST_STEP_DEG).clamp(0.0, nd - 1.0);
+        let fv = (azimuth_deg.rem_euclid(360.0) / DELAY_AZ_STEP_DEG).clamp(0.0, na);
+        let i = fu.floor().min(nd - 2.0);
+        let j = fv.floor().min(na - 1.0);
+        let (fx, fy) = (fu - i, fv - j);
+        let (x, y0) = (i as usize, j as usize);
+        let y1 = (y0 + 1) % DELAY_AZ_COUNT;
+        let c = |y: usize, x: usize| f64::from(self.at(layer, y, x));
+        let lo = c(y0, x) + (c(y0, x + 1) - c(y0, x)) * fx;
+        let hi = c(y1, x) + (c(y1, x + 1) - c(y1, x)) * fx;
+        lo + (hi - lo) * fy
+    }
 }
 
 /// The delay grid of an event at (`lat`, `lon`), `depth_km` deep. Tens of thousands of ray
