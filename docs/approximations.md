@@ -116,6 +116,15 @@ source, and for PKIKP near 180°), it is clamped to 0.5 s/deg for this conversio
 fading trail behind a front is a display effect (exponential in time since arrival), not a
 model of the coda.
 
+## Map coastlines: simplified
+
+The coastlines are Natural Earth's 1:10m coastline, simplified by `tools/gen_coastlines.py`
+(Douglas–Peucker at 0.05° in plain latitude and longitude, lines smaller than 0.15° across
+dropped, points rounded to 0.001°), from about 411,000 points to about 41,000. At the map's
+usual size a pixel is about 0.3°, so the simplification is below a pixel; small islands are
+missing. Settings, source version and checksum are in the file's header. They are drawn on the
+same spherical-Earth latitude and longitude as everything else.
+
 ## 3D mantle: SP12RTS on top of ak135
 
 The 3D structure is SP12RTS (Koelemeijer, Ritsema, Deuss & van

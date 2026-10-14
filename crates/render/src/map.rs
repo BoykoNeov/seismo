@@ -1,9 +1,10 @@
-//! Map pass: equirectangular graticule, epicentres and table-driven wavefronts, with the
-//! seismograph stations marked on top.
+//! Map pass: equirectangular graticule, coastlines, epicentres and table-driven wavefronts,
+//! with the seismograph stations marked on top.
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
+use crate::coast::{Coastlines, coast_vertices};
 use crate::gpu;
 use crate::lines::{DASH_SOLID, LineBatch, LineVertex, push_polyline};
 use sim::mantle::{
@@ -114,6 +115,8 @@ pub struct MapStyle {
     pub trail_strength: f32,
     /// Brightness of the graticule, [0, 1].
     pub grid_brightness: f32,
+    /// Brightness of the coastlines, [0, 1]; 0 hides them.
+    pub coast_brightness: f32,
     /// Strength of the 3D-mantle delays: 0 draws the 1D arrival times, 1 the model's real
     /// strength, larger values exaggerate them linearly.
     pub mantle_strength: f32,
@@ -126,6 +129,7 @@ impl Default for MapStyle {
             trail_s: 40.0,
             trail_strength: 0.35,
             grid_brightness: 0.35,
+            coast_brightness: 0.45,
             mantle_strength: 1.0,
         }
     }
@@ -157,6 +161,10 @@ struct Uniforms {
 pub struct MapPass {
     pipeline: wgpu::RenderPipeline,
     markers: LineBatch,
+    coast: LineBatch,
+    coastlines: Coastlines,
+    /// Map size and brightness the coastline vertices were last built for.
+    coast_built: Option<((f32, f32), f32)>,
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     delay_texture: wgpu::Texture,
@@ -237,6 +245,9 @@ impl MapPass {
         Self {
             pipeline,
             markers: LineBatch::new(device, "map markers"),
+            coast: LineBatch::new(device, "map coastlines"),
+            coastlines: Coastlines::default(),
+            coast_built: None,
             uniform_buffer,
             bind_group,
             delay_texture,
@@ -244,6 +255,12 @@ impl MapPass {
             dist_axis: [x.start as f32, x.step as f32, x.count as f32, 0.0],
             layers: [layer("P"), layer("S"), -1.0, -1.0],
         }
+    }
+
+    /// Coastlines to draw from the next frame on.
+    pub fn set_coastlines(&mut self, coastlines: Coastlines) {
+        self.coastlines = coastlines;
+        self.coast_built = None;
     }
 
     /// Store an event's delays in `slot` (< [`MAX_MAP_EVENTS`]); events drawn with that
@@ -304,6 +321,17 @@ impl MapPass {
             projection.size,
             &marker_vertices(&projection, markers),
         );
+        // The coastlines only change with the map's size, so their vertices are rebuilt then.
+        let coast_key = (projection.size, style.coast_brightness);
+        if self.coast_built != Some(coast_key) {
+            let vertices = if style.coast_brightness > 0.0 {
+                coast_vertices(&projection, &self.coastlines, style.coast_brightness)
+            } else {
+                Vec::new()
+            };
+            self.coast.upload(device, queue, projection.size, &vertices);
+            self.coast_built = Some(coast_key);
+        }
         let n = events.len().min(MAX_MAP_EVENTS);
         let mut gpu_events = [GpuEvent::zeroed(); MAX_MAP_EVENTS];
         for (g, e) in gpu_events.iter_mut().zip(&events[..n]) {
@@ -357,6 +385,8 @@ impl MapPass {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
         pass.draw(0..3, 0..1);
+        // Max blending: the dim coast never covers a brighter front, trail or marker.
+        self.coast.draw(&mut pass);
         self.markers.draw(&mut pass);
     }
 }

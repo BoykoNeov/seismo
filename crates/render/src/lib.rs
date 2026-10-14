@@ -4,6 +4,7 @@
 //! Colours are display-space (gamma-encoded) values written to non-sRGB targets, so
 //! `#33ff33` lands on screen as `#33ff33`.
 
+mod coast;
 mod crt;
 mod gpu;
 mod lines;
@@ -11,6 +12,7 @@ mod map;
 mod slice;
 mod traces;
 
+pub use coast::{CoastError, Coastlines};
 pub use crt::{CrtPass, CrtSettings, FrameTime};
 pub use gpu::Viewport;
 pub use map::{

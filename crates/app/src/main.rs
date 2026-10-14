@@ -28,6 +28,7 @@ use traces::{MAX_TRACES, Traces};
 static TABLE_BYTES: &[u8] = include_bytes!("../../../assets/ak135.tt");
 static MODEL_BYTES: &[u8] = include_bytes!("../../../assets/ak135_model.csv");
 static STATIONS_BYTES: &[u8] = include_bytes!("../../../assets/stations.csv");
+static COAST_BYTES: &[u8] = include_bytes!("../../../assets/coastlines.txt");
 
 /// Narrowest traces column (points) beside the map and slice.
 const MIN_TRACES_WIDTH: f32 = 260.0;
@@ -176,7 +177,15 @@ impl SeismoApp {
         );
         tracing::info!(adapter = ?rs.adapter.get_info().name, backend = ?rs.adapter.get_info().backend, "gpu");
 
-        let renderer = render::SceneRenderer::new(&rs.device, &rs.queue, &table, (256, 128));
+        let mut renderer = render::SceneRenderer::new(&rs.device, &rs.queue, &table, (256, 128));
+        let coast =
+            render::Coastlines::from_bytes(COAST_BYTES).context("embedded coastlines.txt")?;
+        tracing::info!(
+            lines = coast.lines().len(),
+            points = coast.point_count(),
+            "loaded coastlines"
+        );
+        renderer.map.set_coastlines(coast);
         let texture_id = rs.renderer.write().register_native_texture(
             &rs.device,
             renderer.output_view(),
@@ -807,6 +816,7 @@ impl SeismoApp {
                 );
                 ui.add(egui::Slider::new(&mut s.trail_strength, 0.0..=1.0).text("trail"));
                 ui.add(egui::Slider::new(&mut s.grid_brightness, 0.0..=1.0).text("grid"));
+                ui.add(egui::Slider::new(&mut s.coast_brightness, 0.0..=1.0).text("coast"));
             });
     }
 

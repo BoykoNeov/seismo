@@ -21,10 +21,12 @@ seismo/               # = repo root
     ak135_model.csv   # ak135 velocity model: depth_km, vp_km_s, vs_km_s, density_g_cm3 (generated, committed)
     sp12rts/          # SP12RTS 3D mantle model (authors' .sph files, unchanged; README has citation + checksums)
     stations.csv      # bundled real seismograph stations (GSN, IU + II; generated, committed, provenance in header)
+    coastlines.txt    # Natural Earth 1:10m coastline, simplified (generated, committed, provenance in header)
     shaders/          # WGSL
   tools/
     gen_tables.py     # ObsPy script that produces both ak135 assets
     gen_stations.py   # FDSN station query that produces stations.csv (stdlib only)
+    gen_coastlines.py # Natural Earth download + simplification that produces coastlines.txt (stdlib only)
     requirements.txt  # pinned obspy version
   docs/
     approximations.md
