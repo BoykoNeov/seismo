@@ -2,6 +2,8 @@
 //! by a minimum magnitude, with the selection tracked by a stable handle so it survives the
 //! list being replaced, re-sorted, merged or pruned.
 
+use std::collections::HashSet;
+
 use chrono::{DateTime, Duration, Utc};
 use feed::{FeedHandle, FeedMsg, FeedStatus, StoredEvent};
 use sim::Event;
@@ -25,6 +27,10 @@ pub const DEFAULT_MIN_MAG: f64 = 2.5;
 /// When the app picks an event by itself, the largest of this many recent hours wins: their
 /// surface waves can still be circling the globe.
 const AUTO_PICK_HOURS: i64 = 3;
+
+/// Until the user picks an event, a newly listed event at least this big (and from the last
+/// [`AUTO_PICK_HOURS`]) becomes the selected one (decided by the user, 2026-10-14).
+pub const FOLLOW_MIN_MAG: f64 = 6.0;
 
 /// One event in the list.
 #[derive(Debug, Clone, PartialEq)]
@@ -85,8 +91,10 @@ pub struct EventList {
     rev: u64,
     /// The user (or a replay flag) has picked an event, so the app never picks one itself.
     pub user_chose: bool,
-    /// Feed events have arrived at least once (from the cache or the network).
-    pub got_feed: bool,
+    /// The first automatic pick has been made.
+    auto_picked: bool,
+    /// Feed handles already listed when the selection last settled: anything else is new.
+    seen: HashSet<u64>,
     /// A USGS id to select as soon as the feed lists it (`--event`).
     pub wanted_id: Option<String>,
 }
@@ -109,7 +117,8 @@ impl EventList {
             shown: Vec::new(),
             rev: 0,
             user_chose: false,
-            got_feed: false,
+            auto_picked: false,
+            seen: HashSet::new(),
             wanted_id: None,
         };
         list.rebuild();
@@ -144,18 +153,26 @@ impl EventList {
 
     /// Take the feed's news. Returns whether the shown list changed.
     pub fn poll(&mut self, now: DateTime<Utc>) -> bool {
-        let mut changed = false;
+        let mut fresh = false;
         while let Some(msg) = self.feed.as_ref().and_then(FeedHandle::try_recv) {
             match msg {
-                FeedMsg::Events(events) => changed |= self.take_events(events, now),
+                FeedMsg::Events(events) => {
+                    self.take_events(events);
+                    fresh = true;
+                }
                 FeedMsg::Status(s) => self.status = Some(s),
             }
         }
-        changed
+        let picked = self.settle(now, fresh);
+        if fresh || picked {
+            self.rebuild()
+        } else {
+            false
+        }
     }
 
-    /// Replace the feed's events. The first non-empty list picks an event, unless the user has.
-    fn take_events(&mut self, events: Vec<StoredEvent>, now: DateTime<Utc>) -> bool {
+    /// Replace the feed's events, selecting `wanted_id` if it is among them.
+    fn take_events(&mut self, events: Vec<StoredEvent>) {
         self.feed_events = events;
         if let Some(id) = &self.wanted_id
             && let Some(s) = self
@@ -167,15 +184,47 @@ impl EventList {
             self.user_chose = true;
             self.wanted_id = None;
         }
-        if !self.got_feed && !self.feed_events.is_empty() {
-            self.got_feed = true;
-            if !self.user_chose
-                && let Some(handle) = self.auto_pick(now)
-            {
-                self.selected = handle;
-            }
+    }
+
+    /// Let the app pick the event while the user has not. The first pick waits until the list is
+    /// as fresh as it will get: USGS has answered, or the app is offline, or USGS is unreachable
+    /// and the saved copy is all there is (picking from a saved copy that a download is about to
+    /// replace would choose from stale events). After that, each `fresh` list switches to the
+    /// largest newly listed event of [`FOLLOW_MIN_MAG`] or more from the last few hours.
+    /// Returns whether the selection changed.
+    fn settle(&mut self, now: DateTime<Utc>, fresh: bool) -> bool {
+        let settled = self.status.as_ref().is_some_and(|s| {
+            let answered = s.feeds.iter().any(|f| f.last_ok.is_some());
+            let failing = s.feeds.iter().any(|f| f.error.is_some());
+            s.offline || answered || failing
+        });
+        if !settled || self.feed_events.is_empty() || (self.auto_picked && !fresh) {
+            return false;
         }
-        self.rebuild()
+        let pick = if self.user_chose {
+            None
+        } else if !self.auto_picked {
+            self.auto_pick(now)
+        } else {
+            let recent = now - Duration::hours(AUTO_PICK_HOURS);
+            self.feed_events
+                .iter()
+                .filter(|s| !self.seen.contains(&s.handle))
+                .filter(|s| {
+                    s.feed.event.magnitude >= FOLLOW_MIN_MAG && s.feed.event.origin >= recent
+                })
+                .max_by(|a, b| a.feed.event.magnitude.total_cmp(&b.feed.event.magnitude))
+                .map(|s| s.handle)
+        };
+        self.auto_picked = true;
+        self.seen = self.feed_events.iter().map(|s| s.handle).collect();
+        match pick {
+            Some(handle) if handle != self.selected => {
+                self.selected = handle;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// The largest event of the last few hours at or above the minimum magnitude, or else the
@@ -247,7 +296,7 @@ impl EventList {
 mod tests {
     use super::*;
     use chrono::TimeZone;
-    use feed::FeedEvent;
+    use feed::{FeedEvent, FeedStatus};
     use sim::EventKind;
 
     fn now() -> DateTime<Utc> {
@@ -294,8 +343,80 @@ mod tests {
         l.shown().iter().map(|e| e.key.handle).collect()
     }
 
+    /// Feed `events` in as a fresh download: USGS answered.
     fn feed_in(l: &mut EventList, events: Vec<StoredEvent>) -> bool {
-        l.take_events(events, now())
+        l.take_events(events);
+        l.status = Some(answered());
+        l.settle(now(), true);
+        l.rebuild()
+    }
+
+    fn answered() -> FeedStatus {
+        let mut s = FeedStatus::default();
+        s.feeds[1].last_ok = Some(now());
+        s
+    }
+
+    #[test]
+    fn auto_pick_waits_for_the_fresh_download() {
+        let mut l = list();
+        // The saved copy arrives first: only an event from yesterday, and no answer from USGS
+        // yet. No pick.
+        l.take_events(vec![stored(1, 20 * 60, 4.0)]);
+        l.status = Some(FeedStatus::default());
+        assert!(!l.settle(now(), true));
+        assert_eq!(l.selected_handle(), BUILTIN_HANDLE);
+        // The fresh download brings a recent M5: that is the pick.
+        l.take_events(vec![stored(1, 20 * 60, 4.0), stored(2, 10, 5.0)]);
+        l.status = Some(answered());
+        assert!(l.settle(now(), true));
+        assert_eq!(l.selected_handle(), 2);
+    }
+
+    #[test]
+    fn follows_new_big_events_until_the_user_picks() {
+        let mut l = list();
+        let mut events = vec![stored(1, 30, 6.5), stored(2, 10, 4.0)];
+        feed_in(&mut l, events.clone());
+        assert_eq!(l.selected_handle(), 1);
+        // A new M5.9 is too small; an old M7 newly listed (e.g. a merge) is too old.
+        events.push(stored(3, 2, 5.9));
+        events.push(stored(4, 6 * 60, 7.0));
+        feed_in(&mut l, events.clone());
+        assert_eq!(l.selected_handle(), 1);
+        // A new M6.1: followed.
+        events.push(stored(5, 1, 6.1));
+        feed_in(&mut l, events.clone());
+        assert_eq!(l.selected_handle(), 5);
+        // A list with nothing new leaves it.
+        feed_in(&mut l, events.clone());
+        assert_eq!(l.selected_handle(), 5);
+        // Once the user picks, new big events no longer take over.
+        l.select(2);
+        events.push(stored(6, 0, 7.5));
+        feed_in(&mut l, events);
+        assert_eq!(l.selected_handle(), 2);
+    }
+
+    #[test]
+    fn auto_pick_when_offline_or_unreachable() {
+        for status in [
+            FeedStatus {
+                offline: true,
+                ..Default::default()
+            },
+            {
+                let mut s = FeedStatus::default();
+                s.feeds[0].error = Some("timed out".into());
+                s
+            },
+        ] {
+            let mut l = list();
+            l.take_events(vec![stored(1, 20 * 60, 4.0)]);
+            l.status = Some(status);
+            assert!(l.settle(now(), true));
+            assert_eq!(l.selected_handle(), 1);
+        }
     }
 
     #[test]

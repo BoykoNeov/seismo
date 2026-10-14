@@ -180,6 +180,9 @@ Keep the raw USGS `type` string on every feed event.
   kind → `NuclearTest` (the explosion profile); slides, avalanches, collapses → `Landslide`;
   volcanic eruption → `VolcanicTremor`; meteorite → `Impact`; everything else →
   `Earthquake`. The UI shows the raw USGS type, never the kind name.
+- Selection (decided 2026-10-14): until the user picks an event, the app picks one (the
+  largest of the last 3 hours, once USGS has answered) and switches to each newly listed
+  M6+ event. A user pick ends that. Selecting never moves the clock.
 - Default minimum magnitude shown: 2.5, user-adjustable. Events are identified in the app by
   a stable handle (kept through new versions and merges) plus a revision that changes with
   the physics; caches key on both, never on list position.

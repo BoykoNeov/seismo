@@ -67,8 +67,8 @@ pub struct Traces {
     pub pending: bool,
 }
 
-/// Builds ray tubes (tens of milliseconds each, more in debug builds) off the UI thread, in the
-/// order asked for.
+/// Builds ray tubes (about 0.2 s each in a release build, measured 2026-10-14) off the UI
+/// thread, in the order asked for.
 struct TubeWorker {
     jobs: Sender<f64>,
     results: Receiver<Spreading>,

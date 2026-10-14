@@ -21,7 +21,7 @@ use sim::tables::{EarthModel, TravelTimeTable};
 use sim::{EARTH_RADIUS_KM, Event, EventKind, RayPhase, Simulation, Wave, azimuth_deg};
 
 use clock::{MAX_SPEED, MIN_SPEED, SimClock, secs};
-use events::{EventKey, EventList, Listed};
+use events::{EventKey, EventList, FOLLOW_MIN_MAG, Listed};
 use mantle::{BendKey, CutKey, MantleWorker, Ready};
 use traces::{MAX_TRACES, Traces};
 
@@ -573,7 +573,9 @@ impl SeismoApp {
         }
         ui.colored_label(
             GREEN_DIM,
-            "Picking an event does not move the clock: use Replay from origin, or Live.",
+            format!(
+                "Until you pick an event, the app picks one and switches to each new                  M{FOLLOW_MIN_MAG:.0}+ quake. Picking never moves the clock: use Replay from                  origin, or Live."
+            ),
         );
     }
 
