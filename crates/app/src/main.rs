@@ -3,6 +3,7 @@
 //! Allowed dependencies: everything in the workspace.
 
 mod clock;
+mod events;
 mod mantle;
 mod traces;
 
@@ -20,6 +21,7 @@ use sim::tables::{EarthModel, TravelTimeTable};
 use sim::{EARTH_RADIUS_KM, Event, EventKind, RayPhase, Simulation, Wave, azimuth_deg};
 
 use clock::{MAX_SPEED, MIN_SPEED, SimClock, secs};
+use events::{EventKey, EventList, Listed};
 use mantle::{BendKey, CutKey, MantleWorker, Ready};
 use traces::{MAX_TRACES, Traces};
 
@@ -71,7 +73,7 @@ fn main() -> eframe::Result {
     )
 }
 
-/// The hardcoded phase-1 test event: 2011 Tōhoku.
+/// The built-in example event, there with or without the feed: 2011 Tōhoku.
 fn tohoku() -> Event {
     let origin = Utc.with_ymd_and_hms(2011, 3, 11, 5, 46, 24).unwrap();
     Event::new(
@@ -131,9 +133,17 @@ struct SeismoApp {
     trace_style: render::TraceStyle,
     /// CPU copies of the events' 3D-mantle delays (the map has them on the GPU), so traces put
     /// P and S where the map does.
-    delay_grids: HashMap<usize, Arc<DelayGrid>>,
+    delay_grids: HashMap<EventKey, Arc<DelayGrid>>,
     clock: SimClock,
-    selected: usize,
+    /// Built-in and USGS events, and which one is selected.
+    events: EventList,
+    /// Keys of `sim.events`, in the same order, and the list revision they were taken from.
+    keys: Vec<EventKey>,
+    events_rev: u64,
+    /// The selected event's handle when the traces last followed it.
+    traces_follow: u64,
+    /// `--event` with `--start-offset`: seek this many seconds after its origin once listed.
+    pending_seek: Option<f64>,
     renderer: render::SceneRenderer,
     texture_id: egui::TextureId,
     crt: render::CrtSettings,
@@ -175,21 +185,46 @@ impl SeismoApp {
 
         cc.egui_ctx.set_visuals(phosphor_visuals());
 
-        let stations = sim::parse_stations(STATIONS_BYTES).context("embedded stations.csv")?;
-        let events = vec![tohoku()];
-        let sim = Simulation::new(table, model, events).context("ray tracer")?;
-        let mut traces = Traces::new(stations);
-        traces.pick_defaults(&sim.events[0]);
-        let mantle = MantleWorker::spawn(sim.tracer().clone(), sim.boundaries().to_vec());
         // Debug/screenshot flags:
-        //   --start-offset <s>  start the clock that many seconds after the event's origin
+        //   --start-offset <s>  replay the built-in event: start the clock that many seconds
+        //                       after its origin (without it the clock starts at now, live)
+        //   --offline           no network: events come from the saved copy only
         //   --speed <x>         initial clock speed
         //   --crt <list>        comma-separated: off, noscan, nopersist
         let arg = |name: &str| std::env::args().skip_while(|a| a != name).nth(1);
-        let offset = arg("--start-offset")
-            .and_then(|s| s.parse::<f64>().ok())
-            .unwrap_or(0.0);
-        let mut clock = SimClock::new(sim.events[0].origin + secs(offset));
+        let flag = |name: &str| std::env::args().any(|a| a == name);
+        let feed = feed::spawn(feed::FeedConfig {
+            online: !flag("--offline"),
+            ..Default::default()
+        });
+        let mut events = EventList::new(
+            vec![Listed::builtin(
+                tohoku(),
+                "2011 Tōhoku, near the east coast of Honshu, Japan (built-in example)",
+            )],
+            Some(feed),
+        );
+        //   --event <id>        select this USGS event once the feed lists it; with
+        //                       --start-offset, replay it instead of the built-in event
+        events.wanted_id = arg("--event");
+        let replay = arg("--start-offset").and_then(|s| s.parse::<f64>().ok());
+        let pending_seek = replay.filter(|_| events.wanted_id.is_some());
+        let mut clock = match replay.filter(|_| pending_seek.is_none()) {
+            Some(offset) => {
+                // Replaying the built-in event: the feed must not pick another.
+                events.user_chose = true;
+                SimClock::new(tohoku().origin + secs(offset))
+            }
+            None => SimClock::new(Utc::now()),
+        };
+
+        let stations = sim::parse_stations(STATIONS_BYTES).context("embedded stations.csv")?;
+        let shown: Vec<Event> = events.shown().iter().map(|l| l.event.clone()).collect();
+        let keys: Vec<EventKey> = events.shown().iter().map(|l| l.key).collect();
+        let sim = Simulation::new(table, model, shown).context("ray tracer")?;
+        let mut traces = Traces::new(stations, sim.tracer().clone());
+        traces.pick_defaults(&sim.events[0]);
+        let mantle = MantleWorker::spawn(sim.tracer().clone(), sim.boundaries().to_vec());
         if let Some(speed) = arg("--speed").and_then(|s| s.parse::<f64>().ok()) {
             clock.set_speed(speed);
         }
@@ -247,7 +282,11 @@ impl SeismoApp {
             trace_style: render::TraceStyle::default(),
             delay_grids: HashMap::new(),
             clock,
-            selected: 0,
+            events_rev: events.rev(),
+            traces_follow: events.selected_handle(),
+            pending_seek,
+            events,
+            keys,
             renderer,
             texture_id,
             crt,
@@ -261,15 +300,55 @@ impl SeismoApp {
         })
     }
 
+    /// Index of the selected event in `sim.events`. The list always shows the selected event.
+    fn sel(&self) -> usize {
+        let handle = self.events.selected_handle();
+        self.keys
+            .iter()
+            .position(|k| k.handle == handle)
+            .unwrap_or(0)
+    }
+
+    fn selected_key(&self) -> EventKey {
+        self.keys[self.sel()]
+    }
+
     fn origin(&self) -> DateTime<Utc> {
-        self.sim.events[self.selected].origin
+        self.sim.events[self.sel()].origin
+    }
+
+    /// Take the feed's news and bring the simulation's events up to date with the list.
+    fn sync_events(&mut self) {
+        self.events.poll(self.clock.now());
+        if self.events.rev() != self.events_rev {
+            self.events_rev = self.events.rev();
+            let shown = self.events.shown();
+            self.sim.events = shown.iter().map(|l| l.event.clone()).collect();
+            self.keys = shown.iter().map(|l| l.key).collect();
+            let keys = &self.keys;
+            self.delay_grids.retain(|k, _| keys.contains(k));
+        }
+        if let Some(offset) = self.pending_seek
+            && self.events.wanted_id.is_none()
+        {
+            self.pending_seek = None;
+            self.clock.seek(self.origin() + secs(offset));
+        }
+        // Default stations follow a newly selected event.
+        let handle = self.events.selected_handle();
+        if handle != self.traces_follow {
+            self.traces_follow = handle;
+            if !self.traces.user_picked {
+                self.traces.pick_defaults(&self.sim.events[self.sel()]);
+            }
+        }
     }
 
     /// The ray fans for the selected event, rebuilt when its depth changes.
     /// The bent fans for the slice as it is now, if the 3D mantle is on.
     fn bend_key(&self) -> Option<BendKey> {
         let s = self.style.mantle_strength;
-        (s > 0.0).then(|| BendKey::new(self.selected, self.slice.azimuth_deg, s))
+        (s > 0.0).then(|| BendKey::new(self.selected_key(), self.slice.azimuth_deg, s))
     }
 
     /// Whether the slice is drawn with rays bent for its current settings.
@@ -283,7 +362,7 @@ impl SeismoApp {
         if self.bent_current() {
             return &self.bent.as_ref().expect("checked").1;
         }
-        let depth = self.sim.events[self.selected].depth_km;
+        let depth = self.sim.events[self.sel()].depth_km;
         if self.fans.as_ref().is_none_or(|f| f.depth_km != depth) {
             let started = Instant::now();
             let fans = self.sim.slice_fans(depth);
@@ -350,7 +429,7 @@ impl SeismoApp {
     }
 
     fn trace_controls(&mut self, ui: &mut egui::Ui) {
-        let event = self.sim.events[self.selected].clone();
+        let event = self.sim.events[self.sel()].clone();
         let tr = &mut self.traces;
         ui.checkbox(&mut tr.show, "show traces");
         ui.horizontal(|ui| {
@@ -446,6 +525,92 @@ impl SeismoApp {
         );
     }
 
+    fn event_controls(&mut self, ui: &mut egui::Ui) {
+        ui.colored_label(GREEN_DIM, self.feed_line());
+        let mut min_mag = self.events.min_mag();
+        ui.add(
+            egui::Slider::new(&mut min_mag, 0.0..=8.0)
+                .step_by(0.1)
+                .text("min M"),
+        );
+        self.events.set_min_mag(min_mag);
+        let (above, all) = self.events.feed_counts();
+        ui.colored_label(
+            GREEN_DIM,
+            format!("USGS: {above} of {all} events at M{min_mag:.1}+ (past day, and the month's significant ones)"),
+        );
+        let selected = self.events.selected_handle();
+        let mut pick = None;
+        egui::ScrollArea::vertical()
+            .id_salt("event list")
+            .max_height(220.0)
+            .show(ui, |ui| {
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                for l in self.events.shown() {
+                    let e = &l.event;
+                    let mut text =
+                        format!("M{:<4.1}{}  ", e.magnitude, e.origin.format("%m-%d %H:%M"));
+                    if !l.usgs_type.eq_ignore_ascii_case("earthquake") {
+                        text.push_str(&format!("[{}] ", l.usgs_type));
+                    }
+                    text.push_str(&l.place);
+                    let label = egui::RichText::new(text).monospace().size(11.0);
+                    if ui
+                        .selectable_label(l.key.handle == selected, label)
+                        .on_hover_text(format!(
+                            "{} UTC  {}",
+                            e.origin.format("%Y-%m-%d %H:%M:%S"),
+                            l.place
+                        ))
+                        .clicked()
+                    {
+                        pick = Some(l.key.handle);
+                    }
+                }
+            });
+        if let Some(handle) = pick {
+            self.events.select(handle);
+        }
+        ui.colored_label(
+            GREEN_DIM,
+            "Picking an event does not move the clock: use Replay from origin, or Live.",
+        );
+    }
+
+    /// One line on where the events come from and how fresh they are.
+    fn feed_line(&self) -> String {
+        let Some(status) = &self.events.status else {
+            return "USGS feed: starting…".to_owned();
+        };
+        let ago = |t: DateTime<Utc>| {
+            let s = (Utc::now() - t).num_seconds().max(0);
+            if s < 120 {
+                format!("{s} s ago")
+            } else if s < 2 * 3600 {
+                format!("{} min ago", s / 60)
+            } else {
+                format!("{} UTC", t.format("%Y-%m-%d %H:%M"))
+            }
+        };
+        let latest = |f: fn(&feed::FeedState) -> Option<DateTime<Utc>>| {
+            status.feeds.iter().filter_map(f).max()
+        };
+        let data = latest(|s| s.data_from);
+        let saved = data.map_or("no saved copy yet".to_owned(), |t| {
+            format!("saved copy from {}", ago(t))
+        });
+        if status.offline {
+            return format!("Offline: {saved}");
+        }
+        let error = status.feeds.iter().find_map(|s| s.error.as_deref());
+        match (latest(|s| s.last_ok), error) {
+            (Some(ok), None) => format!("USGS live: checked {}", ago(ok)),
+            (Some(ok), Some(e)) => format!("USGS reached {}; now failing: {e}", ago(ok)),
+            (None, Some(e)) => format!("USGS unreachable ({e}); {saved}"),
+            (None, None) => format!("USGS: connecting… ({saved})"),
+        }
+    }
+
     fn mantle_controls(&mut self, ui: &mut egui::Ui) {
         let strength = &mut self.style.mantle_strength;
         ui.add(
@@ -474,7 +639,7 @@ impl SeismoApp {
         } else {
             ui.label(format!("Weakened ×{s:.1}"));
         }
-        let status = self.mantle.status(self.selected);
+        let status = self.mantle.status(self.selected_key());
         if !status.is_empty() {
             ui.colored_label(GREEN_DIM, status);
         }
@@ -517,6 +682,15 @@ impl SeismoApp {
                 self.clock.seek(self.origin());
                 self.clock.set_playing(true);
             }
+            if ui
+                .button("Live")
+                .on_hover_text("Jump to now, at real speed")
+                .clicked()
+            {
+                self.clock.seek(Utc::now());
+                self.clock.set_speed(1.0);
+                self.clock.set_playing(true);
+            }
         });
 
         let mut speed = self.clock.speed();
@@ -528,7 +702,8 @@ impl SeismoApp {
         );
         self.clock.set_speed(speed);
 
-        let event = &self.sim.events[self.selected];
+        let sel = self.sel();
+        let event = &self.sim.events[sel];
         let mut t = event.t_at(now);
         let scrub = ui.add(
             egui::Slider::new(&mut t, -SCRUB_BEFORE_S..=SCRUB_AFTER_S)
@@ -541,20 +716,42 @@ impl SeismoApp {
         }
 
         ui.separator();
-        ui.label(format!(
-            "2011 Tōhoku  M{:.1} {}",
-            event.magnitude, event.mag_type
-        ));
+        let handle = self.events.selected_handle();
+        let Some(listed) = self.events.shown().iter().find(|l| l.key.handle == handle) else {
+            return;
+        };
+        let kind = if listed.usgs_type.eq_ignore_ascii_case("earthquake") {
+            String::new()
+        } else {
+            format!("  {}", listed.usgs_type.to_uppercase())
+        };
+        ui.label(
+            egui::RichText::new(format!("M{:.1} {}{kind}", event.magnitude, event.mag_type))
+                .strong(),
+        );
+        ui.label(&listed.place);
+        ui.monospace(format!("{} UTC", event.origin.format("%Y-%m-%d %H:%M:%S")));
         ui.monospace(format!(
             "{:.3}°N {:.3}°E  {:.0} km",
             event.lat, event.lon, event.depth_km
         ));
-        let state = &self.sim.state_at(now).events[self.selected];
+        ui.colored_label(GREEN_DIM, format!("{}  {}", event.id, listed.status));
+        if listed.gone {
+            ui.colored_label(GREEN, "USGS no longer lists this event.");
+        }
+        let t = event.t_at(now);
         let fmt = |d: Option<f64>| d.map_or("—".to_owned(), |d| format!("{d:6.2}°"));
-        ui.monospace(format!("t   {:9.1} s", state.t));
-        ui.monospace(format!("P   {}", fmt(state.p_front_deg)));
-        ui.monospace(format!("S   {}", fmt(state.s_front_deg)));
+        let p = self.sim.front_distance("P", event.depth_km, t);
+        let s = self.sim.front_distance("S", event.depth_km, t);
+        ui.monospace(format!("t   {t:9.1} s"));
+        ui.monospace(format!("P   {}", fmt(p)));
+        ui.monospace(format!("S   {}", fmt(s)));
         ui.colored_label(GREEN_DIM, "Map: P solid, S dashed. Direct waves only.");
+
+        ui.separator();
+        egui::CollapsingHeader::new("Events")
+            .default_open(true)
+            .show(ui, |ui| self.event_controls(ui));
 
         ui.separator();
         egui::CollapsingHeader::new("3D mantle")
@@ -657,20 +854,26 @@ impl SeismoApp {
         let now = self.clock.now();
         let linger = 5.0 * self.style.trail_s as f64;
         let map_events = self.sim.map_events(now, render::MAX_MAP_EVENTS, linger);
-        // Ask for the delays of every event on the map (largest first), and upload any that
-        // are ready into a GPU slot.
-        let on_map: Vec<usize> = map_events.iter().map(|m| m.index).collect();
-        for &i in &on_map {
-            let e = &self.sim.events[i];
-            self.mantle.request_delays(i, e.lat, e.lon, e.depth_km);
+        // Ask for the delays of every event on the map (the selected one, then largest first),
+        // and upload any that are ready into a GPU slot.
+        let sel = self.sel();
+        let mut order: Vec<usize> = map_events.iter().map(|m| m.index).collect();
+        if let Some(i) = order.iter().position(|&i| i == sel) {
+            order[..=i].rotate_right(1);
         }
+        for &i in &order {
+            let e = &self.sim.events[i];
+            self.mantle
+                .request_delays(self.keys[i], e.lat, e.lon, e.depth_km);
+        }
+        let on_map: Vec<EventKey> = order.iter().map(|&i| self.keys[i]).collect();
         if let Some(key) = self.bend_key() {
-            let e = &self.sim.events[self.selected];
+            let e = &self.sim.events[sel];
             self.mantle.request_bend(key, e.lat, e.lon, e.depth_km);
         }
         if let Some(wave) = self.slice.rock {
-            let e = &self.sim.events[self.selected];
-            let key = CutKey::new(self.selected, self.slice.azimuth_deg, wave);
+            let e = &self.sim.events[sel];
+            let key = CutKey::new(self.keys[sel], self.slice.azimuth_deg, wave);
             self.mantle.request_cut(key, e.lat, e.lon);
         }
         for ready in self.mantle.collect(&on_map) {
@@ -687,7 +890,7 @@ impl SeismoApp {
             .into_iter()
             .map(|m| {
                 let e = &self.sim.events[m.index];
-                let slot = self.mantle.slot(m.index);
+                let slot = self.mantle.slot(self.keys[m.index]);
                 render::MapEventInstance {
                     lat: e.lat as f32,
                     lon: e.lon as f32,
@@ -701,7 +904,7 @@ impl SeismoApp {
             .collect();
 
         // Slice: fronts now, fainter fronts at earlier times as a trail, and ray paths so far.
-        let event = &self.sim.events[self.selected];
+        let event = &self.sim.events[sel];
         let (t, depth_km) = (event.t_at(now), event.depth_km);
         let slice_line = Some(render::MapSliceLine {
             lat: event.lat as f32,
@@ -771,11 +974,12 @@ impl SeismoApp {
         // Traces: rebuilt when their inputs change, squeezed to the column's pixels each frame
         // and drawn up to the pen (now).
         if !self.traces.user_picked && self.traces.chosen.is_empty() {
-            self.traces.pick_defaults(&self.sim.events[self.selected]);
+            self.traces.pick_defaults(&self.sim.events[sel]);
         }
         self.traces.update(
             &self.sim,
-            self.selected,
+            &self.keys,
+            sel,
             &self.delay_grids,
             f64::from(self.style.mantle_strength),
         );
@@ -1053,7 +1257,11 @@ impl SeismoApp {
             painter.text(
                 to_ui(layout.plot_x().0, layout.label_y(0) + 8.0),
                 egui::Align2::LEFT_TOP,
-                "No stations chosen: click one on the map.",
+                if self.traces.pending {
+                    "Tracing rays for this event…"
+                } else {
+                    "No stations chosen: click one on the map."
+                },
                 font.clone(),
                 GREEN_DIM,
             );
@@ -1204,6 +1412,10 @@ impl eframe::App for SeismoApp {
         let real_dt = (now - self.last_frame).as_secs_f64();
         self.last_frame = now;
         self.clock.tick(real_dt);
+        if real_dt > 0.25 {
+            tracing::debug!(ms = (real_dt * 1e3) as u64, "slow frame");
+        }
+        self.sync_events();
         self.frame_time_s += (real_dt.min(1.0) - self.frame_time_s) * 0.05;
 
         egui::Panel::left("controls")
@@ -1212,6 +1424,8 @@ impl eframe::App for SeismoApp {
             .show(ui, |ui| {
                 egui::ScrollArea::vertical().show(ui, |ui| self.controls(ui));
             });
+        // The controls may have picked an event or changed the filter.
+        self.sync_events();
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(BACKGROUND))
             .show(ui, |ui| self.scene(ui, frame, real_dt));

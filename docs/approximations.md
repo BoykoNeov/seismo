@@ -251,3 +251,27 @@ their sizes only roughly physical. The UI says so.
   screen column, so a wavelet much shorter than a column still shows at full height. Each trace
   is scaled to its own largest wave by default; the shared-scale option uses the largest wave of
   all shown traces instead, so distant stations look smaller.
+- **Other events on a trace.** A trace shows the selected event's waves plus those of other
+  listed events whose waves reach the station inside the window, but only up to 12 of them
+  (largest first), and none more than 2 magnitude units smaller than the selected event (their
+  waves would be under 1% of its size). An event's waves join a trace once its ray tubes are
+  built, a moment after it appears.
+
+## USGS events: source kinds and the small-event filter
+
+- **Source kind from the USGS type** (decided by the user, 2026-10-14). USGS labels events
+  with a free-text `type`. SEISMO maps it by likeness: every kind of blast (explosion, quarry,
+  mining, chemical, nuclear, accidental, experimental) uses the explosion profile (the
+  `NuclearTest` kind); landslide, rockslide, avalanche, collapse and mine collapse use the
+  landslide profile; volcanic eruption the volcanic profile; meteorite the impact profile.
+  Everything else (ice quake, rock burst, induced or triggered event, sonic boom, other event,
+  unknown) is drawn as an earthquake. The UI always shows the USGS label, never the kind name.
+- **Small events hidden by default.** The list, map and traces show events of magnitude 2.5
+  and up (a slider changes it). USGS reports hundreds of magnitude 1–2 events a day; their waves
+  are far too weak to cross the globe, yet the map would draw them at full size.
+- **Magnitude types mixed.** USGS gives each event in its own magnitude type (ml, md, mb, mww,
+  …). SEISMO uses the number as if it were moment magnitude for amplitudes and the map ring
+  ordering, and shows the type beside it.
+- **Deletions.** An event USGS deletes is noticed only while it is less than about 23 hours
+  old (it disappears from the past-day feed). Older events, which come only from the month's
+  significant events, are never removed in a session.

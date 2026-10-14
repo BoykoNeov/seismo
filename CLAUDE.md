@@ -176,6 +176,13 @@ Keep the raw USGS `type` string on every feed event.
 - Dedupe on the full USGS `ids` list (an event can carry several network ids
   and its preferred `id` can change when events merge), not on `id` alone.
   The version with the newer `updated` field wins. Handle events USGS deletes.
+- USGS `type` → `EventKind` (decided 2026-10-14, `feed::kind_for`): blasts of every
+  kind → `NuclearTest` (the explosion profile); slides, avalanches, collapses → `Landslide`;
+  volcanic eruption → `VolcanicTremor`; meteorite → `Impact`; everything else →
+  `Earthquake`. The UI shows the raw USGS type, never the kind name.
+- Default minimum magnitude shown: 2.5, user-adjustable. Events are identified in the app by
+  a stable handle (kept through new versions and merges) plus a revision that changes with
+  the physics; caches key on both, never on list position.
 - Incoming events carry their real origin time; the sim clock is UTC so waves
   from a quake 10 minutes ago appear already in flight. USGS typically lists a
   quake 5–20+ minutes after origin, so the UI offers "replay from origin" for
@@ -216,8 +223,6 @@ python tools/gen_tables.py              # regenerates both ak135 assets (slow: m
 
 ## Open questions (ask before deciding)
 
-- How non-earthquake USGS types (explosion, quarry blast, ice quake, …) map to
-  `EventKind`.
 - Whether surface waves ever become truly dispersive (period-dependent speed).
 
 ## Do not

@@ -13,6 +13,8 @@ use sim::slice::{Boundary, Fan, SliceFans};
 use sim::tables::MantleModel;
 use sim::{RayTracer, Wave};
 
+use crate::events::EventKey;
+
 static SP12RTS_VS: &[u8] = include_bytes!("../../../assets/sp12rts/SP12RTS..ES.sph");
 static SP12RTS_VP: &[u8] = include_bytes!("../../../assets/sp12rts/SP12RTS..EP.sph");
 
@@ -23,13 +25,13 @@ const SLOTS: usize = render::MAX_MAP_EVENTS;
 /// keys mean equal grids.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CutKey {
-    pub event: usize,
+    pub event: EventKey,
     pub azimuth_decideg: i32,
     pub wave: Wave,
 }
 
 impl CutKey {
-    pub fn new(event: usize, azimuth_deg: f64, wave: Wave) -> Self {
+    pub fn new(event: EventKey, azimuth_deg: f64, wave: Wave) -> Self {
         Self {
             event,
             azimuth_decideg: (azimuth_deg.rem_euclid(360.0) * 10.0).round() as i32,
@@ -46,13 +48,13 @@ impl CutKey {
 /// strength (hundredths).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BendKey {
-    pub event: usize,
+    pub event: EventKey,
     pub azimuth_decideg: i32,
     pub strength_centi: i32,
 }
 
 impl BendKey {
-    pub fn new(event: usize, azimuth_deg: f64, strength: f32) -> Self {
+    pub fn new(event: EventKey, azimuth_deg: f64, strength: f32) -> Self {
         Self {
             event,
             azimuth_decideg: (azimuth_deg.rem_euclid(360.0) * 10.0).round() as i32,
@@ -63,7 +65,7 @@ impl BendKey {
 
 enum Job {
     Delays {
-        event: usize,
+        event: EventKey,
         lat: f64,
         lon: f64,
         depth_km: f64,
@@ -82,7 +84,7 @@ enum Job {
 }
 
 enum Output {
-    Delays { event: usize, grid: DelayGrid },
+    Delays { event: EventKey, grid: DelayGrid },
     Cut { key: CutKey, grid: CutGrid },
     Bend { key: BendKey, fans: SliceFans },
 }
@@ -91,7 +93,7 @@ enum Output {
 pub enum Ready {
     /// `event`'s map delays, for GPU slot `slot`.
     Delays {
-        event: usize,
+        event: EventKey,
         slot: u32,
         grid: DelayGrid,
     },
@@ -104,9 +106,9 @@ pub enum Ready {
 pub struct MantleWorker {
     jobs: Sender<Job>,
     results: Receiver<Output>,
-    requested: HashSet<usize>,
+    requested: HashSet<EventKey>,
     /// Per GPU slot: the event whose grid it holds and that grid's largest |delay|.
-    slots: [Option<(usize, f32)>; SLOTS],
+    slots: [Option<(EventKey, f32)>; SLOTS],
     /// The rock grid last asked for, and the one last uploaded.
     cut_wanted: Option<CutKey>,
     cut_shown: Option<CutKey>,
@@ -169,7 +171,7 @@ impl MantleWorker {
                             let started = Instant::now();
                             let grid = delay_grid(&tracer, &mantle, lat, lon, depth_km);
                             tracing::info!(
-                                event,
+                                handle = event.handle,
                                 max_abs_s = grid.max_abs_s,
                                 ms = started.elapsed().as_millis() as u64,
                                 "mantle delays"
@@ -233,7 +235,7 @@ impl MantleWorker {
     }
 
     /// Queue `event`'s map delays once; later calls for the same event do nothing.
-    pub fn request_delays(&mut self, event: usize, lat: f64, lon: f64, depth_km: f64) {
+    pub fn request_delays(&mut self, event: EventKey, lat: f64, lon: f64, depth_km: f64) {
         if self.failed || !self.requested.insert(event) {
             return;
         }
@@ -276,7 +278,7 @@ impl MantleWorker {
     /// Take finished results. Delay grids get a GPU slot: a free one first, then one whose
     /// event is not in `on_map`; with none, the grid is dropped and the event asked for again
     /// later. Rock grids other than the latest asked for are dropped.
-    pub fn collect(&mut self, on_map: &[usize]) -> Vec<Ready> {
+    pub fn collect(&mut self, on_map: &[EventKey]) -> Vec<Ready> {
         let mut out = Vec::new();
         loop {
             let done = match self.results.try_recv() {
@@ -327,7 +329,7 @@ impl MantleWorker {
     }
 
     /// The GPU slot holding `event`'s delays and their largest |delay| (s).
-    pub fn slot(&self, event: usize) -> Option<(u32, f32)> {
+    pub fn slot(&self, event: EventKey) -> Option<(u32, f32)> {
         self.slots
             .iter()
             .position(|s| s.is_some_and(|(e, _)| e == event))
@@ -335,7 +337,7 @@ impl MantleWorker {
     }
 
     /// A short status line for `event`'s map delays, empty once they are drawn.
-    pub fn status(&self, event: usize) -> &'static str {
+    pub fn status(&self, event: EventKey) -> &'static str {
         if self.failed {
             "3D model unavailable: map and slice are 1D"
         } else if self.slot(event).is_some() {
