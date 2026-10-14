@@ -1,0 +1,42 @@
+[workspace]
+resolver = "3"
+members = ["crates/sim", "crates/tables", "crates/feed", "crates/render", "crates/app"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+# Internal crates.
+sim = { path = "crates/sim" }
+tables = { path = "crates/tables" }
+feed = { path = "crates/feed" }
+render = { path = "crates/render" }
+
+# UI / GPU. `wgpu` must stay at exactly the version egui-wgpu 0.36.2 uses (30.x),
+# so `app` and `render` share one wgpu. Check with `cargo tree -d -i wgpu`.
+eframe = { version = "0.36.2", default-features = false, features = ["accesskit", "default_fonts", "wgpu", "x11", "wayland"] }
+egui = "0.36.2"
+egui-wgpu = "0.36.2"
+wgpu = "30.0"
+
+bytemuck = { version = "1.25", features = ["derive", "extern_crate_alloc"] }
+glam = "0.34"
+chrono = { version = "0.4.45", default-features = false, features = ["std", "clock", "serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+crossbeam-channel = "0.5"
+directories = "6.0"
+pollster = "0.4"
+
+# Feed-only.
+tokio = { version = "1.53", features = ["rt", "macros", "time"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+
+[profile.dev.package."*"]
+opt-level = 2

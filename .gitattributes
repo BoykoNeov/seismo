@@ -1,0 +1,2 @@
+# The travel-time table is binary; never let line-ending conversion touch it.
+*.tt binary
