@@ -1,7 +1,7 @@
 # SEISMO — Global Earthquake Simulator
 
 Desktop app in Rust. Simulates seismic wave propagation through a 1D Earth
-(ak135) for user-entered or live USGS events, rendered as a world map, a
+(ak135, optionally perturbed by a 3D mantle model) for user-entered or live USGS events, rendered as a world map, a
 vertical great-circle slice, and virtual seismograph traces, with a retro
 green-phosphor CRT look.
 
@@ -12,13 +12,14 @@ seismo/               # = repo root
   Cargo.toml          # workspace
   crates/
     sim/              # pure simulation core + ray tracer. NO rendering, NO async, NO I/O.
-    tables/           # travel-time table + ak135 velocity model: format, parsing, interpolation
+    tables/           # travel-time table + ak135 velocity model + SP12RTS 3D mantle: format, parsing, interpolation
     feed/             # USGS fetch/cache/parse (tokio + reqwest + serde)
     render/           # wgpu passes: map, slice, traces, CRT post-process
     app/              # eframe (wgpu backend) + egui shell, owns the clock, wires everything together
   assets/
     ak135.tt          # travel-time tables (generated, committed)
     ak135_model.csv   # ak135 velocity model: depth_km, vp_km_s, vs_km_s, density_g_cm3 (generated, committed)
+    sp12rts/          # SP12RTS 3D mantle model (authors' .sph files, unchanged; README has citation + checksums)
     shaders/          # WGSL
   tools/
     gen_tables.py     # ObsPy script that produces both ak135 assets
@@ -88,7 +89,11 @@ no dependence on the working directory.
 
 ## Physics reference
 
-Earth model: ak135. Key depths (km): Moho 35, 410, 660, CMB 2891.5
+Earth model: ak135, optionally perturbed in the mantle by SP12RTS (Koelemeijer et al.
+2016; shear and compressional dlnV, spherical harmonics to degree 12, 21 radial splines from
+the model's Moho to its CMB, relative to PREM; degree 0 ignored; crust and core stay 1D).
+The bundled files must stay byte-identical to the authors' download and keep their citation.
+Key depths (km): Moho 35, 410, 660, CMB 2891.5
 (radius 3479.5), ICB 5153.5 (radius 1217.5).
 
 Table phases, in priority order for implementation: P, S, PcP, ScS, PKPab,

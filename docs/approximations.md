@@ -108,3 +108,23 @@ tabulated ray parameter (dT/dΔ). Where the ray parameter approaches 0 (directly
 source, and for PKIKP near 180°), it is clamped to 0.5 s/deg for this conversion only. The
 fading trail behind a front is a display effect (exponential in time since arrival), not a
 model of the coda.
+
+## 3D mantle: SP12RTS on top of ak135
+
+(Model loaded; not drawn yet.) The 3D structure is SP12RTS (Koelemeijer, Ritsema, Deuss & van
+Heijst 2016, *Geophys. J. Int.* 204(2), 1024–1039, doi:10.1093/gji/ggv481), bundled unchanged
+in `assets/sp12rts/` with its citation. It gives the shear and compressional velocity
+perturbations, dlnVs and dlnVp, as spherical harmonics up to degree 12 (no detail finer than
+about 1500 km) on 21 radial splines.
+
+- **Different base model.** SP12RTS perturbations are relative to PREM. SEISMO applies them as
+  fractions of the ak135 velocities. The two base models differ by about 1% in places, which is
+  small next to the perturbations themselves but not zero.
+- **Degree 0 ignored.** The authors remove the radial average; SEISMO drops whatever is left of
+  it, so the perturbations average to zero at every depth and only lateral differences remain.
+- **Mantle only.** The model runs from its own Moho (24.4 km deep, PREM's) to the core-mantle
+  boundary (radius 3480 km). The crust and the core stay 1D.
+- **Gridded for speed.** The exact harmonic sum is sampled once onto a 2° × 2° × 25 km grid and
+  looked up trilinearly; the grid differs from the exact sum by less than 0.1% of velocity.
+- Checked against the paper: peak dlnVs of about 3.5% near 100 km depth and about 1.5% just
+  above the core, as the paper states.

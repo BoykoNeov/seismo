@@ -1,9 +1,12 @@
-//! `tables`: the ak135 travel-time table and velocity model — file format, parsing, interpolation.
+//! `tables`: the ak135 travel-time table and velocity model, and the SP12RTS 3D mantle
+//! perturbations — file formats, parsing, interpolation.
 //! Allowed dependencies: serde, serde_json, thiserror, bytemuck. No GPU, no network, no threads.
 
+mod mantle;
 mod model;
 mod table;
 
+pub use mantle::{MantleModel, SPH_R_BOTTOM_KM, SPH_R_TOP_KM, SphModel};
 pub use model::{EarthModel, ModelPoint};
 pub use table::{Axis, FORMAT_VERSION, GPU_MISSING, MAGIC, TravelTimeTable};
 
@@ -24,6 +27,8 @@ pub enum TableError {
     Inconsistent(String),
     #[error("bad velocity model: line {line}: {msg}")]
     Model { line: usize, msg: String },
+    #[error("bad 3D mantle model: {0}")]
+    Sph(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
