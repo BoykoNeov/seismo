@@ -257,6 +257,14 @@ impl SeismoApp {
         if let Some(x) = arg("--mantle").and_then(|s| s.parse::<f32>().ok()) {
             style.mantle_strength = x.clamp(0.0, MAX_MANTLE_STRENGTH);
         }
+        //   --coast <list>      comma-separated: off, wide
+        for flag in arg("--coast").unwrap_or_default().split(',') {
+            match flag {
+                "off" => style.coast_brightness = 0.0,
+                "wide" => style.coast_wide = true,
+                _ => {}
+            }
+        }
         //   --azimuth <deg>     direction of the slice from the epicentre
         let mut slice = SliceSettings::default();
         if let Some(az) = arg("--azimuth").and_then(|s| s.parse::<f64>().ok()) {
@@ -817,6 +825,10 @@ impl SeismoApp {
                 ui.add(egui::Slider::new(&mut s.trail_strength, 0.0..=1.0).text("trail"));
                 ui.add(egui::Slider::new(&mut s.grid_brightness, 0.0..=1.0).text("grid"));
                 ui.add(egui::Slider::new(&mut s.coast_brightness, 0.0..=1.0).text("coast"));
+                ui.checkbox(&mut s.coast_wide, "Wide coastlines")
+                    .on_hover_text(
+                        "Wider lines stay solid; thin ones are hatched by the scanlines",
+                    );
             });
     }
 

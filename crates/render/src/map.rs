@@ -13,6 +13,10 @@ use sim::mantle::{
 };
 use sim::tables::TravelTimeTable;
 
+/// Half width (px) of a coastline, normal and wide (see [`MapStyle::coast_wide`]).
+const COAST_HALF_WIDTH_PX: f32 = 0.5;
+const COAST_HALF_WIDTH_WIDE_PX: f32 = 0.85;
+
 /// Events the map can draw at once; matches `MAX_EVENTS` in `map.wgsl`.
 pub const MAX_MAP_EVENTS: usize = 32;
 
@@ -117,6 +121,9 @@ pub struct MapStyle {
     pub grid_brightness: f32,
     /// Brightness of the coastlines, [0, 1]; 0 hides them.
     pub coast_brightness: f32,
+    /// Wider coastlines, so a line never sits wholly in a scanline gap; off draws them one
+    /// pixel wide, hatched by the scanlines like an old screen.
+    pub coast_wide: bool,
     /// Strength of the 3D-mantle delays: 0 draws the 1D arrival times, 1 the model's real
     /// strength, larger values exaggerate them linearly.
     pub mantle_strength: f32,
@@ -130,6 +137,7 @@ impl Default for MapStyle {
             trail_strength: 0.35,
             grid_brightness: 0.35,
             coast_brightness: 0.45,
+            coast_wide: false,
             mantle_strength: 1.0,
         }
     }
@@ -163,8 +171,8 @@ pub struct MapPass {
     markers: LineBatch,
     coast: LineBatch,
     coastlines: Coastlines,
-    /// Map size and brightness the coastline vertices were last built for.
-    coast_built: Option<((f32, f32), f32)>,
+    /// Map size, brightness and half width the coastline vertices were last built for.
+    coast_built: Option<((f32, f32), f32, f32)>,
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     delay_texture: wgpu::Texture,
@@ -321,11 +329,22 @@ impl MapPass {
             projection.size,
             &marker_vertices(&projection, markers),
         );
-        // The coastlines only change with the map's size, so their vertices are rebuilt then.
-        let coast_key = (projection.size, style.coast_brightness);
+        // The coastlines only change with the map's size or their style, so their vertices are
+        // rebuilt then.
+        let half_w = if style.coast_wide {
+            COAST_HALF_WIDTH_WIDE_PX
+        } else {
+            COAST_HALF_WIDTH_PX
+        };
+        let coast_key = (projection.size, style.coast_brightness, half_w);
         if self.coast_built != Some(coast_key) {
             let vertices = if style.coast_brightness > 0.0 {
-                coast_vertices(&projection, &self.coastlines, style.coast_brightness)
+                coast_vertices(
+                    &projection,
+                    &self.coastlines,
+                    half_w,
+                    style.coast_brightness,
+                )
             } else {
                 Vec::new()
             };

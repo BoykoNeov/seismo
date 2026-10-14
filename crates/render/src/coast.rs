@@ -70,12 +70,13 @@ impl Coastlines {
     }
 }
 
-/// Line quads for every coastline in map pixels. A step of more than 180 deg in longitude
+/// Line quads for every coastline in map pixels, `half_w` pixels either side of the line. A step of more than 180 deg in longitude
 /// would run across the whole map, so a line is broken there instead (Natural Earth cuts its
 /// lines at the antimeridian, so this is only a guard).
 pub(crate) fn coast_vertices(
     projection: &MapProjection,
     coast: &Coastlines,
+    half_w: f32,
     intensity: f32,
 ) -> Vec<LineVertex> {
     let mut out = Vec::new();
@@ -84,12 +85,12 @@ pub(crate) fn coast_vertices(
         run.clear();
         for (k, &[lat, lon]) in line.iter().enumerate() {
             if k > 0 && (lon - line[k - 1][1]).abs() > 180.0 {
-                push_polyline(&mut out, &run, 0.5, intensity, DASH_SOLID);
+                push_polyline(&mut out, &run, half_w, intensity, DASH_SOLID);
                 run.clear();
             }
             run.push(projection.pixel(f64::from(lat), f64::from(lon)));
         }
-        push_polyline(&mut out, &run, 0.5, intensity, DASH_SOLID);
+        push_polyline(&mut out, &run, half_w, intensity, DASH_SOLID);
     }
     out
 }
@@ -132,7 +133,7 @@ mod tests {
         // Three points, the middle step crossing the antimeridian: two separate one-segment
         // pieces, no quad spanning the map.
         let c = Coastlines::from_bytes(b"0,170 0,179 0,-179 0,-170\n").unwrap();
-        let v = coast_vertices(&p, &c, 0.5);
+        let v = coast_vertices(&p, &c, 0.5, 0.5);
         assert_eq!(v.len(), 2 * 6);
         let span = v.iter().fold((f32::MAX, f32::MIN), |(lo, hi), q| {
             (lo.min(q.pos[0]), hi.max(q.pos[0]))
