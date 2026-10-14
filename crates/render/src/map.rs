@@ -4,6 +4,10 @@ use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
 use crate::gpu;
+use sim::mantle::{
+    DELAY_AZ_COUNT, DELAY_AZ_STEP_DEG, DELAY_DIST_COUNT, DELAY_DIST_STEP_DEG, DELAY_PHASES,
+    DelayGrid,
+};
 use sim::tables::TravelTimeTable;
 
 /// Events the map can draw at once; matches `MAX_EVENTS` in `map.wgsl`.
@@ -18,6 +22,11 @@ pub struct MapEventInstance {
     pub depth_km: f32,
     pub t: f32,
     pub magnitude: f32,
+    /// Slot of this event's 3D-mantle delays (see [`MapPass::upload_delays`]); `None` draws
+    /// the 1D arrival times.
+    pub delay_slot: Option<u32>,
+    /// Largest |delay| (s) in that slot, so the shader can skip the lookup far from a front.
+    pub max_delay_s: f32,
 }
 
 /// The great circle the slice view cuts along, drawn on the map from the epicentre to its
@@ -41,6 +50,9 @@ pub struct MapStyle {
     pub trail_strength: f32,
     /// Brightness of the graticule, [0, 1].
     pub grid_brightness: f32,
+    /// Strength of the 3D-mantle delays: 0 draws the 1D arrival times, 1 the model's real
+    /// strength, larger values exaggerate them linearly.
+    pub mantle_strength: f32,
 }
 
 impl Default for MapStyle {
@@ -50,6 +62,7 @@ impl Default for MapStyle {
             trail_s: 40.0,
             trail_strength: 0.35,
             grid_brightness: 0.35,
+            mantle_strength: 1.0,
         }
     }
 }
@@ -72,6 +85,8 @@ struct Uniforms {
     phosphor: [f32; 4],
     background: [f32; 4],
     slice: [f32; 4],
+    delay_axis: [f32; 4],
+    mantle: [f32; 4],
     events: [GpuEvent; MAX_MAP_EVENTS],
 }
 
@@ -79,6 +94,7 @@ pub struct MapPass {
     pipeline: wgpu::RenderPipeline,
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
+    delay_texture: wgpu::Texture,
     depth_axis: [f32; 4],
     dist_axis: [f32; 4],
     layers: [f32; 4],
@@ -91,6 +107,7 @@ impl MapPass {
             entries: &[
                 gpu::uniform_entry(0),
                 gpu::texture_entry(1, wgpu::TextureViewDimension::D2Array),
+                gpu::texture_entry(2, wgpu::TextureViewDimension::D2Array),
             ],
         });
         let pipeline = gpu::fullscreen_pipeline(
@@ -106,6 +123,25 @@ impl MapPass {
         );
 
         let table_view = upload_table(device, queue, table);
+        let delay_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("mantle delays"),
+            size: wgpu::Extent3d {
+                width: DELAY_DIST_COUNT as u32,
+                height: DELAY_AZ_COUNT as u32,
+                depth_or_array_layers: (MAX_MAP_EVENTS * DELAY_PHASES.len()) as u32,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let delay_view = delay_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("mantle delays"),
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("map uniforms"),
             size: std::mem::size_of::<Uniforms>() as u64,
@@ -124,6 +160,10 @@ impl MapPass {
                     binding: 1,
                     resource: wgpu::BindingResource::TextureView(&table_view),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&delay_view),
+                },
             ],
         });
 
@@ -133,9 +173,44 @@ impl MapPass {
             pipeline,
             uniform_buffer,
             bind_group,
+            delay_texture,
             depth_axis: [d.start as f32, d.step as f32, d.count as f32, 0.0],
             dist_axis: [x.start as f32, x.step as f32, x.count as f32, 0.0],
             layers: [layer("P"), layer("S"), -1.0, -1.0],
+        }
+    }
+
+    /// Store an event's delays in `slot` (< [`MAX_MAP_EVENTS`]); events drawn with that
+    /// `delay_slot` use them. The caller assigns slots per event.
+    pub fn upload_delays(&self, queue: &wgpu::Queue, slot: u32, grid: &DelayGrid) {
+        assert!(
+            (slot as usize) < MAX_MAP_EVENTS,
+            "delay slot {slot} out of range"
+        );
+        for (layer, values) in grid.delays.iter().enumerate() {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.delay_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: slot * DELAY_PHASES.len() as u32 + layer as u32,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                bytemuck::cast_slice(values),
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(4 * DELAY_DIST_COUNT as u32),
+                    rows_per_image: Some(DELAY_AZ_COUNT as u32),
+                },
+                wgpu::Extent3d {
+                    width: DELAY_DIST_COUNT as u32,
+                    height: DELAY_AZ_COUNT as u32,
+                    depth_or_array_layers: 1,
+                },
+            );
         }
     }
 
@@ -157,7 +232,13 @@ impl MapPass {
         for (g, e) in gpu_events.iter_mut().zip(&events[..n]) {
             *g = GpuEvent {
                 a: [e.lat, e.lon, e.depth_km, e.t],
-                b: [e.magnitude, 0.0, 0.0, 0.0],
+                b: [
+                    e.magnitude,
+                    e.delay_slot
+                        .map_or(-1.0, |s| (s as usize * DELAY_PHASES.len()) as f32),
+                    e.max_delay_s,
+                    0.0,
+                ],
             };
         }
         let [pr, pg, pb] = crate::PHOSPHOR;
@@ -176,6 +257,13 @@ impl MapPass {
             phosphor: [pr, pg, pb, 0.0],
             background: [br, bg, bb, 0.0],
             slice: slice.map_or([0.0; 4], |l| [l.lat, l.lon, l.azimuth_deg, 1.0]),
+            delay_axis: [
+                DELAY_DIST_STEP_DEG as f32,
+                DELAY_DIST_COUNT as f32,
+                DELAY_AZ_STEP_DEG as f32,
+                DELAY_AZ_COUNT as f32,
+            ],
+            mantle: [style.mantle_strength, 0.0, 0.0, 0.0],
             events: gpu_events,
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));

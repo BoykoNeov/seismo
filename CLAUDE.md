@@ -64,7 +64,11 @@ no dependence on the working directory.
 - The core query is `Simulation::state_at(now: DateTime<Utc>) -> Snapshot`.
   Rendering never advances a clock itself; `app` owns the clock and may scrub,
   pause, or run at any speed.
-- Surface arrival times come ONLY from `tables`. Wavefronts and ray paths
+- Surface arrival times come from `tables`, plus a per-event 3D-mantle delay
+  computed in `sim` along the 1D rays through the 3D model (first order,
+  −∫ dlnV dt; rays not bent), scaled by a user strength (0 = 1D, 1 = real,
+  default 1; above 1 the UI says EXAGGERATED). The delay is never "3D minus
+  table": the tracer/table tolerance is as large as the signal. Wavefronts and ray paths
   *inside* the Earth (slice view, seismogram amplitudes) come from the ray
   tracer in `sim`, which shoots rays through the ak135 velocity model loaded by
   `tables`. A test checks ray-traced surface arrival times against the tables
@@ -76,8 +80,11 @@ no dependence on the working directory.
   width = distance, height = depth) and evaluates arrival time per
   pixel with a manual 4-tap bilinear lookup (`textureLoad`, no hardware
   filtering — 32-bit float filtering is optional on integrated GPUs). Ring width in
-  degrees comes from the ray parameter (dT/dΔ). CPU code computes nothing
-  per-pixel.
+  degrees comes from the ray parameter (dT/dΔ). 3D-mantle delays arrive as an
+  R32Float 2D array texture (width = distance, height = azimuth, wrapping; two
+  layers per GPU slot: P, S), slots assigned per event by `app` (never by the
+  re-sorted map list), computed on a worker thread; 1D rings show until ready.
+  CPU code computes nothing per-pixel.
 - Map events are culled before upload: only events whose waves are still on the
   globe, capped (default 32, largest magnitude first).
 - Slice: `sim` computes a ray fan per (source depth, phase) — per ray, not per

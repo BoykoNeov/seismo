@@ -111,7 +111,7 @@ model of the coda.
 
 ## 3D mantle: SP12RTS on top of ak135
 
-(Model loaded; not drawn yet.) The 3D structure is SP12RTS (Koelemeijer, Ritsema, Deuss & van
+The 3D structure is SP12RTS (Koelemeijer, Ritsema, Deuss & van
 Heijst 2016, *Geophys. J. Int.* 204(2), 1024–1039, doi:10.1093/gji/ggv481), bundled unchanged
 in `assets/sp12rts/` with its citation. It gives the shear and compressional velocity
 perturbations, dlnVs and dlnVp, as spherical harmonics up to degree 12 (no detail finer than
@@ -128,3 +128,27 @@ about 1500 km) on 21 radial splines.
   looked up trilinearly; the grid differs from the exact sum by less than 0.1% of velocity.
 - Checked against the paper: peak dlnVs of about 3.5% near 100 km depth and about 1.5% just
   above the core, as the paper states.
+
+## Map: 3D delays along the 1D rays, not bent rays
+
+The map's fronts are the table's arrival times plus a delay from the 3D mantle, scaled by the
+strength setting (0 = 1D, 1 = real, up to 20× exaggerated; the screen says EXAGGERATED above
+1×).
+
+- **First order, unbent rays.** Each ak135 ray is laid out along an azimuth from the source and
+  its delay is −∫ dlnV dt along that fixed path. Bending the ray through the structure would
+  change the time only at second order (Fermat's principle), a small fraction of a second at
+  real strength. When exaggerated, the delay is simply scaled; a model really that strong would
+  bend rays noticeably and the true times would differ.
+- **Measured size.** For the Tōhoku event at real strength the delay varies with direction by
+  about 2–3 s for P and 4–11 s for S, moving the fronts by about 0.2°–1.2°: one to six pixels on
+  a full-HD map.
+- **Coarse grid.** Delays are computed every 1° of distance and every 5° of azimuth and
+  interpolated. The model has no structure finer than about 15°, so this loses little.
+- **First arrival.** Where a phase has several branches (the 410/660 triplications), the delay
+  of the earliest branch is used, matching the table.
+- **Edges.** Where the 1D rays do not reach (beyond the direct-wave cutoff near 100°) the delay
+  is 0, so the 3D model never moves the end of a front.
+- **Crust and core are 1D.** Perturbations start below ak135's Moho (35 km) and stop at the
+  core-mantle boundary.
+- The P and S distances shown in the side panel are the 1D values.

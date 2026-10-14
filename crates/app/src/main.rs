@@ -3,6 +3,7 @@
 //! Allowed dependencies: everything in the workspace.
 
 mod clock;
+mod mantle;
 
 use std::time::Instant;
 
@@ -14,9 +15,13 @@ use sim::tables::{EarthModel, TravelTimeTable};
 use sim::{EARTH_RADIUS_KM, Event, EventKind, RayPhase, Simulation};
 
 use clock::{MAX_SPEED, MIN_SPEED, SimClock, secs};
+use mantle::MantleDelays;
 
 static TABLE_BYTES: &[u8] = include_bytes!("../../../assets/ak135.tt");
 static MODEL_BYTES: &[u8] = include_bytes!("../../../assets/ak135_model.csv");
+
+/// Largest 3D-mantle strength offered (×real).
+const MAX_MANTLE_STRENGTH: f32 = 20.0;
 
 /// Scrub range around the selected event's origin (s).
 const SCRUB_BEFORE_S: f64 = 60.0;
@@ -99,6 +104,8 @@ impl Default for SliceSettings {
 
 struct SeismoApp {
     sim: Simulation,
+    /// 3D-mantle delays per event, computed on a worker thread.
+    delays: MantleDelays,
     /// Ray fans for the selected event's source depth, built on first use.
     fans: Option<SliceFans>,
     slice: SliceSettings,
@@ -145,6 +152,7 @@ impl SeismoApp {
 
         let events = vec![tohoku()];
         let sim = Simulation::new(table, model, events).context("ray tracer")?;
+        let delays = MantleDelays::spawn(sim.tracer().clone(), sim.boundaries().to_vec());
         // Debug/screenshot flags:
         //   --start-offset <s>  start the clock that many seconds after the event's origin
         //   --speed <x>         initial clock speed
@@ -165,6 +173,11 @@ impl SeismoApp {
                 .unwrap_or(3.0);
             (std::path::PathBuf::from(p), after)
         });
+        //   --mantle <x>        3D-mantle strength (0 = 1D, 1 = real)
+        let mut style = render::MapStyle::default();
+        if let Some(x) = arg("--mantle").and_then(|s| s.parse::<f32>().ok()) {
+            style.mantle_strength = x.clamp(0.0, MAX_MANTLE_STRENGTH);
+        }
         //   --azimuth <deg>     direction of the slice from the epicentre
         let mut slice = SliceSettings::default();
         if let Some(az) = arg("--azimuth").and_then(|s| s.parse::<f64>().ok()) {
@@ -182,6 +195,7 @@ impl SeismoApp {
         let now = Instant::now();
         Ok(Self {
             sim,
+            delays,
             fans: None,
             slice,
             clock,
@@ -189,7 +203,7 @@ impl SeismoApp {
             renderer,
             texture_id,
             crt,
-            style: render::MapStyle::default(),
+            style,
             started: now,
             last_frame: now,
             last_seek_count: 0,
@@ -249,6 +263,44 @@ impl SeismoApp {
             GREEN_DIM,
             "Solid: P (compression). Dashed: S (shear). Dotted: ray paths. \
              Half of the cut is shown; the other half is its mirror image.",
+        );
+    }
+
+    fn mantle_controls(&mut self, ui: &mut egui::Ui) {
+        let strength = &mut self.style.mantle_strength;
+        ui.add(
+            egui::Slider::new(strength, 0.0..=MAX_MANTLE_STRENGTH)
+                .text("strength ×")
+                .max_decimals(1),
+        );
+        ui.horizontal(|ui| {
+            if ui.button("1D").clicked() {
+                *strength = 0.0;
+            }
+            if ui.button("Real").clicked() {
+                *strength = 1.0;
+            }
+        });
+        let s = *strength;
+        if s == 0.0 {
+            ui.label("1D: ak135 only");
+        } else if s == 1.0 {
+            ui.label("Real strength");
+        } else if s > 1.0 {
+            ui.colored_label(
+                GREEN,
+                egui::RichText::new(format!("EXAGGERATED ×{s:.1}")).strong(),
+            );
+        } else {
+            ui.label(format!("Weakened ×{s:.1}"));
+        }
+        let status = self.delays.status(self.selected);
+        if !status.is_empty() {
+            ui.colored_label(GREEN_DIM, status);
+        }
+        ui.colored_label(
+            GREEN_DIM,
+            "Fast and slow rock in the mantle (SP12RTS, Koelemeijer et al. 2016) moves the map              fronts earlier or later. Times are nudged along the 1D rays; the slice is still 1D.",
         );
     }
 
@@ -318,6 +370,11 @@ impl SeismoApp {
         ui.monospace(format!("P   {}", fmt(state.p_front_deg)));
         ui.monospace(format!("S   {}", fmt(state.s_front_deg)));
         ui.colored_label(GREEN_DIM, "Map: P solid, S dashed. Direct waves only.");
+
+        ui.separator();
+        egui::CollapsingHeader::new("3D mantle")
+            .default_open(true)
+            .show(ui, |ui| self.mantle_controls(ui));
 
         ui.separator();
         egui::CollapsingHeader::new("CRT")
@@ -392,18 +449,30 @@ impl SeismoApp {
 
         let now = self.clock.now();
         let linger = 5.0 * self.style.trail_s as f64;
-        let events: Vec<render::MapEventInstance> = self
-            .sim
-            .map_events(now, render::MAX_MAP_EVENTS, linger)
+        let map_events = self.sim.map_events(now, render::MAX_MAP_EVENTS, linger);
+        // Ask for the delays of every event on the map (largest first), and upload any that
+        // are ready into a GPU slot.
+        let on_map: Vec<usize> = map_events.iter().map(|m| m.index).collect();
+        for &i in &on_map {
+            let e = &self.sim.events[i];
+            self.delays.request(i, e.lat, e.lon, e.depth_km);
+        }
+        self.delays.collect(&on_map, |slot, grid| {
+            self.renderer.map.upload_delays(&rs.queue, slot, grid)
+        });
+        let events: Vec<render::MapEventInstance> = map_events
             .into_iter()
             .map(|m| {
                 let e = &self.sim.events[m.index];
+                let slot = self.delays.slot(m.index);
                 render::MapEventInstance {
                     lat: e.lat as f32,
                     lon: e.lon as f32,
                     depth_km: e.depth_km as f32,
                     t: m.t as f32,
                     magnitude: e.magnitude as f32,
+                    delay_slot: slot.map(|(s, _)| s),
+                    max_delay_s: slot.map_or(0.0, |(_, m)| m),
                 }
             })
             .collect();
@@ -517,6 +586,17 @@ impl SeismoApp {
             egui::Image::new(egui::load::SizedTexture::new(self.texture_id, rect.size())),
         );
         self.slice_labels(ui, rect, &labels);
+        if self.style.mantle_strength > 1.0 {
+            let map_h = self.renderer.map_viewport().h * rect.width()
+                / self.renderer.size().0.max(1) as f32;
+            ui.painter_at(rect).text(
+                rect.min + egui::vec2(8.0, map_h - 8.0),
+                egui::Align2::LEFT_BOTTOM,
+                format!("3D MANTLE EXAGGERATED ×{:.1}", self.style.mantle_strength),
+                egui::FontId::monospace(13.0),
+                GREEN,
+            );
+        }
     }
 
     /// Text over the slice, drawn by egui on top of the scene (undistorted): distances along

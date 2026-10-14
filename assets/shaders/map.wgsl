@@ -1,5 +1,5 @@
 // Map pass: equirectangular world grid, epicentres, and per-pixel wavefronts from the
-// travel-time table. All values written are display-space intensities (gamma-encoded green),
+// travel-time table, nudged per event by 3D-mantle delays. All values written are display-space intensities (gamma-encoded green),
 // possibly > 1 for later bloom.
 
 const MAX_EVENTS: u32 = 32u;
@@ -11,7 +11,7 @@ const MIN_RAY_PARAM: f32 = 0.5;
 struct MapEvent {
     // lat_deg, lon_deg, depth_km, t_s (seconds since origin; < 0 = not yet)
     a: vec4<f32>,
-    // magnitude, unused, unused, unused
+    // magnitude, first delay layer (P; S is the next; < 0 = none), max |delay| (s), unused
     b: vec4<f32>,
 };
 
@@ -32,6 +32,10 @@ struct Uniforms {
     background: vec4<f32>,
     // slice great circle: epicentre lat_deg, lon_deg, azimuth_deg, enabled (0/1)
     slice: vec4<f32>,
+    // delay grid: dist_step_deg, dist_count, az_step_deg, az_count
+    delay_axis: vec4<f32>,
+    // 3D-mantle strength (0 = 1D, 1 = real), unused, unused, unused
+    mantle: vec4<f32>,
     events: array<MapEvent, MAX_EVENTS>,
 };
 
@@ -39,6 +43,9 @@ struct Uniforms {
 // RG32Float, R = arrival time (s), G = ray parameter (s/deg); one layer per phase;
 // width = distance, height = depth; MISSING where there is no arrival.
 @group(0) @binding(1) var tt: texture_2d_array<f32>;
+// R32Float, delay (s, at strength 1) of each event's P and S; width = distance, height =
+// azimuth (clockwise from north, wrapping); 0 where the phase has no ray.
+@group(0) @binding(2) var delays: texture_2d_array<f32>;
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -99,18 +106,54 @@ fn tt_lookup(layer: i32, depth_km: f32, dist_deg: f32) -> vec2<f32> {
     return select(v, vec2<f32>(MISSING), lo < vec2<f32>(-0.5));
 }
 
+// Manual bilinear lookup of a delay (s), wrapping in azimuth. `az` in radians from
+// `distance_azimuth`.
+fn delay_lookup(layer: i32, dist_deg: f32, az: f32) -> f32 {
+    let nd = u.delay_axis.y;
+    let na = u.delay_axis.w;
+    let fu = clamp(dist_deg / u.delay_axis.x, 0.0, nd - 1.0);
+    let az_deg = select(az / DEG, az / DEG + 360.0, az < 0.0);
+    let fv = clamp(az_deg / u.delay_axis.z, 0.0, na);
+    let i = min(floor(fu), nd - 2.0);
+    let j = min(floor(fv), na - 1.0);
+    let fx = fu - i;
+    let fy = fv - j;
+    let x = i32(i);
+    let y0 = i32(j);
+    let y1 = (y0 + 1) % i32(na);
+    let c00 = textureLoad(delays, vec2<i32>(x, y0), layer, 0).r;
+    let c10 = textureLoad(delays, vec2<i32>(x + 1, y0), layer, 0).r;
+    let c01 = textureLoad(delays, vec2<i32>(x, y1), layer, 0).r;
+    let c11 = textureLoad(delays, vec2<i32>(x + 1, y1), layer, 0).r;
+    return mix(mix(c00, c10, fx), mix(c01, c11, fx), fy);
+}
+
 // Brightness of one phase's front and trail at this pixel.
+// `dlayer` >= 0 nudges the arrival time by that delay layer, scaled by the mantle strength;
+// `max_delay` bounds it, so the lookup is skipped where it cannot matter.
 // `dash` > 0 makes the front dashed with that period (deg of arc along the ring).
-fn phase_glow(layer: i32, depth: f32, dist: f32, az: f32, t: f32, px_deg: f32, dash: f32) -> f32 {
+fn phase_glow(layer: i32, dlayer: i32, max_delay: f32, depth: f32, dist: f32, az: f32, t: f32,
+              px_deg: f32, dash: f32) -> f32 {
     let tp = tt_lookup(layer, depth, dist);
     if (tp.x < 0.0 || tp.y < 0.0 || t < 0.0) {
         return 0.0;
     }
+    let p = max(tp.y, MIN_RAY_PARAM);
+    let half_w = 0.5 * u.style.x * px_deg;
+    var arrival = tp.x;
+    let strength = u.mantle.x;
+    if (dlayer >= 0 && strength != 0.0) {
+        // Past ~8 trail lengths behind the front the trail is invisible either way.
+        let margin = abs(strength) * max_delay + (half_w + px_deg) * p;
+        let dt0 = t - arrival;
+        if (dt0 > -margin && dt0 < margin + 8.0 * u.style.y) {
+            arrival = arrival + strength * delay_lookup(dlayer, dist, az);
+        }
+    }
     // Seconds since the front passed this point; converted to degrees behind the front with
     // the ray parameter (dT/dDelta), so the line has a fixed width in screen pixels.
-    let dt = t - tp.x;
-    let behind_deg = dt / max(tp.y, MIN_RAY_PARAM);
-    let half_w = 0.5 * u.style.x * px_deg;
+    let dt = t - arrival;
+    let behind_deg = dt / p;
     var front = 1.0 - smoothstep(half_w, half_w + px_deg, abs(behind_deg));
     if (dash > 0.0) {
         let along = az / DEG * sin(dist * DEG);
@@ -152,8 +195,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let az = da.y;
         // A pixel's size in degrees of arc, roughly, at this point on the map.
         let px_deg = max(px.y, px.x * cos(lat * DEG));
-        let p = phase_glow(i32(u.layers.x), e.a.z, dist, az, e.a.w, px_deg, 0.0);
-        let s = phase_glow(i32(u.layers.y), e.a.z, dist, az, e.a.w, px_deg, 3.0);
+        let dl = i32(e.b.y);
+        let dl_s = select(-1, dl + 1, dl >= 0);
+        let p = phase_glow(i32(u.layers.x), dl, e.b.z, e.a.z, dist, az, e.a.w, px_deg, 0.0);
+        let s = phase_glow(i32(u.layers.y), dl_s, e.b.z, e.a.z, dist, az, e.a.w, px_deg, 3.0);
         level = max(level, max(p, 0.8 * s));
         // Epicentre: bright dot plus a ring.
         let r = dist / px_deg;

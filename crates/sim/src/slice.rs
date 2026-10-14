@@ -258,7 +258,7 @@ impl SliceFans {
 
 /// Trace a fan: rays at regular take-off angles, then midpoints inserted between neighbours
 /// whose end or bottom points are far apart, and bisection towards the fan's edges.
-fn build_fan(tracer: &RayTracer, phase: RayPhase, depth_km: f64) -> Vec<Ray> {
+pub(crate) fn build_fan(tracer: &RayTracer, phase: RayPhase, depth_km: f64) -> Vec<Ray> {
     let max_angle = if phase.has_upgoing() && depth_km > 0.0 {
         PI
     } else {
