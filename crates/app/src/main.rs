@@ -825,10 +825,11 @@ impl SeismoApp {
                 ticks: k,
             })
             .collect();
-        let step_s = if to - from > 40.0 * 60.0 {
-            600.0
-        } else {
-            120.0
+        // Grid every 15, 10 or 2 minutes, so the axis labels never crowd.
+        let step_s = match to - from {
+            w if w > 65.0 * 60.0 => 900.0,
+            w if w > 25.0 * 60.0 => 600.0,
+            _ => 120.0,
         };
         let grid_times: Vec<f64> = (0..)
             .map(|k| k as f64 * step_s)

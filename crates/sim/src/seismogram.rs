@@ -126,7 +126,7 @@ const CODA_GAIN: f64 = 0.4;
 const NOISE_FRACTION: f64 = 0.003;
 
 /// Surface-wave amplitude relative to body waves at the same weight; chosen so that for a
-/// shallow earthquake at 60° the Rayleigh packet is about ten times direct P on the vertical.
+/// shallow earthquake at 60° the Rayleigh packet is about seven times direct P on the vertical.
 const SURFACE_GAIN: f64 = 4.0;
 /// Surface-wave excitation falls off with source depth over this scale (km).
 const SURFACE_DEPTH_KM: f64 = 60.0;
@@ -839,7 +839,7 @@ mod tests {
             "Love is faster"
         );
         assert!(get(&sp_deep, 300.0, "R1").amplitude < 0.1 * r1.amplitude);
-        // Calibration: shallow earthquake at 60°, Rayleigh about ten times direct P.
+        // Calibration: shallow earthquake at 60°, Rayleigh several times direct P (about 7).
         let p = get(&sp_shallow, 10.0, "P");
         let ratio = r1.amplitude / p.amplitude;
         assert!((4.0..25.0).contains(&ratio), "R1/P = {ratio:.1}");

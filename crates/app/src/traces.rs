@@ -64,7 +64,7 @@ impl Traces {
             component: Component::Vertical,
             shared_scale: false,
             gain: 1.0,
-            window_min: 60.0,
+            window_min: 90.0,
             click_to_place: true,
             user_picked: false,
             note: None,
