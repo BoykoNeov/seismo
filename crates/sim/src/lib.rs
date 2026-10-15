@@ -12,6 +12,7 @@ pub mod seismogram;
 mod simulation;
 pub mod slice;
 mod station;
+pub mod surface;
 
 pub use event::{Event, EventKind, SourceProfile};
 pub use geo::{EARTH_RADIUS_KM, azimuth_deg, destination, great_circle_deg, normalise_lon};

@@ -3,17 +3,15 @@
 //! depend on changes.
 
 use std::collections::{HashMap, HashSet};
-use std::f64::consts::PI;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Instant;
 
 use sim::mantle::DelayGrid;
 use sim::seismogram::{
-    Component, Seismogram, Spreading, StationArrival, SurfaceWaves, seed_from, station_arrivals,
-    synthesize,
+    Component, Seismogram, Spreading, StationArrival, seed_from, station_arrivals, synthesize,
 };
-use sim::{EARTH_RADIUS_KM, Event, RayTracer, Simulation, Station, great_circle_deg};
+use sim::{Event, RayTracer, Simulation, Station, great_circle_deg};
 
 use crate::events::EventKey;
 
@@ -268,7 +266,7 @@ impl Traces {
                         station,
                         grid,
                         strength,
-                        SurfaceWaves::default(),
+                        sim.surface_waves(),
                     )
                     .into_iter()
                     .map(|a| StationArrival {
@@ -279,7 +277,14 @@ impl Traces {
             }
             arrivals.sort_by(|a, b| a.time_s.total_cmp(&b.time_s));
             let seed = seed_from(&[&anchor.id, &station.label()]);
-            let seismogram = synthesize(&arrivals, self.component, from, to, seed);
+            let seismogram = synthesize(
+                &arrivals,
+                self.component,
+                from,
+                to,
+                seed,
+                sim.surface_waves(),
+            );
             self.built.insert(
                 i,
                 Trace {
@@ -311,9 +316,9 @@ impl Traces {
 /// the selected event's origin).
 fn contributors(sim: &Simulation, selected: usize, (from, to): (f64, f64)) -> Vec<usize> {
     let anchor = &sim.events[selected];
-    // The last wave drawn is the second Rayleigh pass, at most once round the globe.
-    let surface = SurfaceWaves::default();
-    let longest_s = 2.0 * PI * EARTH_RADIUS_KM / surface.rayleigh_km_s.min(surface.love_km_s);
+    // The last wave drawn is the end of the slowest second surface-wave pass, at most once
+    // round the globe.
+    let longest_s = sim.surface_waves().once_round_s();
     let mut others: Vec<usize> = (0..sim.events.len())
         .filter(|&k| k != selected)
         .filter(|&k| {

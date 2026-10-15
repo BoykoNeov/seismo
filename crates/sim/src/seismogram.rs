@@ -13,7 +13,7 @@
 //!
 //! with i₀ the angle of incidence at the station. dΔ/di is taken between neighbouring traced
 //! rays (one difference along the fan), never by differencing the table twice. Surface waves
-//! are packets at a constant group velocity.
+//! are dispersed trains (see [`crate::surface`]).
 
 use std::f64::consts::{FRAC_PI_2, PI};
 
@@ -22,23 +22,8 @@ use crate::geo::{EARTH_RADIUS_KM, azimuth_deg, great_circle_deg};
 use crate::mantle::{DELAY_PHASES, DelayGrid};
 use crate::raytrace::{Landing, RayPhase, RayTracer, Wave};
 use crate::station::Station;
-use crate::tables::TravelTimeTable;
-
-/// Group velocities (km/s) of the surface-wave packets: constant, so not dispersive.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SurfaceWaves {
-    pub rayleigh_km_s: f64,
-    pub love_km_s: f64,
-}
-
-impl Default for SurfaceWaves {
-    fn default() -> Self {
-        Self {
-            rayleigh_km_s: 3.5,
-            love_km_s: 4.4,
-        }
-    }
-}
+use crate::surface::{CENTRAL_PERIOD_S, SurfaceWaves};
+use crate::tables::{SurfaceWave, TravelTimeTable};
 
 /// Which way of shaking a seismogram records.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -75,6 +60,15 @@ impl Motion {
             (Component::Transverse, _) => 0.0,
         }
     }
+
+    /// The surface wave this motion is, if it is one.
+    pub fn surface_wave(self) -> Option<SurfaceWave> {
+        match self {
+            Motion::Rayleigh => Some(SurfaceWave::Rayleigh),
+            Motion::Love => Some(SurfaceWave::Love),
+            _ => None,
+        }
+    }
 }
 
 /// One wave arriving at a station.
@@ -84,12 +78,18 @@ pub struct StationArrival {
     /// waves going the short and the long way round.
     pub phase: &'static str,
     pub motion: Motion,
-    /// Seconds since the event's origin (callers may shift it to another clock).
+    /// Seconds since the event's origin (callers may shift it to another clock). For a surface
+    /// wave, when the energy of its central period arrives; its train starts earlier and ends
+    /// later.
     pub time_s: f64,
-    /// Relative amplitude, comparable between arrivals and between events.
+    /// Relative amplitude, comparable between arrivals and between events. For a surface wave,
+    /// the peak its train would have had it not dispersed.
     pub amplitude: f64,
     /// Dominant period (s) of the wavelet.
     pub period_s: f64,
+    /// Surface waves: the length (km) of the path, the short or the long way round. 0 for
+    /// body waves.
+    pub path_km: f64,
 }
 
 /// Body-wave phases on the traces: the table's name, the traced phase giving its ray-tube
@@ -118,9 +118,6 @@ const BODY_PHASES: [(&str, Option<RayPhase>, Motion, f64); 14] = [
 /// Wavelet periods (s). Real body waves are shorter; these keep them visible at trace scale.
 const P_PERIOD_S: f64 = 1.0;
 const S_PERIOD_S: f64 = 2.0;
-const SURFACE_PERIOD_S: f64 = 20.0;
-/// Width (s, one standard deviation) of a surface-wave packet's envelope.
-const SURFACE_SIGMA_S: f64 = 30.0;
 /// e-folding time (s) of the scattered coda after a body-wave arrival.
 const P_CODA_S: f64 = 20.0;
 const S_CODA_S: f64 = 40.0;
@@ -130,12 +127,11 @@ const CODA_GAIN: f64 = 0.4;
 const NOISE_FRACTION: f64 = 0.003;
 
 /// Surface-wave amplitude relative to body waves at the same weight; chosen so that for a
-/// shallow earthquake at 60° the Rayleigh packet is about seven times direct P on the vertical.
-const SURFACE_GAIN: f64 = 4.0;
+/// shallow earthquake at 60° the Rayleigh train peaks at about seven times direct P on the
+/// vertical.
+const SURFACE_GAIN: f64 = 17.0;
 /// Surface-wave excitation falls off with source depth over this scale (km).
 const SURFACE_DEPTH_KM: f64 = 60.0;
-/// Stand-in for surface-wave attenuation: amplitude falls by e over this path length (km).
-const SURFACE_DECAY_KM: f64 = 15_000.0;
 /// Diffracted waves fade by e over this many degrees past the shadow edge.
 const PDIFF_DECAY_DEG: f64 = 8.0;
 const SDIFF_DECAY_DEG: f64 = 5.0;
@@ -377,7 +373,7 @@ pub fn station_arrivals(
     station: &Station,
     delays: Option<&DelayGrid>,
     strength: f64,
-    surface: SurfaceWaves,
+    surface: &SurfaceWaves,
 ) -> Vec<StationArrival> {
     let dist = great_circle_deg(event.lat, event.lon, station.lat, station.lon);
     let az = azimuth_deg(event.lat, event.lon, station.lat, station.lon);
@@ -424,29 +420,28 @@ pub fn station_arrivals(
             time_s,
             amplitude: size * weight * boundaries * geometric,
             period_s,
+            path_km: 0.0,
         });
     }
 
-    let surface_amp = |path_deg: f64| {
-        let km = path_deg.to_radians() * EARTH_RADIUS_KM;
-        size * profile.surface
-            * SURFACE_GAIN
-            * (-depth / SURFACE_DEPTH_KM).exp()
-            * (-km / SURFACE_DECAY_KM).exp()
-            / dist.to_radians().sin().max(MIN_SIN_DELTA).sqrt()
-    };
-    for (name, motion, speed, path_deg) in [
-        ("R1", Motion::Rayleigh, surface.rayleigh_km_s, dist),
-        ("R2", Motion::Rayleigh, surface.rayleigh_km_s, 360.0 - dist),
-        ("L1", Motion::Love, surface.love_km_s, dist),
-        ("L2", Motion::Love, surface.love_km_s, 360.0 - dist),
+    // Spreading over the sphere; attenuation is part of the train (it depends on period).
+    let surface_amp = size * profile.surface * SURFACE_GAIN * (-depth / SURFACE_DEPTH_KM).exp()
+        / dist.to_radians().sin().max(MIN_SIN_DELTA).sqrt();
+    for (name, motion, path_deg) in [
+        ("R1", Motion::Rayleigh, dist),
+        ("R2", Motion::Rayleigh, 360.0 - dist),
+        ("L1", Motion::Love, dist),
+        ("L2", Motion::Love, 360.0 - dist),
     ] {
+        let path_km = path_deg.to_radians() * EARTH_RADIUS_KM;
+        let wave = motion.surface_wave().expect("a surface wave");
         out.push(StationArrival {
             phase: name,
             motion,
-            time_s: path_deg.to_radians() * EARTH_RADIUS_KM / speed,
-            amplitude: surface_amp(path_deg),
-            period_s: SURFACE_PERIOD_S,
+            time_s: surface.arrival_s(wave, path_km),
+            amplitude: surface_amp,
+            period_s: CENTRAL_PERIOD_S,
+            path_km,
         });
     }
     out.sort_by(|a, b| a.time_s.total_cmp(&b.time_s));
@@ -520,14 +515,16 @@ pub struct Seismogram {
 }
 
 /// The `component` seismogram of `arrivals` from `start_s` to `end_s`: a Ricker wavelet and a
-/// decaying scattered coda per body wave, a Gaussian packet per surface wave, and a faint
-/// background noise. `seed` fixes the coda and noise; the same inputs give the same trace.
+/// decaying scattered coda per body wave, a dispersed train from `surface` per surface wave,
+/// and a faint background noise. `seed` fixes the coda and noise; the same inputs give the
+/// same trace.
 pub fn synthesize(
     arrivals: &[StationArrival],
     component: Component,
     start_s: f64,
     end_s: f64,
     seed: u64,
+    surface: &SurfaceWaves,
 ) -> Seismogram {
     let dt = SAMPLE_DT_S;
     let n = (((end_s - start_s) / dt).ceil().max(0.0) as usize) + 1;
@@ -543,18 +540,30 @@ pub fn synthesize(
         if w == 0.0 {
             continue;
         }
+        if let Some(wave) = a.motion.surface_wave() {
+            // The train is on the event's clock; `time_s` may have been shifted to another.
+            let (t0, t1) = surface.span_s(wave, a.path_km);
+            let shift = a.time_s - surface.arrival_s(wave, a.path_km);
+            if t1 + shift < start_s || t0 + shift > end_s {
+                continue;
+            }
+            let train = surface.train(wave, a.path_km);
+            let (k0, k1) = (
+                index(train.start_s + shift) as usize,
+                index(train.end_s() + shift) as usize,
+            );
+            for (k, out) in x.iter_mut().enumerate().take(k1 + 1).skip(k0) {
+                *out += w * train.at(start_s + k as f64 * dt - shift);
+            }
+            continue;
+        }
         let f = 1.0 / a.period_s;
-        let surface = matches!(a.motion, Motion::Rayleigh | Motion::Love);
-        let (before, after) = if surface {
-            (4.0 * SURFACE_SIGMA_S, 4.0 * SURFACE_SIGMA_S)
+        let coda_s = if a.motion == Motion::Compressional {
+            P_CODA_S
         } else {
-            let coda = if a.motion == Motion::Compressional {
-                P_CODA_S
-            } else {
-                S_CODA_S
-            };
-            (1.5 * a.period_s, 6.0 * coda)
+            S_CODA_S
         };
+        let (before, after) = (1.5 * a.period_s, 6.0 * coda_s);
         let (k0, k1) = (
             index(a.time_s - before) as usize,
             index(a.time_s + after) as usize,
@@ -564,27 +573,17 @@ pub fn synthesize(
         }
         for (k, out) in x.iter_mut().enumerate().take(k1 + 1).skip(k0) {
             let tau = start_s + k as f64 * dt - a.time_s;
-            *out += w * if surface {
-                (-0.5 * (tau / SURFACE_SIGMA_S).powi(2)).exp()
-                    * (2.0 * PI * f * tau + wobble.phi[0]).cos()
+            let arg = (PI * f * tau).powi(2);
+            let ricker = (1.0 - 2.0 * arg) * (-arg).exp();
+            let coda = if tau > 0.0 {
+                CODA_GAIN
+                    * (1.0 - (-tau / a.period_s).exp())
+                    * (-tau / coda_s).exp()
+                    * wobble.at(tau)
             } else {
-                let coda_s = if a.motion == Motion::Compressional {
-                    P_CODA_S
-                } else {
-                    S_CODA_S
-                };
-                let arg = (PI * f * tau).powi(2);
-                let ricker = (1.0 - 2.0 * arg) * (-arg).exp();
-                let coda = if tau > 0.0 {
-                    CODA_GAIN
-                        * (1.0 - (-tau / a.period_s).exp())
-                        * (-tau / coda_s).exp()
-                        * wobble.at(tau)
-                } else {
-                    0.0
-                };
-                ricker + coda
+                0.0
             };
+            *out += w * (ricker + coda);
         }
     }
 
@@ -669,6 +668,15 @@ mod tests {
         RayTracer::new(&model).unwrap()
     }
 
+    fn surface() -> SurfaceWaves {
+        SurfaceWaves::new(
+            crate::tables::Dispersion::from_bytes(include_bytes!(
+                "../../../assets/surface_dispersion.csv"
+            ))
+            .unwrap(),
+        )
+    }
+
     fn table() -> TravelTimeTable {
         TravelTimeTable::from_bytes(include_bytes!("../../../assets/ak135.tt")).unwrap()
     }
@@ -747,15 +755,7 @@ mod tests {
         let sp = Spreading::build(&rt, 29.0);
         let e = event(29.0);
         for d in [30.0, 60.0, 90.0, 120.0, 150.0] {
-            let got = station_arrivals(
-                &table,
-                &sp,
-                &e,
-                &station_at(d),
-                None,
-                1.0,
-                SurfaceWaves::default(),
-            );
+            let got = station_arrivals(&table, &sp, &e, &station_at(d), None, 1.0, &surface());
             for (name, ..) in BODY_PHASES {
                 let want = table.arrival(name, 29.0, d);
                 let have = got.iter().find(|a| a.phase == name);
@@ -786,15 +786,7 @@ mod tests {
         let (rt, table) = (tracer(), table());
         let at = |e: &Event, d: f64| {
             let sp = Spreading::build(&rt, e.depth_km);
-            station_arrivals(
-                &table,
-                &sp,
-                e,
-                &station_at(d),
-                None,
-                1.0,
-                SurfaceWaves::default(),
-            )
+            station_arrivals(&table, &sp, e, &station_at(d), None, 1.0, &surface())
         };
         let find =
             |arr: &[StationArrival], name: &str| arr.iter().find(|a| a.phase == name).copied();
@@ -850,7 +842,7 @@ mod tests {
             &station_at(d),
             None,
             1.0,
-            SurfaceWaves::default(),
+            &surface(),
         );
         if table.arrival("P", 29.0, d).is_none() {
             assert!(!got.iter().any(|a| a.phase == "P"));
@@ -866,7 +858,7 @@ mod tests {
             &station_at(edge - 5.0),
             None,
             1.0,
-            SurfaceWaves::default(),
+            &surface(),
         )
         .into_iter()
         .find(|a| a.phase == "P")
@@ -881,33 +873,75 @@ mod tests {
         let sp_deep = Spreading::build(&rt, 300.0);
         let st = station_at(60.0);
         let get = |sp: &Spreading, depth: f64, name: &str| {
-            station_arrivals(
-                &table,
-                sp,
-                &event(depth),
-                &st,
-                None,
-                1.0,
-                SurfaceWaves::default(),
-            )
-            .into_iter()
-            .find(|a| a.phase == name)
-            .unwrap()
+            station_arrivals(&table, sp, &event(depth), &st, None, 1.0, &surface())
+                .into_iter()
+                .find(|a| a.phase == name)
+                .unwrap()
         };
         let r1 = get(&sp_shallow, 10.0, "R1");
         let r2 = get(&sp_shallow, 10.0, "R2");
         let km = 60f64.to_radians() * EARTH_RADIUS_KM;
-        assert!((r1.time_s - km / 3.5).abs() < 1e-9);
-        assert!(r2.time_s > r1.time_s && r2.amplitude < r1.amplitude);
+        let sw = surface();
+        assert!((r1.time_s - sw.arrival_s(SurfaceWave::Rayleigh, km)).abs() < 1e-9);
+        assert!((r1.path_km - km).abs() < 1e-9 && (r2.path_km - 5.0 * km).abs() < 1e-9);
+        assert!(r2.time_s > r1.time_s);
         assert!(
             get(&sp_shallow, 10.0, "L1").time_s < r1.time_s,
             "Love is faster"
         );
         assert!(get(&sp_deep, 300.0, "R1").amplitude < 0.1 * r1.amplitude);
-        // Calibration: shallow earthquake at 60°, Rayleigh several times direct P (about 7).
-        let p = get(&sp_shallow, 10.0, "P");
-        let ratio = r1.amplitude / p.amplitude;
-        assert!((4.0..25.0).contains(&ratio), "R1/P = {ratio:.1}");
+        // The long way round is weaker: more attenuation and more spread out.
+        let peak =
+            |a: &StationArrival| a.amplitude * sw.train(SurfaceWave::Rayleigh, a.path_km).peak();
+        assert!(peak(&r2) < 0.5 * peak(&r1), "{} {}", peak(&r2), peak(&r1));
+    }
+
+    /// Calibration of [`SURFACE_GAIN`]: on the vertical trace of a shallow earthquake at 60°
+    /// the Rayleigh train peaks at about seven times direct P.
+    #[test]
+    fn rayleigh_peaks_several_times_p_at_sixty_degrees() {
+        let (rt, table, sw) = (tracer(), table(), surface());
+        let sp = Spreading::build(&rt, 10.0);
+        let arr = station_arrivals(&table, &sp, &event(10.0), &station_at(60.0), None, 1.0, &sw);
+        let trace = synthesize(&arr, Component::Vertical, 0.0, 4000.0, 1, &sw);
+        let find = |name: &str| arr.iter().find(|a| a.phase == name).unwrap();
+        let window_peak = |from: f64, to: f64| {
+            (0..trace.samples.len())
+                .filter(|&k| (from..to).contains(&trace.time(k)))
+                .fold(0.0f32, |m, k| m.max(trace.samples[k].abs()))
+        };
+        let tp = find("P").time_s;
+        let p = window_peak(tp - 2.0, tp + 2.0);
+        let km = find("R1").path_km;
+        let (slow, fast) = sw.dispersion().group_range(SurfaceWave::Rayleigh);
+        let r = window_peak(km / fast, km / slow + 60.0);
+        let ratio = r / p;
+        println!("R1/P peak ratio {ratio:.2}");
+        assert!((5.0..10.0).contains(&ratio), "R1/P = {ratio:.1}");
+    }
+
+    /// The dispersed trains start after the body waves, even close to the source where they
+    /// are short: before P the trace holds only the background noise.
+    #[test]
+    fn surface_trains_leave_the_trace_quiet_before_p() {
+        let (rt, table, sw) = (tracer(), table(), surface());
+        let sp = Spreading::build(&rt, 10.0);
+        for d in [10.0, 20.0, 30.0] {
+            for component in [Component::Vertical, Component::Transverse] {
+                let arr =
+                    station_arrivals(&table, &sp, &event(10.0), &station_at(d), None, 1.0, &sw);
+                let tp = arr.iter().find(|a| a.phase == "P").unwrap().time_s;
+                let trace = synthesize(&arr, component, 0.0, 3000.0, 3, &sw);
+                let before = (0..trace.samples.len())
+                    .filter(|&k| trace.time(k) < tp - 2.0)
+                    .fold(0.0f32, |m, k| m.max(trace.samples[k].abs()));
+                assert!(
+                    before <= 3.0 * NOISE_FRACTION as f32 * trace.peak,
+                    "{d}° {component:?}: {before} vs peak {}",
+                    trace.peak
+                );
+            }
+        }
     }
 
     #[test]
@@ -920,24 +954,9 @@ mod tests {
             max_abs_s: 3.0,
         };
         let st = station_at(50.0);
-        let one_d = station_arrivals(
-            &table,
-            &sp,
-            &event(29.0),
-            &st,
-            None,
-            1.0,
-            SurfaceWaves::default(),
-        );
-        let three_d = station_arrivals(
-            &table,
-            &sp,
-            &event(29.0),
-            &st,
-            Some(&grid),
-            2.0,
-            SurfaceWaves::default(),
-        );
+        let one_d = station_arrivals(&table, &sp, &event(29.0), &st, None, 1.0, &surface());
+        let three_d =
+            station_arrivals(&table, &sp, &event(29.0), &st, Some(&grid), 2.0, &surface());
         let t =
             |v: &[StationArrival], name: &str| v.iter().find(|a| a.phase == name).unwrap().time_s;
         assert!((t(&three_d, "P") - t(&one_d, "P") - 4.0).abs() < 1e-6);
@@ -971,24 +990,32 @@ mod tests {
     }
 
     fn picks() -> Vec<StationArrival> {
-        let mk = |phase, motion, time_s, amplitude, period_s| StationArrival {
+        let mk = |phase, motion, time_s, amplitude, period_s, path_km| StationArrival {
             phase,
             motion,
             time_s,
             amplitude,
             period_s,
+            path_km,
         };
         vec![
-            mk("P", Motion::Compressional, 100.0, 1.0, P_PERIOD_S),
-            mk("S", Motion::Shear, 200.0, 3.0, S_PERIOD_S),
-            mk("R1", Motion::Rayleigh, 400.0, 10.0, SURFACE_PERIOD_S),
-            mk("L1", Motion::Love, 250.0, 10.0, SURFACE_PERIOD_S),
+            mk("P", Motion::Compressional, 100.0, 1.0, P_PERIOD_S, 0.0),
+            mk("S", Motion::Shear, 200.0, 3.0, S_PERIOD_S, 0.0),
+            mk(
+                "R1",
+                Motion::Rayleigh,
+                400.0,
+                10.0,
+                CENTRAL_PERIOD_S,
+                1200.0,
+            ),
+            mk("L1", Motion::Love, 250.0, 10.0, CENTRAL_PERIOD_S, 850.0),
         ]
     }
 
     #[test]
     fn quiet_before_the_first_arrival_and_deterministic() {
-        let s = synthesize(&picks(), Component::Vertical, 0.0, 600.0, 7);
+        let s = synthesize(&picks(), Component::Vertical, 0.0, 600.0, 7, &surface());
         assert!(s.peak > 0.0);
         let before = s
             .samples
@@ -1005,14 +1032,20 @@ mod tests {
         // The P wavelet peaks at its arrival time.
         let k = ((100.0 - s.start_s) / s.dt_s).round() as usize;
         assert!(s.samples[k] > 0.5);
-        assert_eq!(s, synthesize(&picks(), Component::Vertical, 0.0, 600.0, 7));
-        assert_ne!(s, synthesize(&picks(), Component::Vertical, 0.0, 600.0, 8));
+        assert_eq!(
+            s,
+            synthesize(&picks(), Component::Vertical, 0.0, 600.0, 7, &surface())
+        );
+        assert_ne!(
+            s,
+            synthesize(&picks(), Component::Vertical, 0.0, 600.0, 8, &surface())
+        );
     }
 
     #[test]
     fn components_see_different_waves() {
-        let z = synthesize(&picks(), Component::Vertical, 0.0, 600.0, 7);
-        let t = synthesize(&picks(), Component::Transverse, 0.0, 600.0, 7);
+        let z = synthesize(&picks(), Component::Vertical, 0.0, 600.0, 7, &surface());
+        let t = synthesize(&picks(), Component::Transverse, 0.0, 600.0, 7, &surface());
         let at =
             |s: &Seismogram, time: f64| s.samples[((time - s.start_s) / s.dt_s).round() as usize];
         // No P on the transverse; no Love on the vertical (only noise there).
@@ -1028,7 +1061,7 @@ mod tests {
 
     #[test]
     fn columns_keep_every_peak_and_stop_at_the_pen() {
-        let s = synthesize(&picks(), Component::Vertical, 0.0, 600.0, 7);
+        let s = synthesize(&picks(), Component::Vertical, 0.0, 600.0, 7, &surface());
         // 600 s over 50 columns: 12 s per column, far wider than the 1 s P wavelet.
         let cols = s.columns(0.0, 600.0, 50, f64::INFINITY, s.peak);
         assert_eq!(cols.len(), 50);
@@ -1059,7 +1092,7 @@ mod tests {
             &station_at(70.0),
             None,
             1.0,
-            SurfaceWaves::default(),
+            &surface(),
         );
         let b = station_arrivals(
             &table,
@@ -1068,7 +1101,7 @@ mod tests {
             &station_at(70.0),
             None,
             1.0,
-            SurfaceWaves::default(),
+            &surface(),
         );
         assert_eq!(a, b);
         assert_eq!(seed_from(&["a", "bc"]), seed_from(&["a", "bc"]));

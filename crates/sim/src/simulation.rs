@@ -5,14 +5,17 @@ use chrono::{DateTime, Utc};
 use crate::event::Event;
 use crate::raytrace::{RayTraceError, RayTracer};
 use crate::slice::{Boundary, SliceFans, named_boundaries};
-use crate::tables::{EarthModel, TravelTimeTable};
+use crate::surface::SurfaceWaves;
+use crate::tables::{Dispersion, EarthModel, TravelTimeTable};
 
-/// Events, the table their surface arrivals are timed by, and the velocity model their rays
-/// are traced through. Pure: `state_at` depends only on the events, the table and `now`.
+/// Events, the table their surface arrivals are timed by, the velocity model their rays are
+/// traced through, and the dispersion their surface waves travel with. Pure: `state_at`
+/// depends only on the events, the table and `now`.
 #[derive(Debug, Clone)]
 pub struct Simulation {
     table: TravelTimeTable,
     tracer: RayTracer,
+    surface: SurfaceWaves,
     boundaries: Vec<Boundary>,
     pub events: Vec<Event>,
 }
@@ -50,11 +53,13 @@ impl Simulation {
     pub fn new(
         table: TravelTimeTable,
         model: EarthModel,
+        dispersion: Dispersion,
         events: Vec<Event>,
     ) -> Result<Self, RayTraceError> {
         Ok(Self {
             table,
             tracer: RayTracer::new(&model)?,
+            surface: SurfaceWaves::new(dispersion),
             boundaries: named_boundaries(&model),
             events,
         })
@@ -66,6 +71,10 @@ impl Simulation {
 
     pub fn tracer(&self) -> &RayTracer {
         &self.tracer
+    }
+
+    pub fn surface_waves(&self) -> &SurfaceWaves {
+        &self.surface
     }
 
     /// Named discontinuities of the velocity model (Moho, 410, 660, CMB, ICB).
@@ -163,11 +172,13 @@ mod tests {
     }
 
     static MODEL: &[u8] = include_bytes!("../../../assets/ak135_model.csv");
+    static DISPERSION: &[u8] = include_bytes!("../../../assets/surface_dispersion.csv");
 
     fn sim(events: Vec<Event>) -> Simulation {
         Simulation::new(
             TravelTimeTable::from_bytes(TABLE).unwrap(),
             EarthModel::from_bytes(MODEL).unwrap(),
+            Dispersion::from_bytes(DISPERSION).unwrap(),
             events,
         )
         .unwrap()

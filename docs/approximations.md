@@ -148,12 +148,32 @@ overtones are left out.
 - **No attenuation in the curves.** Real attenuation also makes velocities depend slightly on
   period (physical dispersion); ak135 has no Q here, and none is applied.
 
-## Surface waves at constant group velocity, not dispersive
+## Surface waves: dispersed trains from a fixed source spectrum
 
-Rayleigh and Love waves travel at a constant group velocity (Rayleigh 3.5 km/s, Love 4.4 km/s,
-`sim::seismogram::SurfaceWaves`). Real surface waves are dispersive: their speed depends on
-period, so a real wave train spreads out with distance. SEISMO's seismograms show each one as a
-single packet of fixed length (see below); the map does not draw surface waves yet.
+Each surface wave on a seismogram (R1, R2, L1, L2) is the sum of its periods from 8 s to 200 s,
+each travelling at its own speed from the dispersion curves above (`sim::surface`): the crests
+at the phase velocity, the energy at the group velocity. A train therefore arrives long periods
+first and spreads out in proportion to distance, and the Rayleigh train ends in a burst of
+15–20 s waves, the crust's slowest energy. What is simplified:
+
+- **Source spectrum.** Every event radiates the same spectrum: a bell curve in log period
+  centred on 20 s (the period the surface-wave magnitude Ms uses), one standard deviation a
+  factor 2.5 either way, faded to zero over a factor 1.3 at each end of the band. Real spectra
+  depend on the magnitude (big quakes are richer in long periods), the fault and the depth;
+  depth only scales the whole train here (see the seismogram section).
+- **No source phase.** The spectrum has no phase, so the pulse it describes is symmetric about
+  its peak, and its longest periods would reach out ahead of the train. Each train is faded in
+  over the 150 s before its fastest energy (the fastest group velocity in the band) is due, so
+  nothing arrives earlier.
+- **Attenuation from PREM's Q.** Each period loses amplitude as e^(−π · path / (Q · U · T)),
+  with Q the fundamental-mode quality factor of PREM (ak135 has no attenuation model bundled),
+  computed with Mineos on 2026-10-15: about 600 at 8–20 s, falling to about 120–150 at 75–200 s.
+  A table of eleven periods, interpolated in log period.
+- **The antipode.** A path past half the globe (R2, L2) gets a quarter-cycle phase shift, as a
+  wave passing through the antipode does. Waves going round more than once (R3 and later) are
+  left out.
+- **Only R1, R2, L1, L2; only the fundamental mode;** no overtones, no 3D structure, no
+  focusing, no polarisation beyond the fixed component weights.
 
 ## Map fronts: line width and trail
 
@@ -286,7 +306,8 @@ their sizes only roughly physical. The UI says so.
 - **Times.** Body-wave times are the table's (first arrival of each named phase; PKP as three
   branches), plus the 3D-mantle delay for P and S (not pP or sP), sampled from the same grid with the same
   interpolation as the map, so a trace and a map ring agree. Other phases stay 1D. Surface waves
-  arrive at path length ÷ group velocity, the short way round (R1, L1) and the long way (R2, L2).
+  are dispersed trains (see above), the short way round (R1, L1) and the long way (R2, L2); their
+  tick and label mark when the 20 s energy arrives, the train starting well before.
 - **Amplitudes from ray tubes.** For each body phase the ray tracer lands a fan of rays (take-off
   steps of 0.25°, refined until neighbours land within 0.2°). Between neighbouring rays the
   amplitude is √(sin i / (|dΔ/di| · sin Δ · cos i₀)): energy leaving between take-off angles i
@@ -307,9 +328,9 @@ their sizes only roughly physical. The UI says so.
   shadow edge (the farthest downgoing ray), they get the direct wave's amplitude 0.5° inside the
   edge, falling by a factor e every 8° (Pdiff) or 5° (Sdiff).
 - **Surface-wave size.** Amplitude ∝ 1/√sin Δ (spreading over a sphere), × e^(−depth/60 km)
-  (deep sources excite little surface wave), × e^(−path/15 000 km) (a stand-in for
-  attenuation), with a gain chosen so a shallow earthquake's Rayleigh wave at 60° is about seven
-  times its direct P on the vertical.
+  (deep sources excite little surface wave), times the train (attenuation and the spreading out
+  of the train lower its peak with distance), with a gain chosen so a shallow earthquake's
+  Rayleigh train at 60° peaks at about seven times its direct P on the vertical.
 - **Source kind.** Each event kind has fixed relative P, S and surface-wave weights
   (earthquake 1 : 3 : 1; nuclear test 1 : 0.3 : 0.3; volcanic tremor 0.5 : 1 : 1.5;
   landslide 0.2 : 0.6 : 2; impact 0.5 : 0.5 : 3). Display choices, not source physics.
@@ -318,8 +339,8 @@ their sizes only roughly physical. The UI says so.
   weight, nothing from P, SKS or Rayleigh. Fixed weights, not a polarisation calculation.
 - **Wavelets.** Body waves are Ricker wavelets of 1 s (P-type) or 2 s (S-type) period, each
   followed by a scattered coda: seeded pseudo-random wiggles, 0.4× the arrival, dying away over
-  20 s (P) or 40 s (S). Surface waves are a 20 s carrier under a Gaussian envelope 30 s wide
-  (one standard deviation). A faint background noise (0.3% of the trace's largest wave, about a
+  20 s (P) or 40 s (S). Surface waves are the dispersed trains above, computed every 1 s and
+  interpolated. A faint background noise (0.3% of the trace's largest wave, about a
   6 s period) runs throughout. The coda and noise are fixed by a seed made from the event and
   station names, so a trace is the same every time.
 - **Drawing.** Traces are sampled every 0.125 s and drawn as the smallest and largest value per

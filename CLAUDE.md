@@ -79,8 +79,11 @@ no dependence on the working directory.
   tracer in `sim`, which shoots rays through the ak135 velocity model loaded by
   `tables`. A test checks ray-traced surface arrival times against the tables
   (P and S at 30°/60°/90°, within 1.0 s). Surface waves are the one exception
-  to both: rings at a constant group velocity (Rayleigh ~3.5 km/s, Love
-  ~4.4 km/s, configurable in `sim`) — not dispersive, documented as such.
+  to both: dispersive, from `assets/surface_dispersion.csv` (fundamental-mode
+  Rayleigh and Love phase and group velocity, 8–200 s, Earth-flattened ak135,
+  checked against Mineos). Seismogram trains are summed over period in
+  `sim::surface` (phase velocity for the crests, group velocity for the energy,
+  PREM Q, fixed source spectrum, faded in before the fastest energy); 1D only.
 - Map: the shader receives the travel-time table as an RG32Float 2D array
   texture (R = arrival time, G = ray parameter; one array layer per phase,
   width = distance, height = depth) and evaluates arrival time per
@@ -243,7 +246,7 @@ python tools/gen_dispersion.py          # regenerates surface_dispersion.csv (ne
 
 ## Open questions (ask before deciding)
 
-- Whether surface waves ever become truly dispersive (period-dependent speed).
+- None open. (Surface-wave dispersion was decided 2026-10-15: dispersive, on traces and map.)
 
 ## Do not
 

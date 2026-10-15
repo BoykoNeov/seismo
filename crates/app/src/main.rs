@@ -17,7 +17,7 @@ use eframe::{egui, wgpu};
 use sim::mantle::DelayGrid;
 use sim::seismogram::Component;
 use sim::slice::{PhaseLabel, SliceFans, SliceLine};
-use sim::tables::{EarthModel, TravelTimeTable};
+use sim::tables::{Dispersion, EarthModel, TravelTimeTable};
 use sim::{EARTH_RADIUS_KM, Event, EventKind, RayPhase, Simulation, Wave, azimuth_deg};
 
 use clock::{MAX_SPEED, MIN_SPEED, SimClock, secs};
@@ -29,6 +29,7 @@ static TABLE_BYTES: &[u8] = include_bytes!("../../../assets/ak135.tt");
 static MODEL_BYTES: &[u8] = include_bytes!("../../../assets/ak135_model.csv");
 static STATIONS_BYTES: &[u8] = include_bytes!("../../../assets/stations.csv");
 static COAST_BYTES: &[u8] = include_bytes!("../../../assets/coastlines.txt");
+static DISPERSION_BYTES: &[u8] = include_bytes!("../../../assets/surface_dispersion.csv");
 
 /// Narrowest traces column (points) beside the map and slice.
 const MIN_TRACES_WIDTH: f32 = 260.0;
@@ -172,6 +173,8 @@ impl SeismoApp {
             .ok_or_else(|| anyhow!("wgpu backend not available"))?;
         let table = TravelTimeTable::from_bytes(TABLE_BYTES).context("embedded ak135.tt")?;
         let model = EarthModel::from_bytes(MODEL_BYTES).context("embedded ak135_model.csv")?;
+        let dispersion =
+            Dispersion::from_bytes(DISPERSION_BYTES).context("embedded surface_dispersion.csv")?;
         tracing::info!(
             model = table.model(),
             obspy = table.obspy_version(),
@@ -239,7 +242,7 @@ impl SeismoApp {
         let stations = sim::parse_stations(STATIONS_BYTES).context("embedded stations.csv")?;
         let shown: Vec<Event> = events.shown().iter().map(|l| l.event.clone()).collect();
         let keys: Vec<EventKey> = events.shown().iter().map(|l| l.key).collect();
-        let sim = Simulation::new(table, model, shown).context("ray tracer")?;
+        let sim = Simulation::new(table, model, dispersion, shown).context("ray tracer")?;
         let mut traces = Traces::new(stations, sim.tracer().clone());
         traces.pick_defaults(&sim.events[0]);
         let mantle = MantleWorker::spawn(sim.tracer().clone(), sim.boundaries().to_vec());

@@ -456,7 +456,11 @@ mod tests {
                 "../../../assets/ak135.tt"
             ))
             .unwrap();
-            let sim = crate::Simulation::new(table, model(), vec![]).unwrap();
+            let dispersion = crate::tables::Dispersion::from_bytes(include_bytes!(
+                "../../../assets/surface_dispersion.csv"
+            ))
+            .unwrap();
+            let sim = crate::Simulation::new(table, model(), dispersion, vec![]).unwrap();
             for (phase, name) in [(RayPhase::P, "P"), (RayPhase::S, "S")] {
                 let fan = f.fans.iter().find(|x| x.phase == phase).unwrap();
                 for t in [120.0, 300.0, 600.0] {
