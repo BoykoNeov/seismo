@@ -11,7 +11,7 @@ use crate::geo::EARTH_RADIUS_KM;
 use crate::raytrace::{PathPoint, Ray, RayPhase, RayTracer, Wave, fold_rad};
 use crate::tables::EarthModel;
 
-use std::f64::consts::{FRAC_PI_2, PI};
+use std::f64::consts::PI;
 
 /// Initial take-off angle spacing (rad) of a fan before refinement: 0.5°.
 const BASE_STEP_RAD: f64 = PI / 360.0;
@@ -172,14 +172,6 @@ impl SliceFans {
         }
     }
 
-    fn wave_at(&self, phase: RayPhase, r_km: f64) -> Wave {
-        if r_km > self.r_cmb {
-            phase.mantle_wave()
-        } else {
-            Wave::P
-        }
-    }
-
     /// Wavefronts `t` seconds after origin. Each fan's front joins the positions of
     /// neighbouring rays at `t`; it breaks where a ray has finished (reached the surface), is
     /// still on a path another fan draws, or is outside the slice's half, and where neighbours
@@ -191,7 +183,7 @@ impl SliceFans {
         }
         for fan in &self.fans {
             let mut current: Vec<SlicePoint> = Vec::new();
-            let mut current_wave = fan.phase.mantle_wave();
+            let mut current_wave = fan.phase.arrival_wave();
             let mut labelled: Vec<SlicePoint> = Vec::new();
             let flush = |pts: &mut Vec<SlicePoint>, wave: Wave, out: &mut SliceFronts| {
                 if pts.len() >= 2 {
@@ -217,7 +209,7 @@ impl SliceFans {
                 if t >= ray.distinct_after_s {
                     labelled.push(pt);
                 }
-                let wave = self.wave_at(fan.phase, pt.r_km);
+                let wave = ray.wave_at(t, pt.r_km, self.r_cmb);
                 if let Some(last) = current.last().copied() {
                     if last.chord_km(&pt) > BREAK_KM {
                         flush(&mut current, current_wave, &mut out);
@@ -267,7 +259,7 @@ impl SliceFans {
                     pts.push(q);
                 }
                 let mut line: Vec<SlicePoint> = Vec::new();
-                let mut wave = fan.phase.mantle_wave();
+                let mut wave = fan.phase.source_wave();
                 for w in pts.windows(2) {
                     if !(fan.side.shows(w[0].theta_rad) && fan.side.shows(w[1].theta_rad)) {
                         if line.len() >= 2 {
@@ -280,8 +272,9 @@ impl SliceFans {
                         line.clear();
                         continue;
                     }
-                    let mid = 0.5 * (w[0].r_km + w[1].r_km);
-                    let seg_wave = self.wave_at(fan.phase, mid);
+                    let mid_r = 0.5 * (w[0].r_km + w[1].r_km);
+                    let mid_t = 0.5 * (w[0].t_s + w[1].t_s);
+                    let seg_wave = ray.wave_at(mid_t, mid_r, self.r_cmb);
                     if seg_wave != wave && !line.is_empty() {
                         out.push(SliceLine {
                             phase: fan.phase,
@@ -311,15 +304,13 @@ impl SliceFans {
 /// Trace a fan: rays at regular take-off angles, then midpoints inserted between neighbours
 /// whose end or bottom points are far apart, and bisection towards the fan's edges.
 pub(crate) fn build_fan(tracer: &RayTracer, phase: RayPhase, depth_km: f64) -> Vec<Ray> {
-    let max_angle = if phase.has_upgoing() && depth_km > 0.0 {
-        PI
-    } else {
-        FRAC_PI_2
+    let Some((lo, hi)) = phase.takeoff_range(depth_km) else {
+        return Vec::new();
     };
-    let n = (max_angle / BASE_STEP_RAD).round() as usize;
+    let n = ((hi - lo) / BASE_STEP_RAD).round() as usize;
     let mut samples: Vec<(f64, Option<Ray>)> = (0..=n)
         .map(|k| {
-            let a = max_angle * k as f64 / n as f64;
+            let a = lo + (hi - lo) * k as f64 / n as f64;
             (a, tracer.trace(phase, depth_km, a))
         })
         .collect();
@@ -494,6 +485,61 @@ mod tests {
         assert!(early.labels.iter().any(|l| l.phase == RayPhase::P));
         let late = f.fronts_at(700.0);
         assert!(late.labels.iter().any(|l| l.phase == RayPhase::PcP));
+    }
+
+    #[test]
+    fn sp_path_is_s_above_the_source_then_p() {
+        let depth = 300.0;
+        let f = fans(depth);
+        let r_src = EARTH_RADIUS_KM - depth;
+        let paths = f.ray_paths_until(1500.0, 10);
+        let sp: Vec<&SliceLine> = paths.iter().filter(|l| l.phase == RayPhase::sP).collect();
+        assert!(sp.iter().any(|l| l.wave == Wave::S) && sp.iter().any(|l| l.wave == Wave::P));
+        for l in sp.iter().filter(|l| l.wave == Wave::S) {
+            assert!(
+                l.points.iter().all(|q| q.r_km >= r_src - 1e-6),
+                "S leg below the source"
+            );
+        }
+        // Below the source an sP ray is P.
+        assert!(
+            sp.iter()
+                .filter(|l| l.wave == Wave::P)
+                .any(|l| l.points.iter().any(|q| q.r_km < r_src - 500.0))
+        );
+        // pP is P all the way.
+        assert!(
+            paths
+                .iter()
+                .filter(|l| l.phase == RayPhase::pP)
+                .all(|l| l.wave == Wave::P)
+        );
+        // Fronts: no echo front before the way up is done, then a labelled P front.
+        let up_s = f.fans[0]
+            .rays
+            .iter()
+            .filter(|r| r.takeoff_rad > 3.0)
+            .map(|r| r.arrival_s());
+        let first_bounce = up_s.fold(f64::INFINITY, f64::min);
+        let early = f.fronts_at(0.5 * first_bounce);
+        assert!(!early.lines.iter().any(|l| l.phase == RayPhase::pP));
+        let late = f.fronts_at(600.0);
+        assert!(
+            late.lines
+                .iter()
+                .any(|l| l.phase == RayPhase::sP && l.wave == Wave::P)
+        );
+        assert!(late.labels.iter().any(|l| l.phase == RayPhase::pP));
+        assert!(late.labels.iter().any(|l| l.phase == RayPhase::sP));
+        // None from a surface source.
+        let surface = fans(0.0);
+        assert!(
+            surface
+                .fans
+                .iter()
+                .filter(|fan| fan.phase.is_depth_phase())
+                .all(|fan| fan.rays.is_empty())
+        );
     }
 
     #[test]

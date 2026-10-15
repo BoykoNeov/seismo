@@ -155,7 +155,7 @@ fn delay_grid_with(
         .iter()
         .map(|&phase| {
             let fan = build_fan(tracer, phase, depth_km);
-            let wave = phase.mantle_wave();
+            let wave = phase.source_wave();
             let (_, d) = phase_grid(&fan, lat, lon, |r, la, lo| dlnv(wave, r, la, lo));
             d.into_iter().map(|x| x as f32).collect()
         })

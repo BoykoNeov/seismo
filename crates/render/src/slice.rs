@@ -119,7 +119,7 @@ pub fn phase_gain(phase: RayPhase) -> f32 {
         RayPhase::S => 0.85,
         RayPhase::PKP | RayPhase::PKIKP | RayPhase::SKS => 0.75,
         RayPhase::PcP | RayPhase::ScS => 0.7,
-        RayPhase::PP | RayPhase::SS => 0.6,
+        RayPhase::PP | RayPhase::SS | RayPhase::pP | RayPhase::sP => 0.6,
     }
 }
 

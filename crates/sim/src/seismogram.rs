@@ -95,8 +95,10 @@ pub struct StationArrival {
 /// Body-wave phases on the traces: the table's name, the traced phase giving its ray-tube
 /// amplitude (`None` for the diffracted waves the tracer does not follow), the motion, and a
 /// fixed factor standing in for the energy lost at the boundaries the ray reflects off or
-/// passes through (the tracer has no reflection or transmission coefficients).
-const BODY_PHASES: [(&str, Option<RayPhase>, Motion, f64); 12] = [
+/// passes through (the tracer has no reflection or transmission coefficients). The depth phases'
+/// factors stand in for the free-surface reflection (pP) and S-to-P conversion (sP), without the
+/// angle dependence, the polarity flip or the source's radiation pattern.
+const BODY_PHASES: [(&str, Option<RayPhase>, Motion, f64); 14] = [
     ("P", Some(RayPhase::P), Motion::Compressional, 1.0),
     ("S", Some(RayPhase::S), Motion::Shear, 1.0),
     ("PcP", Some(RayPhase::PcP), Motion::Compressional, 0.2),
@@ -109,6 +111,8 @@ const BODY_PHASES: [(&str, Option<RayPhase>, Motion, f64); 12] = [
     ("SKS", Some(RayPhase::SKS), Motion::CoreShear, 0.4),
     ("Pdiff", None, Motion::Compressional, 1.0),
     ("Sdiff", None, Motion::Shear, 1.0),
+    ("pP", Some(RayPhase::pP), Motion::Compressional, 0.7),
+    ("sP", Some(RayPhase::sP), Motion::Compressional, 0.5),
 ];
 
 /// Wavelet periods (s). Real body waves are shorter; these keep them visible at trace scale.
@@ -205,7 +209,7 @@ impl Spreading {
     /// Ray-tube amplitude at `dist_deg` of a ray of `phase` with take-off `takeoff_rad`, ray
     /// parameter `p` (s/rad) and distance slope `slope` = dΔ/di (rad/rad).
     fn tube(&self, phase: RayPhase, takeoff_rad: f64, p: f64, slope: f64, dist_deg: f64) -> f64 {
-        let eta0 = match phase.mantle_wave() {
+        let eta0 = match phase.arrival_wave() {
             Wave::P => self.eta_p,
             Wave::S => self.eta_s,
         };
@@ -296,7 +300,7 @@ impl Spreading {
         if dist_deg <= edge {
             return None;
         }
-        let decay = match phase.mantle_wave() {
+        let decay = match phase.source_wave() {
             Wave::P => PDIFF_DECAY_DEG,
             Wave::S => SDIFF_DECAY_DEG,
         };
@@ -309,15 +313,13 @@ impl Spreading {
 /// The landings of a fan of `phase` rays, ordered by take-off angle, refined where neighbours
 /// land far apart and towards the fan's edges, as runs of consecutive valid rays.
 fn landing_fan(tracer: &RayTracer, phase: RayPhase, depth_km: f64) -> Vec<Vec<Landing>> {
-    let max_angle = if phase.has_upgoing() && depth_km > 0.0 {
-        PI
-    } else {
-        FRAC_PI_2
+    let Some((lo, hi)) = phase.takeoff_range(depth_km) else {
+        return Vec::new();
     };
-    let n = (max_angle / BASE_STEP_RAD).round() as usize;
+    let n = ((hi - lo) / BASE_STEP_RAD).round() as usize;
     let mut samples: Vec<(f64, Option<Landing>)> = (0..=n)
         .map(|k| {
-            let a = max_angle * k as f64 / n as f64;
+            let a = lo + (hi - lo) * k as f64 / n as f64;
             (a, tracer.landing(phase, depth_km, a))
         })
         .collect();
@@ -405,9 +407,16 @@ pub fn station_arrivals(
         {
             time_s += strength * grid.sample(layer, dist, az);
         }
-        let (weight, period_s) = match motion {
-            Motion::Compressional => (profile.p, P_PERIOD_S),
-            _ => (profile.s, S_PERIOD_S),
+        // The source excites the wave it radiates: sP leaves as S, so it takes the S weight
+        // (an explosion makes little of it) though it arrives as P.
+        let leaves_as_p = traced.map_or(motion == Motion::Compressional, |t| {
+            t.source_wave() == Wave::P
+        });
+        let weight = if leaves_as_p { profile.p } else { profile.s };
+        let period_s = if motion == Motion::Compressional {
+            P_PERIOD_S
+        } else {
+            S_PERIOD_S
         };
         out.push(StationArrival {
             phase: name,
@@ -770,6 +779,62 @@ mod tests {
                 "S at {d}°"
             );
         }
+    }
+
+    #[test]
+    fn depth_phases_follow_p_later_the_deeper_the_source() {
+        let (rt, table) = (tracer(), table());
+        let at = |e: &Event, d: f64| {
+            let sp = Spreading::build(&rt, e.depth_km);
+            station_arrivals(
+                &table,
+                &sp,
+                e,
+                &station_at(d),
+                None,
+                1.0,
+                SurfaceWaves::default(),
+            )
+        };
+        let find =
+            |arr: &[StationArrival], name: &str| arr.iter().find(|a| a.phase == name).copied();
+
+        // A surface source has no echo.
+        let surface = at(&event(0.0), 60.0);
+        assert!(find(&surface, "pP").is_none() && find(&surface, "sP").is_none());
+
+        for d in [40.0, 60.0, 80.0] {
+            let mut last_gap = 0.0;
+            for depth in [50.0, 200.0, 400.0, 600.0] {
+                let arr = at(&event(depth), d);
+                let p = find(&arr, "P").unwrap();
+                let pp = find(&arr, "pP").unwrap_or_else(|| panic!("no pP {depth} km {d}°"));
+                let sp = find(&arr, "sP").unwrap_or_else(|| panic!("no sP {depth} km {d}°"));
+                assert!(
+                    p.time_s < pp.time_s && pp.time_s < sp.time_s,
+                    "{depth} km {d}°"
+                );
+                assert_eq!(sp.motion, Motion::Compressional);
+                assert!(pp.amplitude > 0.0 && sp.amplitude > 0.0);
+                let gap = pp.time_s - p.time_s;
+                assert!(gap > last_gap, "pP-P {gap:.1} s at {depth} km, {d}°");
+                last_gap = gap;
+            }
+        }
+
+        // sP leaves the source as S, so it takes the source's S weight, pP its P weight. (An
+        // explosion is never deep enough for either: the table has none above 5 km.)
+        let ratio = |kind: EventKind| {
+            let origin = Utc.with_ymd_and_hms(2011, 3, 11, 5, 46, 24).unwrap();
+            let e = Event::new("e", kind, origin, 0.0, 0.0, 10.0, 5.0);
+            let arr = at(&e, 60.0);
+            find(&arr, "sP").unwrap().amplitude / find(&arr, "pP").unwrap().amplitude
+        };
+        let quake = EventKind::Earthquake.profile();
+        let tremor = EventKind::VolcanicTremor.profile();
+        let want = (quake.s / quake.p) / (tremor.s / tremor.p);
+        let got = ratio(EventKind::Earthquake) / ratio(EventKind::VolcanicTremor);
+        assert!((got / want - 1.0).abs() < 1e-9, "{got} vs {want}");
     }
 
     #[test]

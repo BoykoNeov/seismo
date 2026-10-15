@@ -36,6 +36,13 @@ const ANCHORS: &[(&str, f64, f64, f64, f64)] = &[
     ("S", 0.00, 72.60, 1254.968, 11.4284), // off-node distance
     ("P", 32.00, 40.00, 451.693, 8.2978), // off-node depth
     ("S", 212.50, 55.55, 1001.830, 13.2255), // off-node depth and distance
+    ("pP", 100.00, 40.00, 467.939, 8.3510),
+    ("pP", 100.00, 80.00, 744.074, 5.4382),
+    ("sP", 100.00, 60.00, 631.650, 6.8870),
+    ("pP", 600.00, 40.00, 506.432, 8.6995),
+    ("pP", 600.00, 60.00, 665.607, 7.1785),
+    ("sP", 600.00, 40.00, 574.196, 8.4647),
+    ("sP", 600.00, 80.00, 854.439, 5.5166),
 ];
 
 /// Direct-wave cutoffs for a 29 km source from ObsPy (0.05° scan), printed by gen_tables.py.
@@ -54,7 +61,8 @@ fn header_is_as_generated() {
     assert_eq!(
         t.phases(),
         [
-            "P", "S", "PcP", "ScS", "PKPab", "PKPbc", "PKPdf", "PP", "SS", "SKS", "Pdiff", "Sdiff"
+            "P", "S", "PcP", "ScS", "PKPab", "PKPbc", "PKPdf", "PP", "SS", "SKS", "Pdiff", "Sdiff",
+            "pP", "sP"
         ]
     );
     let (d, x) = (t.depth_axis(), t.distance_axis());
@@ -100,6 +108,30 @@ fn pkp_branches_are_split() {
     // bc ends at the C cusp (~155°); ab carries on to the antipode region.
     assert_eq!(t.arrival("PKPbc", 0.0, 170.0), None);
     assert!(t.arrival("PKPab", 0.0, 170.0).is_some());
+}
+
+#[test]
+fn depth_phases_need_a_buried_source() {
+    let t = table();
+    let x = t.distance_axis();
+    for phase in ["pP", "sP"] {
+        for j in 0..x.count {
+            assert_eq!(
+                t.node_time(phase, 0, j),
+                None,
+                "{phase} from the surface at {}°",
+                x.value(j)
+            );
+        }
+        // From depth they follow P, later the deeper the source.
+        let gap = |depth: f64| {
+            t.arrival(phase, depth, 60.0).unwrap() - t.arrival("P", depth, 60.0).unwrap()
+        };
+        assert!(
+            0.0 < gap(50.0) && gap(50.0) < gap(300.0) && gap(300.0) < gap(600.0),
+            "{phase}"
+        );
+    }
 }
 
 /// Last tabulated distance (deg) with a direct-wave arrival, scanning on the distance grid.

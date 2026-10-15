@@ -39,8 +39,11 @@ pub enum Wave {
 
 /// The phases the ray tracer follows. `PKP` covers both outer-core branches (the table's
 /// `PKPab` and `PKPbc`); `PKIKP` is the table's `PKPdf`. Direct `P` and `S` include the rays
-/// that leave a buried source upward (`p`, `s`).
+/// that leave a buried source upward (`p`, `s`). The depth phases `pP` and `sP` leave upward
+/// only, reflect off the surface above the source (`sP` converting from S to P there) and then
+/// travel as P.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[allow(non_camel_case_types)] // pP and sP are the seismological names
 pub enum RayPhase {
     P,
     S,
@@ -51,6 +54,8 @@ pub enum RayPhase {
     SKS,
     PP,
     SS,
+    pP,
+    sP,
 }
 
 /// Where a phase's ray bottoms out.
@@ -63,7 +68,7 @@ enum Bottom {
 }
 
 impl RayPhase {
-    pub const ALL: [RayPhase; 9] = [
+    pub const ALL: [RayPhase; 11] = [
         RayPhase::P,
         RayPhase::S,
         RayPhase::PcP,
@@ -73,6 +78,8 @@ impl RayPhase {
         RayPhase::SKS,
         RayPhase::PP,
         RayPhase::SS,
+        RayPhase::pP,
+        RayPhase::sP,
     ];
 
     pub fn name(self) -> &'static str {
@@ -86,20 +93,40 @@ impl RayPhase {
             RayPhase::SKS => "SKS",
             RayPhase::PP => "PP",
             RayPhase::SS => "SS",
+            RayPhase::pP => "pP",
+            RayPhase::sP => "sP",
         }
     }
 
-    /// Wave type of the legs above the core (in the core every phase here travels as P).
-    pub fn mantle_wave(self) -> Wave {
+    /// Wave type the ray leaves the source as (in the core every phase here travels as P).
+    pub fn source_wave(self) -> Wave {
         match self {
-            RayPhase::P | RayPhase::PcP | RayPhase::PKP | RayPhase::PKIKP | RayPhase::PP => Wave::P,
-            RayPhase::S | RayPhase::ScS | RayPhase::SKS | RayPhase::SS => Wave::S,
+            RayPhase::P
+            | RayPhase::PcP
+            | RayPhase::PKP
+            | RayPhase::PKIKP
+            | RayPhase::PP
+            | RayPhase::pP => Wave::P,
+            RayPhase::S | RayPhase::ScS | RayPhase::SKS | RayPhase::SS | RayPhase::sP => Wave::S,
+        }
+    }
+
+    /// Wave type the ray reaches the surface as: the source wave, except for sP.
+    pub fn arrival_wave(self) -> Wave {
+        match self {
+            RayPhase::sP => Wave::P,
+            _ => self.source_wave(),
         }
     }
 
     fn bottom(self) -> Bottom {
         match self {
-            RayPhase::P | RayPhase::S | RayPhase::PP | RayPhase::SS => Bottom::TurnMantle,
+            RayPhase::P
+            | RayPhase::S
+            | RayPhase::PP
+            | RayPhase::SS
+            | RayPhase::pP
+            | RayPhase::sP => Bottom::TurnMantle,
             RayPhase::PcP | RayPhase::ScS => Bottom::ReflectCmb,
             RayPhase::PKP | RayPhase::SKS => Bottom::TurnOuterCore,
             RayPhase::PKIKP => Bottom::TurnInnerCore,
@@ -116,7 +143,28 @@ impl RayPhase {
 
     /// Whether rays leaving the source upward belong to this phase.
     pub fn has_upgoing(self) -> bool {
-        matches!(self, RayPhase::P | RayPhase::S)
+        matches!(
+            self,
+            RayPhase::P | RayPhase::S | RayPhase::pP | RayPhase::sP
+        )
+    }
+
+    /// Whether only rays leaving the source upward belong to this phase: the depth phases.
+    pub fn is_depth_phase(self) -> bool {
+        matches!(self, RayPhase::pP | RayPhase::sP)
+    }
+
+    /// Take-off angles (rad from straight down) of this phase's rays from a source `depth_km`
+    /// deep: downward (0 to π/2), also upward for direct P and S from a buried source (to π),
+    /// upward only for the depth phases. `None` for a depth phase from a surface source.
+    pub fn takeoff_range(self, depth_km: f64) -> Option<(f64, f64)> {
+        let buried = depth_km > 0.0;
+        match (self.is_depth_phase(), self.has_upgoing() && buried) {
+            (true, true) => Some((FRAC_PI_2, PI)),
+            (true, false) => None,
+            (false, true) => Some((0.0, PI)),
+            (false, false) => Some((0.0, FRAC_PI_2)),
+        }
     }
 }
 
@@ -142,7 +190,7 @@ pub struct Ray {
     /// The deepest point (the turning or reflection point); the source for upgoing rays.
     pub bottom: PathPoint,
     /// Until this time the ray follows the same path as a ray of another phase (PKP shares its
-    /// mantle leg with PcP, PP its first hop with P).
+    /// mantle leg with PcP, PP its first hop with P, pP and sP their way up with p and s).
     pub shared_until_s: f64,
     /// From this time the ray is on the leg that gives the phase its name (after the core
     /// reflection for PcP, after the core entry for PKP, ...).
@@ -156,6 +204,19 @@ impl Ray {
 
     pub fn end(&self) -> PathPoint {
         *self.points.last().expect("a ray has at least two points")
+    }
+
+    /// Wave type where the ray is at radius `r_km` at time `t_s`, given the core-mantle
+    /// boundary radius `r_cmb_km`: P in the core; above it the source wave until a depth
+    /// phase's surface reflection, the arrival wave after it.
+    pub fn wave_at(&self, t_s: f64, r_km: f64, r_cmb_km: f64) -> Wave {
+        if r_km <= r_cmb_km {
+            Wave::P
+        } else if self.phase.is_depth_phase() && t_s < self.shared_until_s {
+            self.phase.source_wave()
+        } else {
+            self.phase.arrival_wave()
+        }
     }
 
     /// Position at time `t`, interpolated linearly between stored points; `None` outside the
@@ -472,15 +533,6 @@ impl RayTracer {
         self.r_icb
     }
 
-    /// Wave type at radius `r` on a ray of `phase`.
-    pub fn wave_at(&self, phase: RayPhase, r_km: f64) -> Wave {
-        if r_km > self.r_cmb {
-            phase.mantle_wave()
-        } else {
-            Wave::P
-        }
-    }
-
     fn profile(&self, wave: Wave) -> &Profile {
         match wave {
             Wave::P => &self.p_profile,
@@ -594,7 +646,7 @@ impl RayTracer {
     /// from straight down.
     pub fn ray_param(&self, phase: RayPhase, depth_km: f64, takeoff_rad: f64) -> f64 {
         let r_s = EARTH_RADIUS_KM - depth_km;
-        let eta_s = r_s / self.profile(phase.mantle_wave()).velocity_at(r_s);
+        let eta_s = r_s / self.profile(phase.source_wave()).velocity_at(r_s);
         (eta_s * takeoff_rad.sin()).max(MIN_RAY_PARAM)
     }
 
@@ -631,7 +683,7 @@ impl RayTracer {
     ) -> Option<Ray> {
         let depth_km = depth_km.clamp(0.0, EARTH_RADIUS_KM - 1.0);
         let r_s = EARTH_RADIUS_KM - depth_km;
-        let wave = phase.mantle_wave();
+        let wave = phase.source_wave();
         let p = self.ray_param(phase, depth_km, takeoff_rad);
         let source = PathPoint {
             r_km: r_s,
@@ -658,13 +710,69 @@ impl RayTracer {
                     t_s: leg.t - q.t_s,
                 })
                 .collect();
-            if !record {
+            let (up_theta, up_t) = (leg.theta, leg.t);
+            if !phase.is_depth_phase() {
+                if !record {
+                    points = vec![
+                        source,
+                        PathPoint {
+                            r_km: EARTH_RADIUS_KM,
+                            theta_rad: up_theta,
+                            t_s: up_t,
+                        },
+                    ];
+                }
+                return Some(Ray {
+                    phase,
+                    takeoff_rad,
+                    p_s_rad: p,
+                    points: decimate(points),
+                    bottom: source,
+                    shared_until_s: 0.0,
+                    distinct_after_s: 0.0,
+                });
+            }
+            // A depth phase: reflected off the surface above the source (sP converted to P
+            // there, keeping its ray parameter), then one P hop through the mantle. A ray
+            // parameter past the surface P slowness has no P leg: it turns at once.
+            let hop = self.descend(Wave::P, EARTH_RADIUS_KM, self.r_cmb, p, record);
+            let LegEnd::Turned(r_turn) = hop.end else {
+                return None;
+            };
+            if r_turn >= EARTH_RADIUS_KM || r_turn <= self.r_cmb {
+                return None;
+            }
+            let bottom_pt = PathPoint {
+                r_km: r_turn,
+                theta_rad: up_theta + hop.theta,
+                t_s: up_t + hop.t,
+            };
+            let (end_theta, end_t) = (up_theta + 2.0 * hop.theta, up_t + 2.0 * hop.t);
+            if record {
+                // Thinned on each side of the bounce, so the corner there stays a path point.
+                let down_up: Vec<PathPoint> = hop
+                    .points
+                    .iter()
+                    .map(|q| PathPoint {
+                        r_km: q.r_km,
+                        theta_rad: up_theta + q.theta_rad,
+                        t_s: up_t + q.t_s,
+                    })
+                    .chain(hop.points.iter().rev().skip(1).map(|q| PathPoint {
+                        r_km: q.r_km,
+                        theta_rad: end_theta - q.theta_rad,
+                        t_s: end_t - q.t_s,
+                    }))
+                    .collect();
+                points = decimate(points);
+                points.extend(decimate(down_up).into_iter().skip(1));
+            } else {
                 points = vec![
                     source,
                     PathPoint {
                         r_km: EARTH_RADIUS_KM,
-                        theta_rad: leg.theta,
-                        t_s: leg.t,
+                        theta_rad: end_theta,
+                        t_s: end_t,
                     },
                 ];
             }
@@ -672,11 +780,14 @@ impl RayTracer {
                 phase,
                 takeoff_rad,
                 p_s_rad: p,
-                points: decimate(points),
-                bottom: source,
-                shared_until_s: 0.0,
-                distinct_after_s: 0.0,
+                points,
+                bottom: bottom_pt,
+                shared_until_s: up_t,
+                distinct_after_s: up_t,
             });
+        }
+        if phase.is_depth_phase() {
+            return None;
         }
 
         let bottom = phase.bottom();
@@ -740,6 +851,7 @@ impl RayTracer {
                 (tc, tc)
             }
             RayPhase::PP | RayPhase::SS => (first_surface_t, first_surface_t),
+            RayPhase::pP | RayPhase::sP => unreachable!("depth phases leave upward"),
         };
         Some(Ray {
             phase,
@@ -758,7 +870,9 @@ impl RayTracer {
     pub fn arrivals(&self, phase: RayPhase, depth_km: f64, dist_deg: f64) -> Vec<Arrival> {
         const STEPS: usize = 3600;
         let target = dist_deg.to_radians();
-        let max_angle = if phase.has_upgoing() { PI } else { FRAC_PI_2 };
+        let Some((lo, hi)) = phase.takeoff_range(depth_km) else {
+            return Vec::new();
+        };
         let miss = |i: f64| -> Option<f64> {
             self.trace_inner(phase, depth_km, i, false)
                 .map(|r| fold_rad(r.end().theta_rad) - target)
@@ -766,7 +880,7 @@ impl RayTracer {
         let mut out = Vec::new();
         let mut prev: Option<(f64, f64)> = None;
         for k in 0..=STEPS {
-            let i = max_angle * k as f64 / STEPS as f64;
+            let i = lo + (hi - lo) * k as f64 / STEPS as f64;
             let cur = miss(i).map(|m| (i, m));
             // A distance at the end of the range (180° for PKIKP, 0° for upgoing rays) is
             // touched, not crossed, so there is no bracket: accept samples that land on it.
@@ -876,8 +990,53 @@ mod tests {
         assert!(pkp.bottom.r_km < rt.cmb_radius_km() && pkp.bottom.r_km > rt.icb_radius_km());
         assert!(pkp.shared_until_s > 0.0 && pkp.shared_until_s < pkp.bottom.t_s);
         let sks = rt.trace(RayPhase::SKS, 0.0, 10f64.to_radians()).unwrap();
-        assert_eq!(rt.wave_at(RayPhase::SKS, sks.bottom.r_km), Wave::P);
-        assert_eq!(rt.wave_at(RayPhase::SKS, 6000.0), Wave::S);
+        let r_cmb = rt.cmb_radius_km();
+        assert_eq!(sks.wave_at(sks.bottom.t_s, sks.bottom.r_km, r_cmb), Wave::P);
+        assert_eq!(sks.wave_at(1.0, 6000.0, r_cmb), Wave::S);
+    }
+
+    #[test]
+    fn depth_phases_bounce_off_the_surface_above_the_source() {
+        let rt = tracer();
+        let r_cmb = rt.cmb_radius_km();
+        for phase in [RayPhase::pP, RayPhase::sP] {
+            // Upward only, and only from a buried source.
+            assert!(rt.trace(phase, 100.0, 30f64.to_radians()).is_none());
+            assert!(rt.trace(phase, 0.0, 160f64.to_radians()).is_none());
+            assert_eq!(phase.takeoff_range(0.0), None);
+
+            let ray = rt.trace(phase, 100.0, 160f64.to_radians()).unwrap();
+            let up = rt.trace(
+                if phase == RayPhase::pP {
+                    RayPhase::P
+                } else {
+                    RayPhase::S
+                },
+                100.0,
+                160f64.to_radians(),
+            );
+            let up = up.unwrap();
+            // The way up is the direct upgoing ray's; the bounce is where that one ends.
+            assert!((ray.shared_until_s - up.arrival_s()).abs() < 1e-9);
+            let bounce = ray.point_at(ray.shared_until_s).unwrap();
+            assert!((bounce.r_km - EARTH_RADIUS_KM).abs() < 1e-6);
+            assert!((bounce.theta_rad - up.end().theta_rad).abs() < 1e-9);
+            // Then down through the mantle and up again, as P.
+            assert!(ray.bottom.r_km < EARTH_RADIUS_KM - 100.0 && ray.bottom.r_km > r_cmb);
+            assert!(ray.bottom.t_s > ray.shared_until_s);
+            let hop = ray.bottom.theta_rad - bounce.theta_rad;
+            assert!((ray.end().theta_rad - bounce.theta_rad - 2.0 * hop).abs() < 1e-9);
+            let t_up = 0.5 * ray.shared_until_s;
+            let r_up = ray.point_at(t_up).unwrap().r_km;
+            assert_eq!(ray.wave_at(t_up, r_up, r_cmb), phase.source_wave());
+            assert_eq!(ray.wave_at(ray.bottom.t_s, ray.bottom.r_km, r_cmb), Wave::P);
+        }
+        assert_eq!(RayPhase::sP.source_wave(), Wave::S);
+        assert_eq!(RayPhase::sP.arrival_wave(), Wave::P);
+        // sP leaving too close to horizontal has a ray parameter no P wave at the surface can
+        // carry: there is no sP for it.
+        assert!(rt.trace(RayPhase::sP, 100.0, 100f64.to_radians()).is_none());
+        assert!(rt.trace(RayPhase::pP, 100.0, 100f64.to_radians()).is_some());
     }
 
     #[test]
@@ -897,7 +1056,7 @@ mod tests {
     fn paths_are_continuous_and_time_ordered() {
         let rt = tracer();
         for phase in RayPhase::ALL {
-            for deg in [1.0, 4.0, 10.0, 20.0, 35.0, 60.0, 89.0, 120.0] {
+            for deg in [1.0, 4.0, 10.0, 20.0, 35.0, 60.0, 89.0, 120.0, 150.0, 170.0] {
                 let Some(ray) = rt.trace(phase, 29.0, f64::to_radians(deg)) else {
                     continue;
                 };
@@ -985,11 +1144,34 @@ mod tests {
     }
 
     #[test]
+    fn traced_depth_phases_match_the_table() {
+        let rt = tracer();
+        let table =
+            crate::tables::TravelTimeTable::from_bytes(include_bytes!("../../../assets/ak135.tt"))
+                .unwrap();
+        // Away from the triplications at 15-30°, where each phase has one branch.
+        for depth in [100.0, 600.0] {
+            for dist in [40.0, 60.0, 80.0] {
+                for (phase, name) in [(RayPhase::pP, "pP"), (RayPhase::sP, "sP")] {
+                    assert_eq!(
+                        rt.arrivals(phase, depth, dist).len(),
+                        1,
+                        "{name} {depth} {dist}"
+                    );
+                    check_against_table(&rt, &table, phase, name, depth, dist, 1.0);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn fast_trace_agrees_with_recorded_trace() {
         let rt = tracer();
-        let a = rt.trace_inner(RayPhase::PP, 29.0, 0.4, true).unwrap();
-        let b = rt.trace_inner(RayPhase::PP, 29.0, 0.4, false).unwrap();
-        assert!((a.arrival_s() - b.arrival_s()).abs() < 1e-9);
-        assert!((a.end().theta_rad - b.end().theta_rad).abs() < 1e-12);
+        for (phase, takeoff) in [(RayPhase::PP, 0.4), (RayPhase::sP, 2.8)] {
+            let a = rt.trace_inner(phase, 29.0, takeoff, true).unwrap();
+            let b = rt.trace_inner(phase, 29.0, takeoff, false).unwrap();
+            assert!((a.arrival_s() - b.arrival_s()).abs() < 1e-9);
+            assert!((a.end().theta_rad - b.end().theta_rad).abs() < 1e-12);
+        }
     }
 }

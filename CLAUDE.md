@@ -116,7 +116,9 @@ Key depths (km): Moho 35, 410, 660, CMB 2891.5
 (radius 3479.5), ICB 5153.5 (radius 1217.5).
 
 Table phases, in priority order for implementation: P, S, PcP, ScS, PKPab,
-PKPbc, PKIKP (= PKPdf), PP, SS, SKS, Pdiff, Sdiff. Later: depth phases pP, sP.
+PKPbc, PKIKP (= PKPdf), PP, SS, SKS, Pdiff, Sdiff, then the depth phases pP, sP
+(appended, so earlier layers keep their place; none from a source shallower than 5 km;
+on the traces and in the slice, not on the map; 1D times, no 3D delay).
 Shadow zones: direct P absent ~103°–142°; direct S absent beyond ~103° (core
 is liquid). The exact cutoff depends on source depth and is whatever the
 generated table says; tests never hardcode 103°.

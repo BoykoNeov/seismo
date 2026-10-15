@@ -46,8 +46,9 @@ MODEL = "ak135"
 DEPTH_START, DEPTH_STEP, DEPTH_COUNT = 0.0, 5.0, 141  # 0..700 km
 DIST_START, DIST_STEP, DIST_COUNT = 0.0, 0.25, 721  # 0..180 deg
 
-# Output layers, in CLAUDE.md priority order.
-PHASES = ["P", "S", "PcP", "ScS", "PKPab", "PKPbc", "PKPdf", "PP", "SS", "SKS", "Pdiff", "Sdiff"]
+# Output layers, in CLAUDE.md priority order. New phases are appended, so the earlier layers
+# keep their place in the file.
+PHASES = ["P", "S", "PcP", "ScS", "PKPab", "PKPbc", "PKPdf", "PP", "SS", "SKS", "Pdiff", "Sdiff", "pP", "sP"]
 
 # ObsPy phase names each output layer takes its first arrival from.
 SOURCES = {
@@ -63,6 +64,10 @@ SOURCES = {
     "SKS": ["SKS"],
     "Pdiff": ["Pdiff"],
     "Sdiff": ["Sdiff"],
+    # Depth phases: the ray leaves upward and reflects off the surface above the source (sP
+    # leaves as S and converts to P there). ObsPy gives none for a source at the surface.
+    "pP": ["pP"],
+    "sP": ["sP"],
 }
 OBSPY_NAMES = sorted({n for names in SOURCES.values() for n in names})
 
@@ -210,6 +215,14 @@ ANCHORS = [
     ("S", 0.0, 72.6),  # off-node distance
     ("P", 32.0, 40.0),  # off-node depth
     ("S", 212.5, 55.55),  # off-node depth and distance
+    ("pP", 100.0, 40.0),
+    ("pP", 100.0, 80.0),
+    ("sP", 100.0, 60.0),
+    ("pP", 600.0, 40.0),
+    ("pP", 600.0, 60.0),
+    ("sP", 600.0, 40.0),
+    ("sP", 600.0, 80.0),
+    ("pP", 0.0, 60.0),  # surface source: no depth phase
 ]
 
 

@@ -455,10 +455,10 @@ impl<'a> Bender<'a> {
     /// Trace a ray of `phase` from a source `depth_km` deep with take-off angle `takeoff_rad`
     /// (0 = straight down, π = straight up). `None` if the bent ray is not part of the phase.
     pub fn trace(&self, phase: RayPhase, depth_km: f64, takeoff_rad: f64) -> Option<Ray> {
-        let wave = phase.mantle_wave();
-        let profile = self.tracer.profile(wave);
+        let mut wave = phase.source_wave();
+        let mut profile = self.tracer.profile(wave);
         let upgoing = takeoff_rad > std::f64::consts::FRAC_PI_2;
-        if upgoing && !phase.has_upgoing() {
+        if (upgoing && !phase.has_upgoing()) || (!upgoing && phase.is_depth_phase()) {
             return None;
         }
         let depth_km = depth_km.clamp(0.0, EARTH_RADIUS_KM - 1.0);
@@ -481,10 +481,13 @@ impl<'a> Bender<'a> {
         let source = s.point();
         let p_s_rad = (r_s * takeoff_rad.sin() / v_s).max(MIN_RAY_PARAM);
         let bottom_kind = phase.bottom();
-        let mut hops_left = phase.hops();
+        // A depth phase's way up ends in a surface bounce, followed by one hop.
+        let mut hops_left = phase.hops() + usize::from(phase.is_depth_phase());
         let mut points = vec![source];
         let mut bottom = source;
-        let mut first_hop = true;
+        // Whether the deepest point so far is the ray's bottom: on the first hop of a
+        // downgoing ray, on the hop after the bounce of a depth phase.
+        let mut tracking_bottom = !upgoing;
         let (mut core_entry_t, mut first_surface_t, mut reflected_t) = (None, None, None);
         let (mut entered_core, mut entered_inner) = (false, false);
         let n_layers = self.interfaces.len() - 1;
@@ -549,15 +552,14 @@ impl<'a> Bender<'a> {
             }
             let Some((r_if, down)) = crossing else {
                 if let Some(turn) = turned_at
-                    && first_hop
-                    && !upgoing
+                    && tracking_bottom
                     && turn.r() < bottom.r_km
                 {
                     bottom = turn.point();
                 }
                 s = next;
                 points.push(s.point());
-                if first_hop && s.r() < bottom.r_km && !upgoing {
+                if tracking_bottom && s.r() < bottom.r_km {
                     bottom = s.point();
                 }
                 continue;
@@ -570,7 +572,7 @@ impl<'a> Bender<'a> {
             s.x *= scale;
             s.y *= scale;
             points.push(s.point());
-            if first_hop && s.r() < bottom.r_km && !upgoing {
+            if tracking_bottom && s.r() < bottom.r_km {
                 bottom = s.point();
             }
 
@@ -581,8 +583,27 @@ impl<'a> Bender<'a> {
                 // At the surface.
                 if hops_left > 1 {
                     hops_left -= 1;
-                    first_hop = false;
                     first_surface_t.get_or_insert(s.t);
+                    if phase.is_depth_phase() {
+                        // The bounce above the source: the hop that follows is the ray's
+                        // own, and sP continues as P (Snell: the tangential slowness is kept).
+                        tracking_bottom = true;
+                        bottom = s.point();
+                        let down = phase.arrival_wave();
+                        if down != wave {
+                            wave = down;
+                            profile = self.tracer.profile(wave);
+                            let v = self.velocity_in_layer(profile, wave, layer, &s, r_if);
+                            let q = 1.0 / (v * v) - pt * pt;
+                            if q < 0.0 {
+                                return None;
+                            }
+                            s.set_radial_tangential(-q.sqrt(), pt);
+                            continue;
+                        }
+                    } else {
+                        tracking_bottom = false;
+                    }
                     reflect(&mut s);
                     continue;
                 }
@@ -661,7 +682,7 @@ impl<'a> Bender<'a> {
                 let tc = core_entry_t.unwrap_or(0.0);
                 (tc, tc)
             }
-            RayPhase::PP | RayPhase::SS => {
+            RayPhase::PP | RayPhase::SS | RayPhase::pP | RayPhase::sP => {
                 let ts = first_surface_t.unwrap_or(0.0);
                 (ts, ts)
             }
@@ -671,7 +692,11 @@ impl<'a> Bender<'a> {
             takeoff_rad,
             p_s_rad,
             points: decimate(points),
-            bottom: if upgoing { source } else { bottom },
+            bottom: if upgoing && !phase.is_depth_phase() {
+                source
+            } else {
+                bottom
+            },
             shared_until_s,
             distinct_after_s,
         })
@@ -681,10 +706,8 @@ impl<'a> Bender<'a> {
     /// of them, evenly spread, plus every ray at an edge of the 1D fan and a probe just beyond
     /// it), then refined like the 1D fans, up to `MAX_FAN_RAYS` rays.
     pub fn fan(&self, phase: RayPhase, depth_km: f64, seeds: &[Ray]) -> Vec<Ray> {
-        let max_angle = if phase.has_upgoing() && depth_km > 0.0 {
-            PI
-        } else {
-            std::f64::consts::FRAC_PI_2
+        let Some((lo, hi)) = phase.takeoff_range(depth_km) else {
+            return Vec::new();
         };
         let stride = seeds.len().div_ceil(MAX_SEEDS).max(1);
         let mut angles: Vec<f64> = seeds
@@ -699,10 +722,10 @@ impl<'a> Bender<'a> {
             let gap_after =
                 i + 1 == seeds.len() || seeds[i + 1].takeoff_rad - a > 1.5 * EDGE_PROBE_RAD;
             if gap_before {
-                angles.extend([a, (a - EDGE_PROBE_RAD).max(0.0)]);
+                angles.extend([a, (a - EDGE_PROBE_RAD).max(lo)]);
             }
             if gap_after {
-                angles.extend([a, (a + EDGE_PROBE_RAD).min(max_angle)]);
+                angles.extend([a, (a + EDGE_PROBE_RAD).min(hi)]);
             }
         }
         angles.sort_by(f64::total_cmp);

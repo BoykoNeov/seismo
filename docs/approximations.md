@@ -36,6 +36,29 @@ For a buried source ObsPy names the direct ray `p`/`s` when it leaves the source
 exists (for a 600 km source, out past 10°). SEISMO's `P` and `S` layers hold the first arrival
 of either, so the map front has no hole near the epicentre. `Pdiff`/`Sdiff` stay separate.
 
+## Depth phases pP and sP
+
+`pP` leaves a buried source upward as P, reflects off the surface above it and then travels
+down and back up as P; `sP` leaves upward as S and converts to P at that surface point. The
+time between P and pP (or sP) grows with the source's depth, which is how seismologists read
+depth off a seismogram. The `pP` and `sP` table layers hold ObsPy's first arrival of each,
+like the other phases. A source at the surface has none (ObsPy gives none, and the echo would
+coincide with P). Since the lookup needs all four surrounding table cells, a source shallower
+than the first depth row (5 km) has none either; there the echo would trail P by under about
+2 s, which the traces cannot show anyway. Explosions, landslides and impacts are never that
+deep, so they never show depth phases. An sP ray leaving close to horizontal has a ray parameter no P wave at the
+surface can carry, so it has no sP; ObsPy and the tracer agree on that edge.
+
+- **Shown on the seismograms and in the slice, not on the map.** The map draws P and S only.
+- **1D times.** The 3D-mantle delay is computed along the direct P and S rays; the depth phases
+  take a different path, so their times stay 1D (in the slice, their rays are bent through the
+  3D mantle like the others).
+- **Amplitudes** come from their own ray tubes (see Seismograms), with a fixed factor for the
+  surface bounce (pP 0.7, sP 0.5). The real factors depend on the angle, flip pP's polarity,
+  and are dwarfed by the source's radiation pattern, which SEISMO does not model; so the sizes
+  of pP and sP next to P are display choices. sP takes the source's S weight (it leaves as S),
+  pP the P weight.
+
 ## Direct-wave cutoff (core shadow)
 
 Direct P and S stop where their rays graze the core. Beyond that, only the diffracted waves
@@ -67,22 +90,25 @@ The slice draws wavefronts inside the Earth from rays traced through the ak135 v
 velocity a power law of radius inside each shell. Velocities are linear in depth between the
 model's samples, and each shell replaces that with a power law between its end values. A test
 checks the traced surface arrival times against the table within 1 s: P and S at 30°, 60° and
-90°; PKIKP at 150° and 180°; PcP, ScS, SKS, PP, SS and both PKP branches at one distance each.
+90°; PKIKP at 150° and 180°; PcP, ScS, SKS, PP, SS and both PKP branches at one distance each;
+pP and sP from 100 and 600 km sources at 40°, 60° and 80°.
 
 What the slice leaves out:
 
-- **Only nine phases:** P, S, PcP, ScS, PKP, PKIKP, SKS, PP and SS, P and S including the rays
-  that leave a buried source upward. Rays that cannot get through the velocity jump at the
+- **Only eleven phases:** P, S, PcP, ScS, PKP, PKIKP, SKS, PP, SS and the depth phases pP and
+  sP, P and S including the rays that leave a buried source upward. Rays that cannot get through the velocity jump at the
   410 or 660 bounce off its top (total reflection) and stay part of P and S, as in ObsPy. There
   are no partial reflections (a ray that gets through leaves no reflected copy), no reflections
-  off the underside of a layer, no surface reflections other than PP and SS, no conversions
-  other than those named (no PcS, no SKP, no S in the inner core), and no depth phases (pP, sP).
+  off the underside of a layer, no surface reflections other than PP, SS, pP and sP, no
+  conversions other than those named (no PcS, no SKP, no S in the inner core), and no sS or
+  pS.
 - **No diffraction, no head waves.** Fronts end where the rays end. There is no Pdiff or Sdiff
   creeping along the core, so beyond about 100° the slice shows only the core phases and the surface
   reflections PP and SS, and there is no Pn running along the Moho.
 - **Shared paths drawn once.** Before they reach the core, PcP, PKP and PKIKP rays follow the
   same path down. That part is drawn as one front (the PcP fan), and PKP and PKIKP start at the
-  core-mantle boundary. Likewise PP and SS start where P and S reach the surface. Labels sit on
+  core-mantle boundary. Likewise PP and SS start where P and S reach the surface, and pP and sP
+  where the upgoing p and s rays do (sP's path is drawn as S up to there). Labels sit on
   the leg that gives a phase its name.
 - **Fronts join neighbouring rays with straight lines.** Rays are refined until neighbours
   land and turn within 60 km of each other. A front is broken where neighbours are more than
@@ -182,7 +208,7 @@ tracer.
   gradient across the plane is ignored. Real rays drift a little sideways; at real strength the
   drift is small.
 - **Checked against the 1D tracer.** With no perturbation the bent rays land within 0.05° of
-  the closed-form 1D rays, and on time within 0.1 s at the same landing point, for all nine
+  the closed-form 1D rays, and on time within 0.1 s at the same landing point, for all eleven
   phases from sources at 29 and 600 km (most within 0.02 s; the largest differences are for
   shallow P and S rays and the surface-reflected PP and SS). Knife-edge rays, where a
   1e-5 rad change of take-off angle moves the landing point by more than 0.05° (rays turning
@@ -219,7 +245,7 @@ their sizes only roughly physical. The UI says so.
   `tools/gen_stations.py` (query and date in the file's header). Elevation is ignored (spherical
   Earth). Users can add their own stations anywhere.
 - **Times.** Body-wave times are the table's (first arrival of each named phase; PKP as three
-  branches), plus the 3D-mantle delay for P and S, sampled from the same grid with the same
+  branches), plus the 3D-mantle delay for P and S (not pP or sP), sampled from the same grid with the same
   interpolation as the map, so a trace and a map ring agree. Other phases stay 1D. Surface waves
   arrive at path length ÷ group velocity, the short way round (R1, L1) and the long way (R2, L2).
 - **Amplitudes from ray tubes.** For each body phase the ray tracer lands a fan of rays (take-off
@@ -235,7 +261,8 @@ their sizes only roughly physical. The UI says so.
   but stays finite.
 - **What the amplitudes leave out.** No radiation pattern (every source radiates the same in all
   directions), no reflection or transmission coefficients (a fixed factor per phase stands in:
-  PcP 0.2, ScS 0.5, PKPab/bc 0.4, PKPdf 0.3, PP 0.6, SS 0.6, SKS 0.4), no free-surface effect,
+  PcP 0.2, ScS 0.5, PKPab/bc 0.4, PKPdf 0.3, PP 0.6, SS 0.6, SKS 0.4, pP 0.7, sP 0.5), no
+  free-surface effect,
   no body-wave attenuation, no site effects. Magnitude scales every amplitude by 10^M.
 - **Diffracted waves.** The tracer does not follow Pdiff and Sdiff. Past the direct wave's
   shadow edge (the farthest downgoing ray), they get the direct wave's amplitude 0.5° inside the
