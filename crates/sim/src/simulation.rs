@@ -42,6 +42,11 @@ pub struct EventState {
     pub s_front_deg: Option<f64>,
 }
 
+/// Smallest magnitude whose surface waves the map draws (decided by the user, 2026-10-15):
+/// smaller events make no surface waves worth seeing across the globe, and their bands would
+/// crowd the map for hours.
+pub const SURFACE_MAP_MIN_MAG: f64 = 5.0;
+
 /// An event selected for drawing on the map, with its time since origin.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MapEvent {
@@ -50,6 +55,8 @@ pub struct MapEvent {
     /// Its body waves (the table's phases) are still on the globe; otherwise only its surface
     /// waves are.
     pub body: bool,
+    /// The map draws its surface waves (magnitude at least [`SURFACE_MAP_MIN_MAG`]).
+    pub surface: bool,
 }
 
 impl Simulation {
@@ -140,9 +147,10 @@ impl Simulation {
     /// Events whose waves are on the globe at `now`, at most `cap`: first those whose body
     /// waves still are (origin passed, and within `linger_s` seconds of the table's last
     /// arrival), largest magnitude first; then, in the room left, those with only surface waves
-    /// left (until the slowest has been once round the globe), largest first. So an old large
-    /// event's surface waves never push a fresh small event's fronts off the map. Ties keep
-    /// event order, so the result is deterministic.
+    /// left (until the slowest has been once round the globe; only events of at least
+    /// [`SURFACE_MAP_MIN_MAG`]), largest first. So an old large event's surface waves never push
+    /// a fresh small event's fronts off the map. Ties keep event order, so the result is
+    /// deterministic.
     pub fn map_events(&self, now: DateTime<Utc>, cap: usize, linger_s: f64) -> Vec<MapEvent> {
         let body_horizon = self.table.max_arrival_time() + linger_s;
         let horizon = body_horizon.max(self.surface.once_round_s());
@@ -156,9 +164,10 @@ impl Simulation {
                     index,
                     t,
                     body: t <= body_horizon,
+                    surface: e.magnitude >= SURFACE_MAP_MIN_MAG,
                 }
             })
-            .filter(|m| m.t >= 0.0 && m.t <= horizon)
+            .filter(|m| m.t >= 0.0 && (m.body || (m.surface && m.t <= horizon)))
             .collect();
         out.sort_by(|a, b| {
             b.body.cmp(&a.body).then(
@@ -281,6 +290,7 @@ mod tests {
             mk("big", 2, 7.0),
             mk("mid", 3, 5.5),
             mk("surface only", 3 * 60, 8.5), // body waves gone, surface waves still circling
+            mk("small, surface only", 3 * 60, 4.5), // too small for surface bands: gone
         ];
         let sim = sim(events);
         let ids = |v: Vec<MapEvent>| -> Vec<String> {
@@ -297,6 +307,8 @@ mod tests {
         assert_eq!(m.t, 120.0);
         assert!(m.body);
         let all = sim.map_events(now, 32, 0.0);
-        assert!(!all[3].body);
+        assert!(!all[3].body && all[3].surface);
+        // Small events keep their fronts but get no surface bands.
+        assert!(all[2].body && !all[2].surface);
     }
 }

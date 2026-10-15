@@ -1101,6 +1101,7 @@ impl SeismoApp {
                     magnitude: e.magnitude as f32,
                     delay_slot: slot.map(|(s, _)| s),
                     max_delay_s: slot.map_or(0.0, |(_, m)| m),
+                    surface: m.surface,
                 }
             })
             .collect();

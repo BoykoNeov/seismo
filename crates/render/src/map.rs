@@ -35,6 +35,8 @@ pub struct MapEventInstance {
     pub delay_slot: Option<u32>,
     /// Largest |delay| (s) in that slot, so the shader can skip the lookup far from a front.
     pub max_delay_s: f32,
+    /// Draw this event's surface-wave bands.
+    pub surface: bool,
 }
 
 /// The great circle the slice view cuts along, drawn on the map from the epicentre to its
@@ -427,7 +429,7 @@ impl MapPass {
                     e.delay_slot
                         .map_or(-1.0, |s| (s as usize * DELAY_PHASES.len()) as f32),
                     e.max_delay_s,
-                    0.0,
+                    if e.surface { 1.0 } else { 0.0 },
                 ],
             };
         }

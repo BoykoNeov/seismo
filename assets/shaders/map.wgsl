@@ -11,7 +11,8 @@ const MIN_RAY_PARAM: f32 = 0.5;
 struct MapEvent {
     // lat_deg, lon_deg, depth_km, t_s (seconds since origin; < 0 = not yet)
     a: vec4<f32>,
-    // magnitude, first delay layer (P; S is the next; < 0 = none), max |delay| (s), unused
+    // magnitude, first delay layer (P; S is the next; < 0 = none), max |delay| (s),
+    // surface-wave bands (1 = draw, 0 = not)
     b: vec4<f32>,
 };
 
@@ -250,7 +251,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let dl_s = select(-1, dl + 1, dl >= 0);
         let p = phase_glow(i32(u.layers.x), dl, e.b.z, e.a.z, dist, az, e.a.w, px_deg, 0.0);
         let s = phase_glow(i32(u.layers.y), dl_s, e.b.z, e.a.z, dist, az, e.a.w, px_deg, 3.0);
-        level = max(level, max(max(p, 0.8 * s), surface_glow(dist, e.a.w, in.pos.xy)));
+        var bands = 0.0;
+        if (e.b.w > 0.5) {
+            bands = surface_glow(dist, e.a.w, in.pos.xy);
+        }
+        level = max(level, max(max(p, 0.8 * s), bands));
         // Epicentre: bright dot plus a ring.
         let r = dist / px_deg;
         let dot = 1.0 - smoothstep(2.0, 3.0, r);

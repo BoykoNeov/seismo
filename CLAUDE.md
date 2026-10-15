@@ -104,6 +104,8 @@ no dependence on the working directory.
   body waves are still on the globe, largest magnitude first; then, in the room
   left, events with only surface waves left (until the slowest train has been
   once round), largest first. Only the first group gets 3D-delay slots.
+  Surface bands only for M5+ (`sim::SURFACE_MAP_MIN_MAG`, decided 2026-10-15);
+  smaller events leave with their body waves.
 - Slice: `sim` computes a ray fan per (source depth, phase) — per ray, not per
   pixel — cached, since a 1D model depends only on source depth. With the 3D
   mantle on, fans are bent through it in the plane of the cut

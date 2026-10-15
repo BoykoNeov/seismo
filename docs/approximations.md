@@ -198,9 +198,12 @@ trace shows the train. What it leaves out:
   alike whatever its magnitude, as the P and S fronts do. The surface slider dims or hides them.
 - **Near the epicentre** (under 2.5°) the first row's shape is reused, as apparent speed means
   nothing there.
-- **How long they stay.** An event stays on the map until its slowest train has been once round
-  the globe (about four hours), but only in the room left after the events whose body waves are
-  still out, so old surface waves never push fresh fronts off the map.
+- **Only magnitude 5 and up** (decided by the user, 2026-10-15): smaller events show their P and
+  S fronts but no bands, and leave the map with their body waves.
+- **How long they stay.** An event of magnitude 5 or more stays on the map until its slowest
+  train has been once round the globe (about four hours), but only in the room left after the
+  events whose body waves are still out, so old surface waves never push fresh fronts off the
+  map.
 
 ## Map coastlines: simplified
 
