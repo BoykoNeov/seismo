@@ -85,6 +85,13 @@ left as the eframe shell and the frame loop. No behaviour change; the UI Automat
   without a GPU; only the screenshot tests need one and should be skipped in CI.
 - License: still undecided. Do not add one without the user choosing (see memory note).
 
+**Done 2026-10-15** (except the license): `README.md` with screenshots of both looks
+(`docs/images/`), a terminal frame, build commands, every desktop flag and the data sources
+with citations; `.github/workflows/ci.yml` runs `cargo fmt --check`, clippy (all targets,
+`-D warnings`) and `cargo test --workspace` on Ubuntu and Windows; and a new test
+(`crates/render/tests/shaders.rs`) parses and validates every WGSL shader with naga, so shader
+errors fail CI without a GPU.
+
 ## 2. Physics that could be made more honest
 
 Each of these is a deliberate shortcut listed in `docs/approximations.md`. Fixing one means
@@ -193,7 +200,8 @@ effort; the first real new physics outside `tables`/`sim`'s current scope, so it
 
 1. ~~Section 1.1, the performance pass with `--size`, so the 60 fps target gets a real
    verdict.~~ Done 2026-10-15: measured, not 60 fps; see the verdict there.
-2. Section 1.3, README and CI (license stays the user's call).
+2. ~~Section 1.3, README and CI (license stays the user's call).~~ Done 2026-10-15; the
+   license is still open.
 3. Section 3.1, real waveforms from IRIS.
 
 The first two close open debts; the third is the biggest gain in what the app is for. Items
