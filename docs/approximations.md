@@ -126,6 +126,28 @@ What the slice leaves out:
 - **Brightness is not amplitude.** Line brightness is fixed per phase for legibility. The
   fainter fronts behind each front are copies at earlier times, a display trail, not a coda.
 
+## Surface-wave dispersion curves: ak135, flattened, no gravity
+
+`assets/surface_dispersion.csv` holds the phase velocity (speed of the crests) and group velocity
+(speed of the energy) of the fundamental-mode Rayleigh and Love waves from 8 s to 200 s period.
+`tools/gen_dispersion.py` computes them from `assets/ak135_model.csv` with disba (a flat-layer
+code after Herrmann's Computer Programs in Seismology), after the Earth-flattening
+transformation turns the sphere into an equivalent flat model (exact for Love waves, Biswas's
+1972 approximation for Rayleigh waves). Gravity is ignored. Only the fundamental mode is kept:
+overtones are left out.
+
+- **Checked against a spherical code.** On 2026-10-15 the curves were compared with Mineos
+  (github.com/geodynamics/mineos at 26f842d; spherical normal modes, with and without gravity)
+  on the same ak135, resampled for its 350-level limit and run without attenuation. Phase
+  velocity agrees within 0.1% and group velocity within 0.25% over the whole band; gravity changes
+  Mineos's own values by less than 0.1% there. `tables` hardcodes some of Mineos's values in a
+  test.
+- **One Earth for every path.** ak135's crust is continental (35 km thick, no ocean), so every
+  path gets continental dispersion. Real oceanic paths are faster at short periods (thin crust)
+  and continental shields differ again; the 3D mantle model does not change surface waves.
+- **No attenuation in the curves.** Real attenuation also makes velocities depend slightly on
+  period (physical dispersion); ak135 has no Q here, and none is applied.
+
 ## Surface waves at constant group velocity, not dispersive
 
 Rayleigh and Love waves travel at a constant group velocity (Rayleigh 3.5 km/s, Love 4.4 km/s,

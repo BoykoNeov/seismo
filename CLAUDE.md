@@ -22,12 +22,14 @@ seismo/               # = repo root
     sp12rts/          # SP12RTS 3D mantle model (authors' .sph files, unchanged; README has citation + checksums)
     stations.csv      # bundled real seismograph stations (GSN, IU + II; generated, committed, provenance in header)
     coastlines.txt    # Natural Earth 1:10m coastline, simplified (generated, committed, provenance in header)
+    surface_dispersion.csv # Rayleigh + Love phase/group velocity vs period from ak135 (generated, committed, provenance in header)
     shaders/          # WGSL
   tools/
     gen_tables.py     # ObsPy script that produces both ak135 assets
     gen_stations.py   # FDSN station query that produces stations.csv (stdlib only)
     gen_coastlines.py # Natural Earth download + simplification that produces coastlines.txt (stdlib only)
-    requirements.txt  # pinned obspy version
+    gen_dispersion.py # disba (Earth-flattened ak135) script that produces surface_dispersion.csv
+    requirements.txt  # pinned obspy and disba versions
   docs/
     approximations.md
   CLAUDE.md
@@ -236,6 +238,7 @@ cargo clippy --workspace -- -D warnings
 cargo run -p app
 pip install -r tools/requirements.txt   # in a virtualenv outside the repo
 python tools/gen_tables.py              # regenerates both ak135 assets (slow: minutes)
+python tools/gen_dispersion.py          # regenerates surface_dispersion.csv (needs ak135_model.csv)
 ```
 
 ## Open questions (ask before deciding)
