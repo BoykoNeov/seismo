@@ -592,8 +592,9 @@ mod tests {
         // `depmaphj_jr` then `raw2xyz_jr` (2° grid, degrees 1–12), from SP12RTS_plotting.tar.gz
         // (retrieved 2026-10-15), compiled unchanged with gfortran and run on the bundled files.
         // Knot and mid-knot depths, the strongest value within ±60° and one beside the ±180°
-        // seam. Within ±60° the two agree to the 5 printed digits at every depth; nearer the
-        // poles the authors' single-precision Legendre recursion drifts (up to 0.002 %).
+        // seam. Within ±60° the two agree to about one unit of the last printed digit at every
+        // depth; nearer the poles the authors' single-precision build differs by up to 0.002 %,
+        // and the same code built in double precision matches there too.
         const REF: [(&str, f64, f64, f64, f64); 32] = [
             ("ES", 24.500, 22.0, -112.0, -2.9176),
             ("ES", 24.500, 12.0, 178.0, 2.3612),
