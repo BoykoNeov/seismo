@@ -15,6 +15,8 @@ struct MapEvent {
     // magnitude, first delay layer (P; S is the next; < 0 = none), max |delay| (s),
     // surface-wave bands (1 = draw, 0 = not)
     b: vec4<f32>,
+    // sin lat, cos lat, sin lon, cos lon of the epicentre (from the CPU, once per event)
+    c: vec4<f32>,
 };
 
 struct Uniforms {
@@ -83,10 +85,25 @@ fn distance_azimuth(lat1: f32, lon1: f32, lat2: f32, lon2: f32) -> vec2<f32> {
     let p1 = lat1 * DEG;
     let p2 = lat2 * DEG;
     let dl = (lon2 - lon1) * DEG;
-    let y = sqrt(pow(cos(p2) * sin(dl), 2.0) + pow(cos(p1) * sin(p2) - sin(p1) * cos(p2) * cos(dl), 2.0));
+    let east = cos(p2) * sin(dl);
+    let north = cos(p1) * sin(p2) - sin(p1) * cos(p2) * cos(dl);
+    let y = sqrt(east * east + north * north);
     let x = sin(p1) * sin(p2) + cos(p1) * cos(p2) * cos(dl);
-    let az = atan2(sin(dl) * cos(p2), cos(p1) * sin(p2) - sin(p1) * cos(p2) * cos(dl));
-    return vec2<f32>(atan2(y, x) / DEG, az);
+    return vec2<f32>(atan2(y, x) / DEG, atan2(east, north));
+}
+
+// The same from the sines and cosines of both points' latitude and longitude, as
+// (sin lat, cos lat, sin lon, cos lon): the event's come from the CPU and the pixel's are
+// computed once per pixel, so the loop over events needs no trigonometry but the two atan2.
+// sin and cos of the longitude difference come from the angle-difference identities.
+fn distance_azimuth_sc(src: vec4<f32>, dst: vec4<f32>) -> vec2<f32> {
+    let sin_dl = dst.z * src.w - dst.w * src.z;
+    let cos_dl = dst.w * src.w + dst.z * src.z;
+    let east = dst.y * sin_dl;
+    let north = src.y * dst.x - src.x * dst.y * cos_dl;
+    let y = sqrt(east * east + north * north);
+    let x = src.x * dst.x + src.y * dst.y * cos_dl;
+    return vec2<f32>(atan2(y, x) / DEG, atan2(east, north));
 }
 
 fn tex(layer: i32, x: i32, y: i32) -> vec2<f32> {
@@ -252,14 +269,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let grid = u.style.w * max(max(0.35 * minor, 0.7 * major), equator);
     colour = max(colour, paint(u.grid_colour, grid));
 
+    let here = vec4<f32>(sin(lat * DEG), cos(lat * DEG), sin(lon * DEG), cos(lon * DEG));
+    // A pixel's size in degrees of arc, roughly, at this point on the map.
+    let px_deg = max(px.y, px.x * here.y);
     let n = u32(u.view.z);
     for (var k = 0u; k < min(n, MAX_EVENTS); k = k + 1u) {
         let e = u.events[k];
-        let da = distance_azimuth(e.a.x, e.a.y, lat, lon);
+        let da = distance_azimuth_sc(e.c, here);
         let dist = da.x;
         let az = da.y;
-        // A pixel's size in degrees of arc, roughly, at this point on the map.
-        let px_deg = max(px.y, px.x * cos(lat * DEG));
         let dl = i32(e.b.y);
         let dl_s = select(-1, dl + 1, dl >= 0);
         let p = phase_glow(i32(u.layers.x), dl, e.b.z, e.a.z, dist, az, e.a.w, px_deg, 0.0);
@@ -281,7 +299,6 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // The slice's great circle, epicentre to antipode: dotted, brighter every 30 deg.
     if (u.slice.w > 0.5) {
         let da = distance_azimuth(u.slice.x, u.slice.y, lat, lon);
-        let px_deg = max(px.y, px.x * cos(lat * DEG));
         let rel = da.y - u.slice.z * DEG;
         let cross = abs(asin(clamp(sin(da.x * DEG) * sin(rel), -1.0, 1.0))) / DEG;
         if (cos(rel) >= 0.0 || da.x > 179.0) {

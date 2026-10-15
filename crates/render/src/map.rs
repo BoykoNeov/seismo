@@ -159,11 +159,21 @@ impl Default for MapStyle {
     }
 }
 
+/// `[sin lat, cos lat, sin lon, cos lon]` of a point (degrees), computed in f64.
+fn sin_cos_lat_lon(lat_deg: f32, lon_deg: f32) -> [f32; 4] {
+    let (sl, cl) = (lat_deg as f64).to_radians().sin_cos();
+    let (so, co) = (lon_deg as f64).to_radians().sin_cos();
+    [sl as f32, cl as f32, so as f32, co as f32]
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct GpuEvent {
     a: [f32; 4],
     b: [f32; 4],
+    /// sin and cos of the epicentre's latitude, then of its longitude: per event, so the
+    /// shader's per-pixel distance needs no trigonometry of its own for each event.
+    c: [f32; 4],
 }
 
 #[repr(C)]
@@ -451,6 +461,7 @@ impl MapPass {
                     e.max_delay_s,
                     if e.surface { 1.0 } else { 0.0 },
                 ],
+                c: sin_cos_lat_lon(e.lat, e.lon),
             };
         }
         let uniforms = Uniforms {

@@ -254,6 +254,27 @@ struct Uniforms {
     glass: [f32; 4],
     signal: [f32; 4],
     tint: [f32; 4],
+    /// The bloom blur's Gaussian weights for taps 0 to `BLOOM_TAPS`, normalised over the
+    /// whole kernel (-`BLOOM_TAPS`..=`BLOOM_TAPS`), four to a row.
+    bloom_weights: [[f32; 4]; 3],
+}
+
+/// Taps either side of the centre in each bloom blur pass; must match `BLOOM_TAPS` in crt.wgsl.
+const BLOOM_TAPS: usize = 10;
+
+/// Gaussian weights of the bloom blur for taps 0..=`BLOOM_TAPS` at `sigma` (half-res pixels),
+/// normalised so the full symmetric kernel sums to 1.
+fn bloom_weights(sigma: f32) -> [[f32; 4]; 3] {
+    let s = sigma.max(0.5) as f64;
+    let w: Vec<f64> = (0..=BLOOM_TAPS)
+        .map(|i| (-0.5 * (i * i) as f64 / (s * s)).exp())
+        .collect();
+    let total = w[0] + 2.0 * w[1..].iter().sum::<f64>();
+    let mut out = [[0.0f32; 4]; 3];
+    for (i, w) in w.iter().enumerate() {
+        out[i / 4][i % 4] = (w / total) as f32;
+    }
+    out
 }
 
 fn flag(b: bool) -> f32 {
@@ -570,6 +591,7 @@ impl CrtPass {
                 phosphor[2],
                 (time.time_s * 1000.0) % 65536.0,
             ],
+            bloom_weights: bloom_weights(s.bloom_radius_px * 0.5),
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 
@@ -623,6 +645,20 @@ impl CrtPass {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bloom_weights_are_a_normalised_gaussian() {
+        let w = bloom_weights(4.0);
+        let at = |i: usize| w[i / 4][i % 4];
+        let total = at(0) + 2.0 * (1..=BLOOM_TAPS).map(at).sum::<f32>();
+        assert!((total - 1.0).abs() < 1e-6, "{total}");
+        assert!((1..=BLOOM_TAPS).all(|i| at(i) < at(i - 1)));
+        assert!((at(4) / at(0) - (-0.5f32).exp()).abs() < 1e-6);
+        // The slot past the last tap stays empty.
+        assert_eq!(w[2][3], 0.0);
+        // A tiny radius is held at half a pixel, as before.
+        assert_eq!(bloom_weights(0.1), bloom_weights(0.5));
+    }
 
     #[test]
     fn decay_is_per_real_second() {

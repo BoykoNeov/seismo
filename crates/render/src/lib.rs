@@ -200,4 +200,77 @@ impl SceneRenderer {
         self.crt
             .draw(queue, encoder, self.size, crt, theme.p_front, time);
     }
+
+    /// The same frame as [`Self::render`], but each pass submitted on its own and waited for,
+    /// returning for map, slice, traces and post-process in that order the real time (ms) spent
+    /// encoding on the CPU (building lines, writing buffers) and then waiting for the GPU. For
+    /// `--bench` only: the waits stall the GPU, so this is slower than a normal frame, and each
+    /// wait includes one submit.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_timed(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        theme: &Theme,
+        events: &[MapEventInstance],
+        style: &MapStyle,
+        slice_line: Option<MapSliceLine>,
+        markers: &[MapMarker],
+        slice: &SliceScene,
+        slice_style: &SliceStyle,
+        traces: &TraceScene,
+        trace_style: &TraceStyle,
+        crt: &CrtSettings,
+        time: FrameTime,
+    ) -> [[f64; 2]; 4] {
+        let timed = |encode: &mut dyn FnMut(&mut wgpu::CommandEncoder)| {
+            let t0 = std::time::Instant::now();
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("timed pass"),
+            });
+            encode(&mut encoder);
+            let cb = encoder.finish();
+            let t1 = std::time::Instant::now();
+            queue.submit([cb]);
+            device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .expect("poll device");
+            [
+                (t1 - t0).as_secs_f64() * 1e3,
+                t1.elapsed().as_secs_f64() * 1e3,
+            ]
+        };
+        let (map_vp, slice_vp, traces_vp) = (
+            self.map_viewport(),
+            self.slice_viewport(),
+            self.traces_viewport(),
+        );
+        let size = self.size;
+        let view = &self.scene.view;
+        let map = timed(&mut |enc| {
+            self.map.draw(
+                device, queue, enc, view, map_vp, events, style, theme, slice_line, markers,
+            )
+        });
+        let slice_ms = timed(&mut |enc| {
+            self.slice.draw(
+                device,
+                queue,
+                enc,
+                view,
+                slice_vp,
+                slice,
+                slice_style,
+                theme,
+            )
+        });
+        let traces_ms = timed(&mut |enc| {
+            if let Some(vp) = traces_vp {
+                self.traces
+                    .draw(device, queue, enc, view, vp, traces, trace_style, theme);
+            }
+        });
+        let post = timed(&mut |enc| self.crt.draw(queue, enc, size, crt, theme.p_front, time));
+        [map, slice_ms, traces_ms, post]
+    }
 }

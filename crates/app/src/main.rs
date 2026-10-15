@@ -2,6 +2,7 @@
 //! `app`: the eframe/egui shell. Owns the sim clock and wires sim, render and feed together.
 //! Allowed dependencies: everything in the workspace.
 
+mod bench;
 mod mantle;
 
 use std::collections::HashMap;
@@ -94,7 +95,7 @@ fn main() -> eframe::Result {
         )
         .init();
 
-    let options = eframe::NativeOptions {
+    let mut options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         viewport: egui::ViewportBuilder::default()
             .with_title("SEISMO")
@@ -102,6 +103,10 @@ fn main() -> eframe::Result {
             .with_min_inner_size([640.0, 360.0]),
         ..Default::default()
     };
+    // `--bench` measures how fast frames can be drawn, so it presents without waiting for vsync.
+    if std::env::args().any(|a| a == "--bench") {
+        options.wgpu_options.surface.present_mode = wgpu::PresentMode::AutoNoVsync;
+    }
     eframe::run_native(
         "SEISMO",
         options,
@@ -202,6 +207,13 @@ struct SeismoApp {
     capture: Option<(std::path::PathBuf, f64)>,
     /// `--capture-ui <file.ppm>`: the whole window, egui text included; true once asked for.
     capture_ui: Option<(std::path::PathBuf, f64, bool)>,
+    /// `--size WxH`: the window's inner size in physical pixels, set on the first frame (the
+    /// screen's scale is not known before the window exists).
+    pending_size: Option<[u32; 2]>,
+    /// `--map-cap <n>`: most events drawn on the map (default and ceiling `MAX_MAP_EVENTS`).
+    map_cap: usize,
+    /// `--bench <s>`: frame-time measurement, reported before quitting.
+    bench: Option<bench::Bench>,
 }
 
 impl SeismoApp {
@@ -326,6 +338,10 @@ impl SeismoApp {
         if let Some(speed) = arg("--speed").and_then(|s| s.parse::<f64>().ok()) {
             clock.set_speed(speed);
         }
+        //   --paused            start with the clock stopped (for repeatable screenshots)
+        if flag("--paused") {
+            clock.set_playing(false);
+        }
         //   --capture <file.ppm> [--capture-after <s>]  save the rendered scene after <s> real
         //                       seconds (default 3) as a binary PPM, then quit
         let capture = arg("--capture").map(|p| {
@@ -390,6 +406,25 @@ impl SeismoApp {
                 _ => {}
             }
         }
+        //   --size <W>x<H>      the window's inner size in physical pixels (the controls panel
+        //                       included), e.g. 1920x1080
+        let pending_size = arg("--size").and_then(|s| bench::parse_size(&s));
+        //   --map-cap <n>       draw at most n events on the map (1 to the default 32)
+        let map_cap = arg("--map-cap")
+            .and_then(|s| s.parse::<usize>().ok())
+            .map_or(render::MAX_MAP_EVENTS, |n| {
+                n.clamp(1, render::MAX_MAP_EVENTS)
+            });
+        //   --bench <s> [--bench-warmup <s>] [--bench-out <file>]  without vsync, measure
+        //                       frame times for <s> seconds after a warm-up (default 5 s), then
+        //                       time the scene alone offscreen, log the report (and append it
+        //                       to <file>), and quit
+        let bench = arg("--bench").and_then(|s| s.parse::<f64>().ok()).map(|s| {
+            let warmup = arg("--bench-warmup")
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(5.0);
+            bench::Bench::new(s, warmup, arg("--bench-out").map(Into::into))
+        });
         let now = Instant::now();
         Ok(Self {
             sim,
@@ -428,6 +463,9 @@ impl SeismoApp {
             frame_time_s: 1.0 / 60.0,
             capture,
             capture_ui,
+            pending_size,
+            map_cap,
+            bench,
         })
     }
 
@@ -1457,7 +1495,7 @@ impl SeismoApp {
 
         let now = self.clock.now();
         let linger = 5.0 * self.style.trail_s as f64;
-        let map_events = self.sim.map_events(now, render::MAX_MAP_EVENTS, linger);
+        let map_events = self.sim.map_events(now, self.map_cap, linger);
         // Ask for the delays of every event whose body waves are on the map (the selected one,
         // then largest first), and upload any that are ready into a GPU slot.
         let sel = self.sel();
@@ -1721,6 +1759,93 @@ impl SeismoApp {
             time,
         );
         rs.queue.submit([encoder.finish()]);
+
+        let elapsed = self.started.elapsed().as_secs_f64();
+        if let Some(b) = &mut self.bench {
+            let delayed = events.iter().filter(|e| e.delay_slot.is_some()).count();
+            b.map(elapsed, events.len(), delayed);
+        }
+        if self.bench.as_ref().is_some_and(|b| b.due(elapsed)) {
+            // The scene alone: the same frame drawn again and waited for each time, with no
+            // egui and no presenting, so the GPU's share is told apart from the rest.
+            let mut ms = Vec::new();
+            for _ in 0..60 {
+                let t0 = Instant::now();
+                let mut encoder =
+                    rs.device
+                        .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                            label: Some("bench scene"),
+                        });
+                self.renderer.render(
+                    &rs.device,
+                    &rs.queue,
+                    &mut encoder,
+                    &theme,
+                    &events,
+                    &self.style,
+                    slice_line,
+                    &markers,
+                    &slice_scene,
+                    &self.slice.style[self.look.index()],
+                    &trace_scene,
+                    &self.trace_style,
+                    &post,
+                    time,
+                );
+                rs.queue.submit([encoder.finish()]);
+                if let Err(e) = rs.device.poll(wgpu::PollType::wait_indefinitely()) {
+                    tracing::warn!("bench poll: {e}");
+                }
+                ms.push(t0.elapsed().as_secs_f64() * 1e3);
+            }
+            // Then each pass on its own.
+            let mut passes: [[Vec<f64>; 2]; 4] = Default::default();
+            for _ in 0..30 {
+                let t = self.renderer.render_timed(
+                    &rs.device,
+                    &rs.queue,
+                    &theme,
+                    &events,
+                    &self.style,
+                    slice_line,
+                    &markers,
+                    &slice_scene,
+                    &self.slice.style[self.look.index()],
+                    &trace_scene,
+                    &self.trace_style,
+                    &post,
+                    time,
+                );
+                for (v, t) in passes.iter_mut().zip(t) {
+                    v[0].push(t[0]);
+                    v[1].push(t[1]);
+                }
+            }
+            let info = rs.adapter.get_info();
+            let win = ui.ctx().content_rect().size() * ui.ctx().pixels_per_point();
+            let (sw, sh) = self.renderer.size();
+            let map = self.renderer.map_viewport();
+            let args: Vec<String> = std::env::args().skip(1).collect();
+            let context = format!(
+                "{} ({:?}) | window {:.0}x{:.0} px | scene {sw}x{sh} px | map {:.0}x{:.0} px | look {:?} | args {}",
+                info.name,
+                info.backend,
+                win.x,
+                win.y,
+                map.w,
+                map.h,
+                self.look,
+                args.join(" "),
+            );
+            if let Some(b) = self.bench.take() {
+                b.report(
+                    &context,
+                    bench::Stats::of(&ms),
+                    passes.map(|p| p.map(|v| bench::Stats::of(&v))),
+                );
+            }
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+        }
 
         if let Some((path, after)) = &self.capture
             && self.started.elapsed().as_secs_f64() >= *after
@@ -2091,6 +2216,24 @@ impl eframe::App for SeismoApp {
         }
         self.sync_events();
         self.frame_time_s += (real_dt.min(1.0) - self.frame_time_s) * 0.05;
+        if let Some([w, h]) = self.pending_size.take() {
+            let ppp = ui
+                .ctx()
+                .native_pixels_per_point()
+                .unwrap_or(ui.ctx().pixels_per_point());
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+                    w as f32 / ppp,
+                    h as f32 / ppp,
+                )));
+        }
+        if let Some(b) = &mut self.bench {
+            b.frame(
+                self.started.elapsed().as_secs_f64(),
+                real_dt,
+                frame.info().cpu_usage,
+            );
+        }
 
         egui::Panel::left("controls")
             .resizable(false)

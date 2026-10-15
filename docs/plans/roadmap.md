@@ -27,6 +27,45 @@ never measured at the actual 1920×1080 target because the app has no window-siz
 - Done when: 60 fps at 1920×1080 on the iGPU with the default settings and the live list, or a
   written reason why not and which setting gets there.
 
+**Verdict (2026-10-15): not 60 fps; measured and stopped there at the user's call.**
+Tools added: `--size WxH` (window inner size in physical pixels, controls included),
+`--bench <s>` (no vsync; frame-time mean/median/p95 after a warm-up, then the scene alone
+offscreen and each pass's CPU encode and GPU time; `--bench-warmup`, `--bench-out <file>`),
+`--map-cap <n>` and `--paused`. At a 1920×1080 window the scene is 1530×1080 px (map
+1080×540). Release build, `--offline`, busy replay `--event us6000u2hv --start-offset 300`
+(6 events on the map, 5 with 3D delays), AMD Radeon iGPU (Ryzen 7 7800X3D, 2 CUs), Vulkan:
+
+| Setup | fps | Scene GPU (ms) |
+|---|---|---|
+| iGPU, no events on the map | 48–55 | about 14.5 |
+| iGPU, busy replay, default | 34–43 | about 15.6 |
+| iGPU, busy replay, `--crt off` | 48 | about 11 |
+| RTX 5090, busy replay, default | 70 | about 0.5 |
+
+GPU time per pass on the iGPU: map about 1.3 ms plus about 0.9 ms per event; post-process
+about 7 ms (bloom about 4 of it, persistence copy and display about 2.4, the other CRT effects
+about 0.5); slice about 2 ms GPU plus 2 ms CPU building its lines; traces under 0.5 ms.
+
+Two separate limits, so no single setting reaches 60 fps on this iGPU:
+- **GPU:** the busy scene alone is close to the 16.7 ms budget before egui and presenting.
+  `--crt off` removes about 5 ms; the map's cost grows with the number of events.
+- **CPU:** about 10 ms per frame on any GPU (the RTX 5090 run is capped at 70 fps by it):
+  egui, the slice's line geometry rebuilt every frame, trace columns. This is the next target
+  if the work resumes: cache the slice vertices between frames when nothing moved, and profile
+  the rest of `ui`.
+- **Caveat:** the displays hang off the RTX 5090, so every iGPU frame is copied across cards
+  before it is shown; a laptop whose iGPU drives the screen would not pay that. Frame times
+  here look like CPU plus GPU rather than the larger of the two, which fits that copy but is
+  not proven.
+
+Already changed (picture unchanged, at most 1/255 in a few dozen bytes): the map shader takes
+each event's sin/cos of latitude and longitude from the CPU and computes the pixel's once, so
+the per-event loop has no trigonometry but two `atan2` (and no `pow` of negative numbers); the
+bloom's Gaussian weights come from the CPU. No measurable speed-up within the run-to-run noise
+(fps swings 34–43 between identical runs; compare per-pass GPU medians, not fps). Not tried:
+splitting bloom into threshold-downsample plus two bilinear-paired blur passes (about half the
+texture reads, changes pixels slightly), skipping the persistence copy in the modern look.
+
 ### 1.2 Split `crates/app/src/main.rs`
 
 Over 2,000 lines in one file: clock, controls, event list, made-event form, station picking,
@@ -152,7 +191,8 @@ effort; the first real new physics outside `tables`/`sim`'s current scope, so it
 
 ## Suggested next batch
 
-1. Section 1.1, the performance pass with `--size`, so the 60 fps target gets a real verdict.
+1. ~~Section 1.1, the performance pass with `--size`, so the 60 fps target gets a real
+   verdict.~~ Done 2026-10-15: measured, not 60 fps; see the verdict there.
 2. Section 1.3, README and CI (license stays the user's call).
 3. Section 3.1, real waveforms from IRIS.
 

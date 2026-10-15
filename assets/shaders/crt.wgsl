@@ -17,7 +17,8 @@ struct Uniforms {
     // persistence enable, decay factor applied to the previous buffer this frame
     // (exp(-dt_real / tau), 0 to clear), unused, unused
     persistence: vec4<f32>,
-    // bloom intensity (0 = off), bright threshold, blur sigma (half-res px), unused
+    // bloom intensity (0 = off), bright threshold, blur sigma (half-res px; the weights come
+    // from it, in bloom_weights), unused
     bloom: vec4<f32>,
     // barrel amount k (0 = off), unused, unused, unused
     barrel: vec4<f32>,
@@ -31,6 +32,9 @@ struct Uniforms {
     signal: vec4<f32>,
     // noise colour (the phosphor), noise frame seed
     tint: vec4<f32>,
+    // bloom blur weights for taps 0..=BLOOM_TAPS, four to a row, normalised over the whole
+    // symmetric kernel (from the CPU, so no exp per tap)
+    bloom_weights: array<vec4<f32>, 3>,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -68,12 +72,13 @@ fn fs_persist(in: VsOut) -> @location(0) vec4<f32> {
     return vec4<f32>(max(current, prev * u.persistence.y), 1.0);
 }
 
-fn gauss(i: f32) -> f32 {
-    let s = max(u.bloom.z, 0.5);
-    return exp(-0.5 * i * i / (s * s));
-}
-
+// Must match `BLOOM_TAPS` in crt.rs.
 const BLOOM_TAPS: i32 = 10;
+
+fn gauss(i: i32) -> f32 {
+    let k = abs(i);
+    return u.bloom_weights[k / 4][k % 4];
+}
 
 @fragment
 fn fs_bloom_h(in: VsOut) -> @location(0) vec4<f32> {
@@ -83,14 +88,11 @@ fn fs_bloom_h(in: VsOut) -> @location(0) vec4<f32> {
     let uv = in.pos.xy * 2.0 / full;
     let step = vec2<f32>(2.0 / full.x, 0.0);
     var sum = vec3<f32>(0.0);
-    var weight = 0.0;
     for (var i = -BLOOM_TAPS; i <= BLOOM_TAPS; i++) {
-        let w = gauss(f32(i));
         let c = textureSampleLevel(persisted, linear, uv + step * f32(i), 0.0).rgb;
-        sum += w * max(c - vec3<f32>(u.bloom.y), vec3<f32>(0.0));
-        weight += w;
+        sum += gauss(i) * max(c - vec3<f32>(u.bloom.y), vec3<f32>(0.0));
     }
-    return vec4<f32>(sum / weight, 1.0);
+    return vec4<f32>(sum, 1.0);
 }
 
 @fragment
@@ -98,14 +100,11 @@ fn fs_bloom_v(in: VsOut) -> @location(0) vec4<f32> {
     let p = vec2<i32>(in.pos.xy);
     let last = i32(u.view.w) - 1;
     var sum = vec3<f32>(0.0);
-    var weight = 0.0;
     for (var i = -BLOOM_TAPS; i <= BLOOM_TAPS; i++) {
-        let w = gauss(f32(i));
         let q = vec2<i32>(p.x, clamp(p.y + i, 0, last));
-        sum += w * textureLoad(bloom_h, q, 0).rgb;
-        weight += w;
+        sum += gauss(i) * textureLoad(bloom_h, q, 0).rgb;
     }
-    return vec4<f32>(sum / weight, 1.0);
+    return vec4<f32>(sum, 1.0);
 }
 
 // Display uv -> scene uv. Must match `CrtSettings::display_to_scene` in crt.rs: with c the
