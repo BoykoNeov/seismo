@@ -170,6 +170,19 @@ about 1500 km) on 21 radial splines.
   looked up trilinearly; the grid differs from the exact sum by less than 0.1% of velocity.
 - Checked against the paper: peak dlnVs of about 3.5% near 100 km depth and about 1.5% just
   above the core, as the paper states.
+- Checked against the authors' own code (2026-10-15): their map programs (`depmaphj_jr`,
+  `raw2xyz_jr` from `SP12RTS_plotting.tar.gz`), compiled unchanged and run on the bundled files
+  at all 21 spline knots and halfway between them, both dlnVs and dlnVp on a 2° grid. Within
+  ±60° latitude SEISMO's exact sum agrees with their output to its 5 printed digits (worst
+  0.00006 percentage points); the overall size ratio is 1.000000 at every depth. Nearer the
+  poles their single-precision Legendre recursion drifts by up to 0.002 points. The runtime grid
+  differs from their values by at most 0.06 points (near 130 km depth, where dlnVs reaches 3.6%
+  and changes fast with depth; 25 km linear steps in radius). A test keeps 32 of their values.
+- **Strength 1 is the published model, not the real Earth.** Like every global tomography
+  model, SP12RTS is damped and limited to degree 12, so its fast and slow regions are smoother
+  and usually weaker than the real ones; the authors also publish less- and more-damped
+  versions. "Real" in the strength control means "as published"; the true Earth's 3D delays are
+  probably somewhat larger, so settings a little above 1× are not necessarily unphysical.
 
 ## Map: 3D delays along the 1D rays, not bent rays
 

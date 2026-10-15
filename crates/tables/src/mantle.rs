@@ -587,6 +587,61 @@ mod tests {
     }
 
     #[test]
+    fn matches_the_authors_own_code() {
+        // (model, depth km, lat, lon, dlnV in %) printed by the authors' own programs,
+        // `depmaphj_jr` then `raw2xyz_jr` (2° grid, degrees 1–12), from SP12RTS_plotting.tar.gz
+        // (retrieved 2026-10-15), compiled unchanged with gfortran and run on the bundled files.
+        // Knot and mid-knot depths, the strongest value within ±60° and one beside the ±180°
+        // seam. Within ±60° the two agree to the 5 printed digits at every depth; nearer the
+        // poles the authors' single-precision Legendre recursion drifts (up to 0.002 %).
+        const REF: [(&str, f64, f64, f64, f64); 32] = [
+            ("ES", 24.500, 22.0, -112.0, -2.9176),
+            ("ES", 24.500, 12.0, 178.0, 2.3612),
+            ("ES", 49.378, 22.0, -114.0, -3.2527),
+            ("ES", 49.378, 12.0, 178.0, 2.5243),
+            ("ES", 129.371, 30.0, -116.0, -3.5805),
+            ("ES", 129.371, -60.0, 178.0, -1.9114),
+            ("ES", 159.621, 32.0, -118.0, -3.4003),
+            ("ES", 159.621, -60.0, 178.0, -1.8502),
+            ("ES", 649.935, 12.0, -10.0, 1.3404),
+            ("ES", 649.935, -60.0, 178.0, -0.97125),
+            ("ES", 1423.965, 54.0, -88.0, 0.82897),
+            ("ES", 1423.965, -16.0, 178.0, -0.56942),
+            ("ES", 2737.858, 0.0, -158.0, -1.2282),
+            ("ES", 2737.858, 0.0, 178.0, -1.0984),
+            ("ES", 2890.500, 0.0, -150.0, -1.5397),
+            ("ES", 2890.500, -12.0, 178.0, -1.2823),
+            ("EP", 24.500, 26.0, -114.0, -3.4748),
+            ("EP", 24.500, -60.0, 178.0, -1.7727),
+            ("EP", 49.378, 28.0, -114.0, -2.6496),
+            ("EP", 49.378, -60.0, 178.0, -1.4081),
+            ("EP", 129.371, 36.0, -120.0, -1.2612),
+            ("EP", 129.371, 44.0, 178.0, -0.62031),
+            ("EP", 159.621, 36.0, -120.0, -1.1268),
+            ("EP", 159.621, 40.0, 178.0, -0.65263),
+            ("EP", 649.935, 42.0, -124.0, -0.79302),
+            ("EP", 649.935, -18.0, 178.0, -0.42747),
+            ("EP", 1423.965, 2.0, 104.0, 0.40803),
+            ("EP", 1423.965, 10.0, 178.0, -0.3615),
+            ("EP", 2737.858, -14.0, 14.0, -0.60972),
+            ("EP", 2737.858, 2.0, 178.0, -0.44267),
+            ("EP", 2890.500, -12.0, 10.0, -0.96076),
+            ("EP", 2890.500, 4.0, 178.0, -0.78381),
+        ];
+        let es = SphModel::from_bytes(ES).unwrap();
+        let ep = SphModel::from_bytes(EP).unwrap();
+        for (which, depth, lat, lon, want) in REF {
+            let m = if which == "ES" { &es } else { &ep };
+            let got = 100.0 * m.dlnv(6371.0 - depth, lat, lon);
+            // Half a unit in the 5th printed digit is at most 5e-5 %.
+            assert!(
+                (got - want).abs() < 1e-4,
+                "{which} {depth} km ({lat}, {lon}): {got} % vs the authors' {want} %"
+            );
+        }
+    }
+
+    #[test]
     fn known_structures_have_the_right_sign() {
         let m = MantleModel::from_bytes(ES, EP).unwrap();
         let r = |depth: f64| 6371.0 - depth;
