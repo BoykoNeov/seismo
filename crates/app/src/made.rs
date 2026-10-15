@@ -5,7 +5,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use sim::{Event, EventKind};
 
@@ -147,7 +147,8 @@ impl MakeForm {
     /// left for the event list to give.
     pub fn build(&self, clock_now: DateTime<Utc>) -> Result<MadeEvent, String> {
         let origin = match self.time.trim() {
-            "" => clock_now,
+            // Whole seconds, as the form shows it: an unchanged form updates to the same event.
+            "" => clock_now.with_nanosecond(0).expect("0 ns is valid"),
             t => parse_time(t)?,
         };
         let depth = self.kind.profile().clamp_depth(self.depth_km);
@@ -228,8 +229,9 @@ mod tests {
             magnitude: 6.3,
             ..Default::default()
         };
-        // No time typed: the clock's time. Depth kept in the kind's range, longitude wrapped.
-        let m = f.build(now).unwrap();
+        // No time typed: the clock's time, to the whole second the form shows. Depth kept in
+        // the kind's range, longitude wrapped.
+        let m = f.build(now + chrono::Duration::milliseconds(700)).unwrap();
         assert_eq!(m.event.origin, now);
         assert_eq!(m.event.depth_km, 2.0);
         assert_eq!(m.event.lon, -180.0);
@@ -267,6 +269,15 @@ mod tests {
             },
             e
         );
+    }
+
+    #[test]
+    fn an_unchanged_form_updates_to_the_same_event() {
+        let clock = t(2026, 10, 15, 12, 0, 0) + chrono::Duration::milliseconds(437);
+        let made = MakeForm::default().build(clock).unwrap();
+        let mut f = MakeForm::default();
+        f.fill(&made.event, &made.place);
+        assert_eq!(f.build(t(2030, 1, 1, 0, 0, 0)), Ok(made));
     }
 
     #[test]
