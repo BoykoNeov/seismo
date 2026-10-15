@@ -132,9 +132,14 @@ impl Default for MakeForm {
 pub const TIME_FORMAT: &str = "%Y-%m-%d %H:%M:%S";
 
 impl MakeForm {
-    /// Take an event's values (to edit it, or to start from a real one).
+    /// Take an event's values (to edit it, or to start from a real one). A name the form made up
+    /// from the place is left empty, so it follows the place when the event is moved.
     pub fn fill(&mut self, event: &Event, place: &str) {
-        self.name = place.to_owned();
+        self.name = if place == auto_place(event) {
+            String::new()
+        } else {
+            place.to_owned()
+        };
         self.kind = event.kind;
         self.lat = event.lat;
         self.lon = event.lon;
@@ -162,16 +167,21 @@ impl MakeForm {
             self.magnitude,
         );
         let place = match self.name.trim() {
-            "" => format!(
-                "Your {} at {:.2}°, {:.2}°",
-                kind_label(self.kind),
-                event.lat,
-                event.lon
-            ),
+            "" => auto_place(&event),
             name => name.to_owned(),
         };
         Ok(MadeEvent { event, place })
     }
+}
+
+/// The name a made event gets when none is typed.
+fn auto_place(event: &Event) -> String {
+    format!(
+        "Your {} at {:.2}°, {:.2}°",
+        kind_label(event.kind),
+        event.lat,
+        event.lon
+    )
 }
 
 /// A typed UTC time: `YYYY-MM-DD`, optionally followed by `HH:MM` or `HH:MM:SS` (a `T` may
@@ -278,6 +288,25 @@ mod tests {
         let mut f = MakeForm::default();
         f.fill(&made.event, &made.place);
         assert_eq!(f.build(t(2030, 1, 1, 0, 0, 0)), Ok(made));
+    }
+
+    #[test]
+    fn a_made_up_name_follows_the_place_a_typed_one_stays() {
+        let now = t(2026, 10, 15, 12, 0, 0);
+        let made = MakeForm::default().build(now).unwrap();
+        let mut f = MakeForm::default();
+        f.fill(&made.event, &made.place);
+        assert_eq!(f.name, "");
+        // Moved (a pick on the map): the name says the new place, the time stays.
+        f.lat = -17.635;
+        f.lon = 45.873;
+        let moved = f.build(t(2030, 1, 1, 0, 0, 0)).unwrap();
+        assert_eq!(moved.place, "Your earthquake at -17.64°, 45.87°");
+        assert_eq!(moved.event.origin, now);
+        f.fill(&made.event, "Test quake");
+        assert_eq!(f.name, "Test quake");
+        f.lat = 10.0;
+        assert_eq!(f.build(now).unwrap().place, "Test quake");
     }
 
     #[test]

@@ -843,13 +843,16 @@ impl SeismoApp {
             match f.build(clock_now) {
                 Ok(m) => {
                     let place = m.place.clone();
+                    // The form now shows the event as kept: an empty time becomes its origin, so
+                    // a later Update does not move it to the clock's time again.
+                    f.fill(&m.event, &m.place);
                     if let Some(handle) = editing.filter(|_| update) {
                         self.events.update_made(handle, m);
                         f.message = Some(format!("Updated: {place}"));
                     } else {
                         let handle = self.events.make(m);
                         f.message = Some(format!("Made: {place}"));
-                        // Already filled from this event: no need to fill again on follow.
+                        // Filled from this event above: no need to fill again on follow.
                         f.editing = Some(handle);
                         self.form_follow = handle;
                     }
