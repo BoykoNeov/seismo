@@ -1,5 +1,7 @@
 //! The merged event list: every feed snapshot folded in, duplicates merged on their USGS ids,
-//! events USGS deleted taken out. Pure: no I/O, no clock.
+//! events USGS deleted taken out. Past events found by a search and the ones the user keeps
+//! go through the same merge, so an event has one handle however it arrived. Pure: no I/O, no
+//! clock.
 
 use std::collections::HashSet;
 
@@ -22,6 +24,17 @@ pub struct StoredEvent {
     /// so anything computed from it can tell it is stale.
     pub revision: u64,
     pub feed: FeedEvent,
+    /// A live summary feed has listed it (this session).
+    pub live: bool,
+    /// The user keeps it (a picked past event, remembered across restarts).
+    pub saved: bool,
+}
+
+impl StoredEvent {
+    /// Listed in the app: live or kept. Anything else is only a search result.
+    pub fn listed(&self) -> bool {
+        self.live || self.saved
+    }
 }
 
 #[derive(Debug, Default)]
@@ -41,8 +54,23 @@ impl EventStore {
         }
     }
 
+    /// Every record, search-only results included.
     pub fn events(&self) -> &[StoredEvent] {
         &self.records
+    }
+
+    /// The events the app lists: live or kept.
+    pub fn listed(&self) -> Vec<StoredEvent> {
+        self.records
+            .iter()
+            .filter(|r| r.listed())
+            .cloned()
+            .collect()
+    }
+
+    /// The kept events, for saving.
+    pub fn saved(&self) -> impl Iterator<Item = &FeedEvent> {
+        self.records.iter().filter(|r| r.saved).map(|r| &r.feed)
     }
 
     /// Fold in a snapshot of `feed` fetched at `fetched_at`. Returns whether anything changed.
@@ -62,20 +90,86 @@ impl EventStore {
         for e in snapshot {
             let (handle, c) = self.merge(e);
             seen.insert(handle);
-            changed |= c;
+            let r = self.record_mut(handle);
+            changed |= c || !r.live;
+            r.live = true;
         }
         if feed == FeedKind::AllDay {
             if let Some(prev) = &self.last_day {
                 let edge = fetched_at - Duration::hours(24 - DAY_EDGE_MARGIN_H);
                 let gone: HashSet<u64> = prev.difference(&seen).copied().collect();
+                let deleted =
+                    |r: &StoredEvent| gone.contains(&r.handle) && r.feed.event.origin > edge;
                 let before = self.records.len();
-                self.records
-                    .retain(|r| !(gone.contains(&r.handle) && r.feed.event.origin > edge));
+                // A deleted event the user keeps stays, as a kept event only.
+                for r in &mut self.records {
+                    if deleted(r) && r.saved && r.live {
+                        r.live = false;
+                        changed = true;
+                    }
+                }
+                self.records.retain(|r| !(deleted(r) && !r.saved));
                 changed |= self.records.len() != before;
             }
             self.last_day = Some(seen);
         }
         changed
+    }
+
+    /// Fold in the events kept from earlier sessions. Returns whether anything changed.
+    pub fn apply_saved(&mut self, events: Vec<FeedEvent>) -> bool {
+        let mut changed = false;
+        for e in events {
+            let (handle, c) = self.merge(e);
+            let r = self.record_mut(handle);
+            changed |= c || !r.saved;
+            r.saved = true;
+        }
+        changed
+    }
+
+    /// Fold in a search's results and return them as records, in result order, one per event
+    /// (results that turn out to be the same event appear once). The previous search's
+    /// results that are neither live, kept, nor found again are dropped. Returns the records
+    /// and whether the listed events changed (a result can be a newer version of a listed
+    /// event).
+    pub fn apply_search(&mut self, results: Vec<FeedEvent>) -> (Vec<StoredEvent>, bool) {
+        let mut changed = false;
+        let mut handles: Vec<u64> = Vec::new();
+        for e in results {
+            let (handle, c) = self.merge(e);
+            changed |= c && self.record_mut(handle).listed();
+            if !handles.contains(&handle) {
+                handles.push(handle);
+            }
+        }
+        self.records
+            .retain(|r| r.listed() || handles.contains(&r.handle));
+        // A later result can merge an earlier one away: only survivors are returned.
+        let found = handles
+            .iter()
+            .filter_map(|&h| self.records.iter().find(|r| r.handle == h).cloned())
+            .collect();
+        (found, changed)
+    }
+
+    /// Keep (`true`) or stop keeping the event with `handle`. Returns whether that changed
+    /// anything. An event neither kept nor live stays as a search result until the next search.
+    pub fn set_saved(&mut self, handle: u64, saved: bool) -> bool {
+        match self.records.iter_mut().find(|r| r.handle == handle) {
+            Some(r) if r.saved != saved => {
+                r.saved = saved;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn record_mut(&mut self, handle: u64) -> &mut StoredEvent {
+        self.records
+            .iter_mut()
+            .find(|r| r.handle == handle)
+            .expect("merge returns a stored handle")
     }
 
     /// Merge one incoming version with every record sharing any of its ids. The newest
@@ -99,6 +193,8 @@ impl EventStore {
                 handle,
                 revision: revision(&incoming),
                 feed: incoming,
+                live: false,
+                saved: false,
             });
             return (handle, true);
         }
@@ -132,9 +228,14 @@ impl EventStore {
         }
 
         let handle = self.records[survivor].handle;
+        let live = matched.iter().any(|&i| self.records[i].live);
+        let saved = matched.iter().any(|&i| self.records[i].saved);
         let mut changed = merged != self.records[survivor].feed;
-        self.records[survivor].revision = revision(&merged);
-        self.records[survivor].feed = merged;
+        let r = &mut self.records[survivor];
+        r.revision = revision(&merged);
+        r.feed = merged;
+        r.live = live;
+        r.saved = saved;
         if matched.len() > 1 {
             let others: HashSet<u64> = matched
                 .iter()
@@ -304,6 +405,81 @@ mod tests {
         // The first all_day snapshot has nothing to compare with, so it deletes nothing.
         assert!(!s.apply(FeedKind::AllDay, vec![], now()));
         assert_eq!(s.events().len(), 2);
+    }
+
+    #[test]
+    fn search_hits_share_handles_with_live_events() {
+        let mut s = EventStore::new();
+        s.apply(FeedKind::AllDay, vec![ev(&["ak1"], 60, 1, 4.0)], now());
+        // A search finds the same event under a newer preferred id, and an older one.
+        let search = || vec![ev(&["us9", "ak1"], 60, 2, 4.1), ev(&["old"], 5000, 1, 7.0)];
+        let (found, changed) = s.apply_search(search());
+        assert!(changed);
+        let got: Vec<(u64, bool)> = found.iter().map(|r| (r.handle, r.live)).collect();
+        assert_eq!(got, [(1, true), (2, false)]);
+        // Only the live one is listed.
+        let listed: Vec<u64> = s.listed().iter().map(|r| r.handle).collect();
+        assert_eq!(listed, [1]);
+        // The same search again: same handles, nothing changed.
+        let (again, changed) = s.apply_search(search());
+        assert!(!changed);
+        assert_eq!(again, found);
+        // A different search drops the old result that nobody kept.
+        let (other, _) = s.apply_search(vec![ev(&["new"], 9000, 1, 8.0)]);
+        assert_eq!(other[0].handle, 3);
+        assert_eq!(s.events().len(), 2);
+    }
+
+    #[test]
+    fn duplicate_search_results_appear_once() {
+        let mut s = EventStore::new();
+        let (found, _) = s.apply_search(vec![
+            ev(&["a"], 5000, 1, 7.0),
+            ev(&["b", "a"], 5000, 2, 7.1),
+        ]);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].feed.event.magnitude, 7.1);
+    }
+
+    #[test]
+    fn kept_events_are_listed_and_survive_searches_and_deletion() {
+        let mut s = EventStore::new();
+        let (found, _) = s.apply_search(vec![ev(&["old"], 5000, 1, 7.0)]);
+        assert!(s.set_saved(found[0].handle, true));
+        assert!(!s.set_saved(found[0].handle, true));
+        s.apply_search(vec![]);
+        assert_eq!(s.listed().len(), 1);
+        assert_eq!(s.saved().count(), 1);
+
+        // A recent event, kept, then deleted by USGS: stays, no longer live.
+        s.apply(FeedKind::AllDay, vec![ev(&["k"], 60, 1, 5.0)], now());
+        let k = s.listed().iter().find(|r| r.live).unwrap().handle;
+        s.set_saved(k, true);
+        assert!(s.apply(FeedKind::AllDay, vec![], now()));
+        let r = s.events().iter().find(|r| r.handle == k).unwrap();
+        assert!(r.saved && !r.live);
+
+        // No longer kept: not listed, gone at the next search.
+        assert!(s.set_saved(k, false));
+        assert_eq!(s.listed().len(), 1);
+        s.apply_search(vec![]);
+        assert_eq!(s.events().len(), 1);
+    }
+
+    #[test]
+    fn saved_from_disk_merge_with_live() {
+        let mut s = EventStore::new();
+        assert!(s.apply_saved(vec![ev(&["ak1"], 60, 1, 4.0)]));
+        assert!(!s.apply_saved(vec![ev(&["ak1"], 60, 1, 4.0)]));
+        s.apply(
+            FeedKind::AllHour,
+            vec![ev(&["us9", "ak1"], 60, 3, 4.2)],
+            now(),
+        );
+        let r = &s.events()[0];
+        assert_eq!(s.events().len(), 1);
+        assert!(r.live && r.saved);
+        assert_eq!(r.feed.event.magnitude, 4.2);
     }
 
     #[test]

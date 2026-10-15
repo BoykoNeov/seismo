@@ -34,7 +34,7 @@ directories = "6.0"
 pollster = "0.4"
 
 # Feed-only.
-tokio = { version = "1.53", features = ["rt", "macros", "time"] }
+tokio = { version = "1.53", features = ["rt", "macros", "time", "sync"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 
 [profile.dev.package."*"]

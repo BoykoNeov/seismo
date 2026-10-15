@@ -184,7 +184,17 @@ Keep the raw USGS `type` string on every feed event.
   `Earthquake`. The UI shows the raw USGS type, never the kind name.
 - Selection (decided 2026-10-14): until the user picks an event, the app picks one (the
   largest of the last 3 hours, once USGS has answered) and switches to each newly listed
-  M6+ event. A user pick ends that. Selecting never moves the clock.
+  M6+ event. A user pick ends that. Selecting from the event list never moves the clock.
+- Past-event search (decided 2026-10-15, `feed::search`): FDSN by date range + minimum
+  magnitude + result cap (largest first), or one event by USGS code; no place-name search
+  (FDSN has none). Results show in their own list, never on the map, and go through the same
+  id dedupe as the live feeds (one handle per event). Picking a result keeps it (listed from
+  then on, whatever its magnitude, saved to `saved.geojson` beside the feed cache and loaded at
+  start, so it works offline; a Forget button drops it) and replays it from its origin — the
+  one exception to "selecting never moves the clock". Unpicked results are not saved. Kept
+  past events never count for the app's own pick or the M6+ follow. A result that is a
+  built-in example selects the built-in instead. Searches run on the feed thread between
+  polls; offline they fail at once with a message.
 - Default minimum magnitude shown: 2.5, user-adjustable. Events are identified in the app by
   a stable handle (kept through new versions and merges) plus a revision that changes with
   the physics; caches key on both, never on list position.

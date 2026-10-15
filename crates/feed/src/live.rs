@@ -1,16 +1,19 @@
 //! The feed thread: a tokio runtime of its own that loads the cache, then polls the USGS
-//! summary feeds and sends the merged event list to the app over a channel. The app only ever
-//! polls the channel, so the UI thread never waits on the network.
+//! summary feeds and sends the merged event list to the app over a channel. Between polls it
+//! answers the app's commands: searches for past events, and keeping or forgetting one. The
+//! app only ever polls its channel, so the UI thread never waits on the network.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use crossbeam_channel::{Receiver, Sender};
+use tokio::sync::mpsc;
 
 use crate::cache::{Cache, CacheMeta};
+use crate::search::Search;
 use crate::store::{EventStore, StoredEvent};
-use crate::usgs::{FeedKind, parse};
+use crate::usgs::{FeedKind, parse, to_collection};
 
 /// How the feed thread runs.
 #[derive(Debug, Clone)]
@@ -19,7 +22,7 @@ pub struct FeedConfig {
     pub cache_dir: Option<PathBuf>,
     /// Time between polls.
     pub poll: Duration,
-    /// `false` loads the cache and stops: no network at all.
+    /// `false` loads the cache and never polls: no network at all.
     pub online: bool,
 }
 
@@ -48,7 +51,7 @@ pub struct FeedState {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct FeedStatus {
     pub feeds: [FeedState; 3],
-    /// No network: the cache was loaded and the thread stopped.
+    /// No network: the cache was loaded and nothing is polled.
     pub offline: bool,
     pub cache_dir: Option<PathBuf>,
 }
@@ -73,14 +76,34 @@ fn index(feed: FeedKind) -> usize {
 /// A message from the feed thread.
 #[derive(Debug, Clone)]
 pub enum FeedMsg {
-    /// The whole merged list, whenever it changes.
+    /// The whole list of live and kept events, whenever it changes.
     Events(Vec<StoredEvent>),
     Status(FeedStatus),
+    /// The answer to a [`FeedCmd::Search`].
+    Found(SearchReply),
+}
+
+/// A search's results (handles shared with the event list), or why there are none.
+#[derive(Debug, Clone)]
+pub struct SearchReply {
+    pub search: Search,
+    pub result: Result<Vec<StoredEvent>, String>,
+}
+
+/// A command from the app.
+#[derive(Debug, Clone)]
+pub enum FeedCmd {
+    Search(Search),
+    /// Keep the event with this handle (a search result or a listed event) across restarts.
+    Keep(u64),
+    /// Stop keeping it.
+    Forget(u64),
 }
 
 /// The app's end of the feed.
 pub struct FeedHandle {
     rx: Receiver<FeedMsg>,
+    cmd: mpsc::UnboundedSender<FeedCmd>,
 }
 
 impl FeedHandle {
@@ -89,11 +112,17 @@ impl FeedHandle {
     pub fn try_recv(&self) -> Option<FeedMsg> {
         self.rx.try_recv().ok()
     }
+
+    /// Send a command. `false` if the feed thread is not running.
+    pub fn send(&self, cmd: FeedCmd) -> bool {
+        self.cmd.send(cmd).is_ok()
+    }
 }
 
 /// Start the feed thread.
 pub fn spawn(config: FeedConfig) -> FeedHandle {
     let (tx, rx) = crossbeam_channel::unbounded();
+    let (cmd, cmd_rx) = mpsc::unbounded_channel();
     std::thread::Builder::new()
         .name("feed".into())
         .spawn(move || {
@@ -107,65 +136,152 @@ pub fn spawn(config: FeedConfig) -> FeedHandle {
                     return;
                 }
             };
-            runtime.block_on(run(config, tx));
+            runtime.block_on(run(config, tx, cmd_rx));
         })
         .expect("spawn feed thread");
-    FeedHandle { rx }
+    FeedHandle { rx, cmd }
 }
 
-async fn run(config: FeedConfig, tx: Sender<FeedMsg>) {
-    let cache = config.cache_dir.clone().map(Cache::new);
-    let mut store = EventStore::new();
-    let mut status = FeedStatus {
-        offline: !config.online,
-        cache_dir: config.cache_dir.clone(),
-        ..Default::default()
+/// The feed thread's state.
+struct Feed {
+    tx: Sender<FeedMsg>,
+    cache: Option<Cache>,
+    store: EventStore,
+    status: FeedStatus,
+    /// `None` when offline.
+    client: Option<reqwest::Client>,
+}
+
+impl Feed {
+    /// Send the listed events. `false` once the app has gone.
+    fn send_events(&self) -> bool {
+        self.tx.send(FeedMsg::Events(self.store.listed())).is_ok()
+    }
+
+    /// Carry out one command. `false` once the app has gone.
+    async fn command(&mut self, cmd: FeedCmd) -> bool {
+        match cmd {
+            FeedCmd::Search(search) => {
+                let result = self.search(&search).await;
+                let changed = matches!(result, Ok((_, true)));
+                let reply = SearchReply {
+                    search,
+                    result: result.map(|(found, _)| found),
+                };
+                if changed && !self.send_events() {
+                    return false;
+                }
+                self.tx.send(FeedMsg::Found(reply)).is_ok()
+            }
+            FeedCmd::Keep(handle) => self.set_saved(handle, true),
+            FeedCmd::Forget(handle) => self.set_saved(handle, false),
+        }
+    }
+
+    /// Run a search; the results, and whether the listed events changed.
+    async fn search(&mut self, search: &Search) -> Result<(Vec<StoredEvent>, bool), String> {
+        let url = search.url().map_err(|e| e.to_string())?;
+        let Some(client) = &self.client else {
+            return Err("offline: searching needs the internet".into());
+        };
+        let body = match fetch(client, &url, None).await {
+            Ok(Fetched::Body { body, .. }) => body,
+            Ok(Fetched::NotModified) => return Err("USGS sent no data".into()),
+            // An unknown event id is a 404.
+            Err(e) if e.status() == Some(reqwest::StatusCode::NOT_FOUND) => {
+                return Err("USGS has no event with that code".into());
+            }
+            Err(e) => return Err(format!("USGS search failed: {e}")),
+        };
+        let found = parse(&body).map_err(|e| format!("unreadable reply: {e}"))?;
+        Ok(self.store.apply_search(found))
+    }
+
+    /// Keep or forget an event, and save the kept ones. `false` once the app has gone.
+    fn set_saved(&mut self, handle: u64, saved: bool) -> bool {
+        if !self.store.set_saved(handle, saved) {
+            return true;
+        }
+        if let Some(c) = &self.cache
+            && let Err(e) = c.store_saved(&to_collection(self.store.saved()))
+        {
+            tracing::warn!("saving kept events: {e}");
+        }
+        self.send_events()
+    }
+}
+
+async fn run(config: FeedConfig, tx: Sender<FeedMsg>, mut cmds: mpsc::UnboundedReceiver<FeedCmd>) {
+    let mut feed = Feed {
+        tx,
+        cache: config.cache_dir.clone().map(Cache::new),
+        store: EventStore::new(),
+        status: FeedStatus {
+            offline: !config.online,
+            cache_dir: config.cache_dir.clone(),
+            ..Default::default()
+        },
+        client: None,
     };
     // `If-Modified-Since` per feed: only once that feed's cached body is in the store, or a
     // "not modified" answer would leave it out.
     let mut last_modified: [Option<String>; 3] = Default::default();
 
+    if let Some(body) = feed.cache.as_ref().and_then(Cache::load_saved) {
+        match parse(&body) {
+            Ok(events) => {
+                feed.store.apply_saved(events);
+            }
+            Err(e) => tracing::warn!("kept events unreadable: {e}"),
+        }
+    }
     // Widest window first, so the fresher feeds fold in last.
-    for feed in FeedKind::ALL.into_iter().rev() {
-        let Some(cached) = cache.as_ref().and_then(|c| c.load(feed)) else {
+    for kind in FeedKind::ALL.into_iter().rev() {
+        let Some(cached) = feed.cache.as_ref().and_then(|c| c.load(kind)) else {
             continue;
         };
         match parse(&cached.body) {
             Ok(events) => {
-                store.apply(feed, events, cached.meta.fetched_at);
-                status.get_mut(feed).data_from = Some(cached.meta.fetched_at);
-                last_modified[index(feed)] = cached.meta.last_modified;
+                feed.store.apply(kind, events, cached.meta.fetched_at);
+                feed.status.get_mut(kind).data_from = Some(cached.meta.fetched_at);
+                last_modified[index(kind)] = cached.meta.last_modified;
             }
-            Err(e) => tracing::warn!(feed = feed.name(), "cached feed unreadable: {e}"),
+            Err(e) => tracing::warn!(feed = kind.name(), "cached feed unreadable: {e}"),
         }
     }
-    tracing::info!(events = store.events().len(), "feed cache loaded");
-    if tx.send(FeedMsg::Events(store.events().to_vec())).is_err()
-        || tx.send(FeedMsg::Status(status.clone())).is_err()
-        || !config.online
-    {
+    tracing::info!(events = feed.store.events().len(), "feed cache loaded");
+    if !feed.send_events() || feed.tx.send(FeedMsg::Status(feed.status.clone())).is_err() {
         return;
     }
 
-    let client = match reqwest::Client::builder()
-        .user_agent(concat!("SEISMO/", env!("CARGO_PKG_VERSION")))
-        .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(45))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!("http client: {e}; no live events");
-            return;
+    if config.online {
+        match reqwest::Client::builder()
+            .user_agent(concat!("SEISMO/", env!("CARGO_PKG_VERSION")))
+            .connect_timeout(Duration::from_secs(15))
+            .timeout(Duration::from_secs(45))
+            .build()
+        {
+            Ok(c) => feed.client = Some(c),
+            Err(e) => tracing::error!("http client: {e}; no live events"),
         }
+    }
+    let Some(client) = feed.client.clone() else {
+        // Offline: nothing to poll, but commands are still answered.
+        while let Some(cmd) = cmds.recv().await {
+            if !feed.command(cmd).await {
+                return;
+            }
+        }
+        return;
     };
 
     loop {
         let mut changed = false;
-        for feed in FeedKind::ALL.into_iter().rev() {
-            let i = index(feed);
-            let state = status.get_mut(feed);
-            match fetch(&client, feed, last_modified[i].as_deref()).await {
+        for kind in FeedKind::ALL.into_iter().rev() {
+            let i = index(kind);
+            let fetched = fetch(&client, &kind.url(), last_modified[i].as_deref()).await;
+            let state = feed.status.get_mut(kind);
+            match fetched {
                 Ok(Fetched::NotModified) => {
                     state.last_ok = Some(Utc::now());
                     state.error = None;
@@ -174,20 +290,20 @@ async fn run(config: FeedConfig, tx: Sender<FeedMsg>) {
                     let now = Utc::now();
                     match parse(&body) {
                         Ok(events) => {
-                            changed |= store.apply(feed, events, now);
                             *state = FeedState {
                                 data_from: Some(now),
                                 last_ok: Some(now),
                                 error: None,
                             };
+                            changed |= feed.store.apply(kind, events, now);
                             let meta = CacheMeta {
                                 fetched_at: now,
                                 last_modified: last_mod.clone(),
                             };
-                            if let Some(c) = &cache
-                                && let Err(e) = c.store(feed, &body, &meta)
+                            if let Some(c) = &feed.cache
+                                && let Err(e) = c.store(kind, &body, &meta)
                             {
-                                tracing::warn!(feed = feed.name(), "caching feed: {e}");
+                                tracing::warn!(feed = kind.name(), "caching feed: {e}");
                             }
                             last_modified[i] = last_mod;
                         }
@@ -195,21 +311,35 @@ async fn run(config: FeedConfig, tx: Sender<FeedMsg>) {
                     }
                 }
                 Err(e) => {
-                    tracing::debug!(feed = feed.name(), "fetch failed: {e}");
+                    tracing::debug!(feed = kind.name(), "fetch failed: {e}");
                     state.error = Some(e.to_string());
                 }
             }
         }
         if changed {
-            tracing::info!(events = store.events().len(), "feed updated");
-            if tx.send(FeedMsg::Events(store.events().to_vec())).is_err() {
+            tracing::info!(events = feed.store.events().len(), "feed updated");
+            if !feed.send_events() {
                 return;
             }
         }
-        if tx.send(FeedMsg::Status(status.clone())).is_err() {
+        if feed.tx.send(FeedMsg::Status(feed.status.clone())).is_err() {
             return;
         }
-        tokio::time::sleep(config.poll).await;
+        // Answer commands until the next poll is due.
+        let next = tokio::time::Instant::now() + config.poll;
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep_until(next) => break,
+                cmd = cmds.recv() => match cmd {
+                    Some(cmd) => {
+                        if !feed.command(cmd).await {
+                            return;
+                        }
+                    }
+                    None => return,
+                },
+            }
+        }
     }
 }
 
@@ -223,10 +353,10 @@ enum Fetched {
 
 async fn fetch(
     client: &reqwest::Client,
-    feed: FeedKind,
+    url: &str,
     if_modified_since: Option<&str>,
 ) -> Result<Fetched, reqwest::Error> {
-    let mut req = client.get(feed.url());
+    let mut req = client.get(url);
     if let Some(lm) = if_modified_since {
         req = req.header(reqwest::header::IF_MODIFIED_SINCE, lm);
     }

@@ -1,5 +1,6 @@
 //! Raw feed downloads kept on disk, so the app starts and works offline: one `<feed>.geojson`
 //! body and one `<feed>.meta.json` (when it was fetched, and USGS's `Last-Modified`) per feed.
+//! The past events the user keeps are in `saved.geojson`, in the same GeoJSON shape.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -22,6 +23,8 @@ pub struct CacheMeta {
     /// USGS's `Last-Modified` header, sent back as `If-Modified-Since`.
     pub last_modified: Option<String>,
 }
+
+const SAVED: &str = "saved.geojson";
 
 #[derive(Debug, Clone)]
 pub struct Cache {
@@ -58,6 +61,17 @@ impl Cache {
             body: std::fs::read(body).ok()?,
             meta,
         })
+    }
+
+    /// The kept events' GeoJSON, if there is any.
+    pub fn load_saved(&self) -> Option<Vec<u8>> {
+        std::fs::read(self.dir.join(SAVED)).ok()
+    }
+
+    /// Replace the kept events' GeoJSON.
+    pub fn store_saved(&self, body: &[u8]) -> io::Result<()> {
+        std::fs::create_dir_all(&self.dir)?;
+        write_atomic(&self.dir.join(SAVED), body)
     }
 
     /// Save a download. The body is written before the meta file, each through a temporary
@@ -99,6 +113,10 @@ mod tests {
         assert_eq!(got.meta, meta);
         // Other feeds are separate.
         assert_eq!(cache.load(FeedKind::AllHour), None);
+        // So are the kept events.
+        assert_eq!(cache.load_saved(), None);
+        cache.store_saved(b"{}").unwrap();
+        assert_eq!(cache.load_saved().unwrap(), b"{}");
         // A body without its meta file is not a complete download.
         std::fs::remove_file(dir.join("all_day.meta.json")).unwrap();
         assert_eq!(cache.load(FeedKind::AllDay), None);

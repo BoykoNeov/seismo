@@ -1,8 +1,9 @@
-//! USGS GeoJSON: the summary feeds, parsing their bytes into events, and how USGS event types
-//! map to source kinds.
+//! USGS GeoJSON: the summary feeds, parsing their bytes into events, writing events back in the
+//! same shape (the remembered past events), and how USGS event types map to source kinds.
 
 use chrono::{DateTime, TimeZone, Utc};
 use serde::Deserialize;
+use serde_json::json;
 use sim::{Event, EventKind};
 
 /// The USGS summary feeds the app polls.
@@ -81,9 +82,13 @@ pub fn kind_for(usgs_type: &str) -> EventKind {
     }
 }
 
+/// A FeatureCollection (summary feeds, FDSN searches), or a bare Feature (an FDSN lookup by
+/// event id).
 #[derive(Deserialize)]
-struct Collection {
-    features: Vec<Feature>,
+#[serde(tag = "type")]
+enum Document {
+    FeatureCollection { features: Vec<Feature> },
+    Feature(Feature),
 }
 
 #[derive(Deserialize)]
@@ -115,16 +120,43 @@ struct Geometry {
     coordinates: Vec<Option<f64>>,
 }
 
-/// Parse a USGS GeoJSON FeatureCollection (a summary feed, or an FDSN `format=geojson` query).
-/// Features without a magnitude, an origin time or a full position are skipped: the map cannot
-/// draw them.
+/// Parse USGS GeoJSON: a FeatureCollection (a summary feed, or an FDSN `format=geojson` search)
+/// or a single Feature (an FDSN lookup by `eventid`). Features without a magnitude, an origin
+/// time or a full position are skipped: the map cannot draw them.
 pub fn parse(bytes: &[u8]) -> Result<Vec<FeedEvent>, ParseError> {
-    let collection: Collection = serde_json::from_slice(bytes)?;
-    Ok(collection
-        .features
+    let features = match serde_json::from_slice(bytes)? {
+        Document::FeatureCollection { features } => features,
+        Document::Feature(f) => vec![f],
+    };
+    Ok(features.into_iter().filter_map(feature_event).collect())
+}
+
+/// `events` as a USGS-shaped FeatureCollection that [`parse`] reads back to the same events.
+/// Only the fields [`parse`] uses are written.
+pub fn to_collection<'a>(events: impl IntoIterator<Item = &'a FeedEvent>) -> Vec<u8> {
+    let features: Vec<serde_json::Value> = events
         .into_iter()
-        .filter_map(feature_event)
-        .collect())
+        .map(|f| {
+            let e = &f.event;
+            json!({
+                "type": "Feature",
+                "id": e.id,
+                "properties": {
+                    "mag": e.magnitude,
+                    "magType": e.mag_type,
+                    "place": f.place,
+                    "time": e.origin.timestamp_millis(),
+                    "updated": f.updated.timestamp_millis(),
+                    "ids": format!(",{},", e.ids.join(",")),
+                    "type": f.usgs_type,
+                    "status": f.status,
+                },
+                "geometry": {"type": "Point", "coordinates": [e.lon, e.lat, e.depth_km]},
+            })
+        })
+        .collect();
+    let doc = json!({"type": "FeatureCollection", "features": features});
+    serde_json::to_vec_pretty(&doc).expect("JSON values always serialise")
 }
 
 fn feature_event(f: Feature) -> Option<FeedEvent> {
@@ -247,6 +279,45 @@ mod tests {
         assert_eq!(c.usgs_type, "ice quake");
         // No `updated`: falls back to the origin.
         assert_eq!(c.updated, c.event.origin);
+    }
+
+    /// Trimmed from a real FDSN `eventid=usp000hvnu` answer (2026-10-15): a bare Feature whose
+    /// preferred id is no longer the one asked for.
+    const LOOKUP: &str = r#"{"type":"Feature","properties":{"mag":9.1,
+      "place":"2011 Great Tohoku Earthquake, Japan","time":1299822384120,"updated":1790377722510,
+      "status":"reviewed","net":"official","code":"20110311054624120_30",
+      "ids":",usc0001xgp,official20110311054624120_30,usp000hvnu,choy20110311054623,",
+      "magType":"mww","type":"earthquake","title":"M 9.1 - 2011 Great Tohoku Earthquake, Japan",
+      "products":{"origin":[{"id":"x"}]}},
+      "geometry":{"type":"Point","coordinates":[142.373,38.297,29]},
+      "id":"official20110311054624120_30"}"#;
+
+    /// A real FDSN search with no matches (2026-10-15): 200 and an empty collection.
+    const EMPTY: &str = r#"{"type":"FeatureCollection","metadata":{"generated":1792047080000,
+      "url":"https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson&starttime=2011-03-01&endtime=2011-03-02&minmagnitude=9.5",
+      "title":"USGS Earthquakes","status":200,"api":"2.8.1","count":0},"features":[]}"#;
+
+    #[test]
+    fn parses_fdsn_lookup_and_empty_search() {
+        let events = parse(LOOKUP.as_bytes()).unwrap();
+        assert_eq!(events.len(), 1);
+        let e = &events[0].event;
+        assert_eq!(e.id, "official20110311054624120_30");
+        assert!(e.ids.iter().any(|id| id == "usp000hvnu"));
+        assert_eq!(e.magnitude, 9.1);
+        assert_eq!(e.mag_type, "mww");
+        assert_eq!(e.depth_km, 29.0);
+        assert_eq!(e.origin.timestamp_millis(), 1299822384120);
+        assert!(parse(EMPTY.as_bytes()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn written_collection_reads_back_the_same() {
+        let mut events = parse(SAMPLE.as_bytes()).unwrap();
+        events.extend(parse(LOOKUP.as_bytes()).unwrap());
+        let back = parse(&to_collection(&events)).unwrap();
+        assert_eq!(back, events);
+        assert!(parse(&to_collection([])).unwrap().is_empty());
     }
 
     #[test]

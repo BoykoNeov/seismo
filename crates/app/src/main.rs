@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context as _, anyhow};
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, NaiveDate, TimeZone, Utc};
 use eframe::{egui, wgpu};
 use sim::mantle::DelayGrid;
 use sim::seismogram::Component;
@@ -41,6 +41,9 @@ const MAX_MANTLE_STRENGTH: f32 = 20.0;
 /// Scrub range around the selected event's origin (s).
 const SCRUB_BEFORE_S: f64 = 60.0;
 const SCRUB_AFTER_S: f64 = 90.0 * 60.0;
+
+/// Events older than this show their year in lists; newer ones show the time of day instead.
+const SHOW_YEAR_AFTER_DAYS: i64 = 300;
 
 const GREEN: egui::Color32 = egui::Color32::from_rgb(0x33, 0xff, 0x33);
 const GREEN_DIM: egui::Color32 = egui::Color32::from_rgb(0x1f, 0x99, 0x1f);
@@ -145,6 +148,7 @@ struct SeismoApp {
     traces_follow: u64,
     /// `--event` with `--start-offset`: seek this many seconds after its origin once listed.
     pending_seek: Option<f64>,
+    search_form: SearchForm,
     renderer: render::SceneRenderer,
     texture_id: egui::TextureId,
     crt: render::CrtSettings,
@@ -214,9 +218,13 @@ impl SeismoApp {
             )],
             Some(feed),
         );
-        //   --event <id>        select this USGS event once the feed lists it; with
-        //                       --start-offset, replay it instead of the built-in event
-        events.wanted_id = arg("--event");
+        //   --event <id>        select this USGS event: a built-in one, or once the feed
+        //                       lists it, or once a USGS lookup finds it (then it is kept, and
+        //                       replayed from its origin); with --start-offset, replay it from
+        //                       that many seconds after its origin
+        if let Some(id) = arg("--event") {
+            events.want(id);
+        }
         let replay = arg("--start-offset").and_then(|s| s.parse::<f64>().ok());
         let pending_seek = replay.filter(|_| events.wanted_id.is_some());
         let mut clock = match replay.filter(|_| pending_seek.is_none()) {
@@ -306,6 +314,7 @@ impl SeismoApp {
             events_rev: events.rev(),
             traces_follow: events.selected_handle(),
             pending_seek,
+            search_form: SearchForm::default(),
             events,
             keys,
             renderer,
@@ -349,11 +358,16 @@ impl SeismoApp {
             let keys = &self.keys;
             self.delay_grids.retain(|k, _| keys.contains(k));
         }
+        // A picked search result replays from its origin, unless `--start-offset` says where.
+        let replay = self.events.take_replay();
         if let Some(offset) = self.pending_seek
             && self.events.wanted_id.is_none()
         {
             self.pending_seek = None;
             self.clock.seek(self.origin() + secs(offset));
+        } else if replay {
+            self.clock.seek(self.origin());
+            self.clock.set_playing(true);
         }
         // Default stations follow a newly selected event.
         let handle = self.events.selected_handle();
@@ -567,10 +581,12 @@ impl SeismoApp {
             .max_height(220.0)
             .show(ui, |ui| {
                 ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                let now = Utc::now();
                 for l in self.events.shown() {
                     let e = &l.event;
+                    let mark = if l.saved { '*' } else { ' ' };
                     let mut text =
-                        format!("M{:<4.1}{}  ", e.magnitude, e.origin.format("%m-%d %H:%M"));
+                        format!("{mark}M{:<4.1}{}  ", e.magnitude, list_time(e.origin, now));
                     if !l.usgs_type.eq_ignore_ascii_case("earthquake") {
                         text.push_str(&format!("[{}] ", l.usgs_type));
                     }
@@ -595,9 +611,106 @@ impl SeismoApp {
         ui.colored_label(
             GREEN_DIM,
             format!(
-                "Until you pick an event, the app picks one and switches to each new                  M{FOLLOW_MIN_MAG:.0}+ quake. Picking never moves the clock: use Replay from                  origin, or Live."
+                "Until you pick an event, the app picks one and switches to each new \
+                 M{FOLLOW_MIN_MAG:.0}+ quake. Picking from this list never moves the clock: use \
+                 Replay from origin, or Live. * = a past quake you picked from a search."
             ),
         );
+    }
+
+    /// The USGS past-event search: by dates and size, or by event code.
+    fn search_controls(&mut self, ui: &mut egui::Ui) {
+        let busy = self.events.search.busy;
+        let f = &mut self.search_form;
+        let mut search = None;
+        ui.horizontal(|ui| {
+            ui.label("from");
+            ui.add(egui::TextEdit::singleline(&mut f.from).desired_width(76.0));
+            ui.label("to");
+            ui.add(egui::TextEdit::singleline(&mut f.to).desired_width(76.0));
+        });
+        ui.add(
+            egui::Slider::new(&mut f.min_mag, 4.0..=9.5)
+                .step_by(0.1)
+                .text("min M"),
+        );
+        ui.add(egui::Slider::new(&mut f.limit, 1..=feed::MAX_RESULTS).text("max results"));
+        if ui
+            .add_enabled(!busy, egui::Button::new("Search USGS"))
+            .on_hover_text("Dates are UTC days, YYYY-MM-DD, both included. Largest quakes first.")
+            .clicked()
+        {
+            search = Some(f.range());
+        }
+        ui.horizontal(|ui| {
+            ui.label("code");
+            ui.add(
+                egui::TextEdit::singleline(&mut f.code)
+                    .desired_width(110.0)
+                    .hint_text("e.g. usp000dbed"),
+            );
+            if ui
+                .add_enabled(!busy, egui::Button::new("Look up"))
+                .on_hover_text("One quake by its USGS event code")
+                .clicked()
+            {
+                search = Some(Ok(feed::Search::Id(f.code.trim().to_owned())));
+            }
+        });
+        if let Some(search) = search {
+            match search.and_then(|s| s.url().map(|_| s).map_err(|e| e.to_string())) {
+                Ok(s) => {
+                    f.error = None;
+                    self.events.search(s);
+                }
+                Err(e) => f.error = Some(e),
+            }
+        }
+        let status = if self.events.search.busy {
+            Some("Searching USGS…")
+        } else {
+            f.error.as_deref().or(self.events.search.message.as_deref())
+        };
+        if let Some(status) = status {
+            ui.colored_label(GREEN_DIM, status);
+        }
+
+        let selected = self.events.selected_handle();
+        let mut pick = None;
+        egui::ScrollArea::vertical()
+            .id_salt("search results")
+            .max_height(180.0)
+            .show(ui, |ui| {
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                for r in &self.events.search.results {
+                    let e = &r.feed.event;
+                    let text = format!(
+                        "M{:<4.1}{}  {}",
+                        e.magnitude,
+                        e.origin.format("%Y-%m-%d"),
+                        r.feed.place
+                    );
+                    let label = egui::RichText::new(text).monospace().size(11.0);
+                    if ui
+                        .selectable_label(r.handle == selected, label)
+                        .on_hover_text(format!(
+                            "{} UTC  {}\n{} {}  {:.0} km deep\nClick to keep it in the list and \
+                             replay it from its origin.",
+                            e.origin.format("%Y-%m-%d %H:%M:%S"),
+                            r.feed.place,
+                            e.id,
+                            e.mag_type,
+                            e.depth_km
+                        ))
+                        .clicked()
+                    {
+                        pick = Some(r.handle);
+                    }
+                }
+            });
+        if let Some(handle) = pick {
+            self.events.pick_result(handle);
+        }
     }
 
     /// One line on where the events come from and how fresh they are.
@@ -760,7 +873,20 @@ impl SeismoApp {
         ));
         ui.colored_label(GREEN_DIM, format!("{}  {}", event.id, listed.status));
         if listed.gone {
-            ui.colored_label(GREEN, "USGS no longer lists this event.");
+            ui.colored_label(GREEN, "No longer in the event list; shown while selected.");
+        }
+        if listed.saved {
+            let handle = listed.key.handle;
+            ui.horizontal(|ui| {
+                ui.colored_label(GREEN_DIM, "Kept from a search.");
+                if ui
+                    .small_button("Forget")
+                    .on_hover_text("Take it off the list (it stays while selected)")
+                    .clicked()
+                {
+                    self.events.forget(handle);
+                }
+            });
         }
         let t = event.t_at(now);
         let fmt = |d: Option<f64>| d.map_or("—".to_owned(), |d| format!("{d:6.2}°"));
@@ -775,6 +901,11 @@ impl SeismoApp {
         egui::CollapsingHeader::new("Events")
             .default_open(true)
             .show(ui, |ui| self.event_controls(ui));
+
+        ui.separator();
+        egui::CollapsingHeader::new("Search past quakes")
+            .default_open(true)
+            .show(ui, |ui| self.search_controls(ui));
 
         ui.separator();
         egui::CollapsingHeader::new("3D mantle")
@@ -1524,6 +1655,56 @@ impl SeismoApp {
 }
 
 /// Write tightly packed RGBA8 rows as a binary PPM (P6), dropping alpha.
+/// The search form's fields, as typed.
+struct SearchForm {
+    from: String,
+    to: String,
+    min_mag: f64,
+    limit: u32,
+    code: String,
+    /// Why the typed search cannot be sent.
+    error: Option<String>,
+}
+
+impl Default for SearchForm {
+    /// The largest quakes on record.
+    fn default() -> Self {
+        Self {
+            from: "1900-01-01".into(),
+            to: Utc::now().format("%Y-%m-%d").to_string(),
+            min_mag: 8.0,
+            limit: 50,
+            code: String::new(),
+            error: None,
+        }
+    }
+}
+
+impl SearchForm {
+    fn range(&self) -> Result<feed::Search, String> {
+        let day = |s: &str, which: &str| {
+            NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d")
+                .map_err(|_| format!("the {which} date is not YYYY-MM-DD"))
+        };
+        Ok(feed::Search::Range {
+            from: day(&self.from, "start")?,
+            to: day(&self.to, "end")?,
+            min_mag: self.min_mag,
+            limit: self.limit,
+        })
+    }
+}
+
+/// An event's origin for a list row: the date with the year for old events, else month, day and
+/// time of day. Both are 11 characters.
+fn list_time(origin: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    if (now - origin).num_days() > SHOW_YEAR_AFTER_DAYS {
+        origin.format("%Y-%m-%d ").to_string()
+    } else {
+        origin.format("%m-%d %H:%M").to_string()
+    }
+}
+
 fn write_ppm(path: &std::path::Path, w: u32, h: u32, rgba: &[u8]) -> std::io::Result<()> {
     let mut out = format!(
         "P6

@@ -1,11 +1,12 @@
 //! The events the app shows: built-in examples plus everything the USGS feed reports, filtered
-//! by a minimum magnitude, with the selection tracked by a stable handle so it survives the
-//! list being replaced, re-sorted, merged or pruned.
+//! by a minimum magnitude, plus past events the user picked from a search (kept across
+//! restarts), with the selection tracked by a stable handle so it survives the list being
+//! replaced, re-sorted, merged or pruned.
 
 use std::collections::HashSet;
 
 use chrono::{DateTime, Duration, Utc};
-use feed::{FeedHandle, FeedMsg, FeedStatus, StoredEvent};
+use feed::{FeedCmd, FeedHandle, FeedMsg, FeedStatus, Search, StoredEvent};
 use sim::Event;
 
 /// Identity of an event version: `handle` stays put through new versions and merges, and
@@ -42,7 +43,10 @@ pub struct Listed {
     pub place: String,
     /// "automatic", "reviewed", or "built-in".
     pub status: String,
-    /// The feed no longer lists it (deleted or merged away); kept only while selected.
+    /// Kept by the user (a picked past event): listed whatever its magnitude.
+    pub saved: bool,
+    /// No longer in the list (deleted by USGS, merged away, or forgotten); kept only while
+    /// selected.
     pub gone: bool,
 }
 
@@ -57,6 +61,7 @@ impl Listed {
             usgs_type: "earthquake".into(),
             place: place.into(),
             status: "built-in".into(),
+            saved: false,
             gone: false,
         }
     }
@@ -71,9 +76,21 @@ impl Listed {
             usgs_type: s.feed.usgs_type.clone(),
             place: s.feed.place.clone(),
             status: s.feed.status.clone(),
+            saved: s.saved,
             gone: false,
         }
     }
+}
+
+/// The past-event search as the app sees it.
+#[derive(Debug, Default)]
+pub struct SearchView {
+    /// A search is on its way.
+    pub busy: bool,
+    /// The last search's results, in USGS's order (largest first).
+    pub results: Vec<StoredEvent>,
+    /// What the last search came to ("12 found", or why it failed).
+    pub message: Option<String>,
 }
 
 pub struct EventList {
@@ -95,8 +112,11 @@ pub struct EventList {
     auto_picked: bool,
     /// Feed handles already listed when the selection last settled: anything else is new.
     seen: HashSet<u64>,
-    /// A USGS id to select as soon as the feed lists it (`--event`).
+    /// A USGS id to select as soon as the feed lists it or a lookup finds it (`--event`).
     pub wanted_id: Option<String>,
+    pub search: SearchView,
+    /// A search result was picked: the app should replay it from its origin.
+    replay: bool,
 }
 
 impl EventList {
@@ -120,6 +140,8 @@ impl EventList {
             auto_picked: false,
             seen: HashSet::new(),
             wanted_id: None,
+            search: SearchView::default(),
+            replay: false,
         };
         list.rebuild();
         list
@@ -141,19 +163,102 @@ impl EventList {
         self.min_mag
     }
 
-    /// Feed events at or above the minimum magnitude, and how many there are in all.
+    /// Live feed events at or above the minimum magnitude, and how many there are in all.
     pub fn feed_counts(&self) -> (usize, usize) {
-        let above = self
-            .feed_events
-            .iter()
+        let live = self.feed_events.iter().filter(|s| s.live);
+        let above = live
+            .clone()
             .filter(|s| s.feed.event.magnitude >= self.min_mag)
             .count();
-        (above, self.feed_events.len())
+        (above, live.count())
+    }
+
+    /// Whether a search result was picked since the last call: the app replays it from its
+    /// origin (decided by the user, 2026-10-15).
+    pub fn take_replay(&mut self) -> bool {
+        std::mem::take(&mut self.replay)
+    }
+
+    /// Start a past-event search; the results arrive through [`Self::poll`].
+    pub fn search(&mut self, search: Search) {
+        let sent = self
+            .feed
+            .as_ref()
+            .is_some_and(|f| f.send(FeedCmd::Search(search)));
+        self.search.busy = sent;
+        self.search.message = (!sent).then(|| "the USGS feed is not running".to_owned());
+    }
+
+    /// Select the event with USGS id `id` (`--event`): a built-in one at once, otherwise as
+    /// soon as the feed lists it or a lookup finds it.
+    pub fn want(&mut self, id: String) {
+        if let Some(b) = self.builtins.iter().find(|b| b.event.ids.contains(&id)) {
+            let handle = b.key.handle;
+            self.select(handle);
+            return;
+        }
+        self.search(Search::Id(id.clone()));
+        self.wanted_id = Some(id);
+    }
+
+    /// Pick a search result: it is kept (listed from now on, across restarts), selected, and
+    /// replayed. A result that is a built-in example selects that instead. Returns whether the
+    /// shown list changed.
+    pub fn pick_result(&mut self, handle: u64) -> bool {
+        let Some(r) = self.search.results.iter().find(|r| r.handle == handle) else {
+            return false;
+        };
+        self.replay = true;
+        let ids = &r.feed.event.ids;
+        if let Some(b) = self
+            .builtins
+            .iter()
+            .find(|b| b.event.ids.iter().any(|id| ids.contains(id)))
+        {
+            let handle = b.key.handle;
+            return self.select(handle);
+        }
+        let mut kept = r.clone();
+        kept.saved = true;
+        if let Some(f) = &self.feed {
+            f.send(FeedCmd::Keep(handle));
+        }
+        // Listed at once; the feed's next list says the same.
+        match self.feed_events.iter_mut().find(|s| s.handle == handle) {
+            Some(s) => s.saved = true,
+            None => self.feed_events.push(kept),
+        }
+        for r in &mut self.search.results {
+            if r.handle == handle {
+                r.saved = true;
+            }
+        }
+        self.select(handle)
+    }
+
+    /// Stop keeping the event with `handle`. It leaves the list unless the live feed lists it
+    /// (or it is selected). Returns whether the shown list changed.
+    pub fn forget(&mut self, handle: u64) -> bool {
+        if let Some(f) = &self.feed {
+            f.send(FeedCmd::Forget(handle));
+        }
+        for s in self
+            .feed_events
+            .iter_mut()
+            .chain(self.search.results.iter_mut())
+        {
+            if s.handle == handle {
+                s.saved = false;
+            }
+        }
+        self.feed_events.retain(StoredEvent::listed);
+        self.rebuild()
     }
 
     /// Take the feed's news. Returns whether the shown list changed.
     pub fn poll(&mut self, now: DateTime<Utc>) -> bool {
         let mut fresh = false;
+        let mut found = false;
         while let Some(msg) = self.feed.as_ref().and_then(FeedHandle::try_recv) {
             match msg {
                 FeedMsg::Events(events) => {
@@ -161,13 +266,44 @@ impl EventList {
                     fresh = true;
                 }
                 FeedMsg::Status(s) => self.status = Some(s),
+                FeedMsg::Found(reply) => {
+                    self.take_results(reply.result);
+                    found = true;
+                }
             }
         }
         let picked = self.settle(now, fresh);
-        if fresh || picked {
+        if fresh || picked || found {
             self.rebuild()
         } else {
             false
+        }
+    }
+
+    /// Take a search's results, picking the `--event` one if it is among them.
+    fn take_results(&mut self, result: Result<Vec<StoredEvent>, String>) {
+        self.search.busy = false;
+        match result {
+            Ok(found) => {
+                self.search.message = Some(match found.len() {
+                    0 => "nothing found".to_owned(),
+                    1 => "1 found".to_owned(),
+                    n => format!("{n} found"),
+                });
+                self.search.results = found;
+                let wanted = self.wanted_id.as_ref().and_then(|id| {
+                    self.search
+                        .results
+                        .iter()
+                        .find(|r| r.feed.event.ids.contains(id))
+                        .map(|r| r.handle)
+                });
+                if let Some(handle) = wanted {
+                    self.wanted_id = None;
+                    self.pick_result(handle);
+                }
+            }
+            Err(e) => self.search.message = Some(e),
         }
     }
 
@@ -209,7 +345,7 @@ impl EventList {
             let recent = now - Duration::hours(AUTO_PICK_HOURS);
             self.feed_events
                 .iter()
-                .filter(|s| !self.seen.contains(&s.handle))
+                .filter(|s| s.live && !self.seen.contains(&s.handle))
                 .filter(|s| {
                     s.feed.event.magnitude >= FOLLOW_MIN_MAG && s.feed.event.origin >= recent
                 })
@@ -227,13 +363,12 @@ impl EventList {
         }
     }
 
-    /// The largest event of the last few hours at or above the minimum magnitude, or else the
-    /// most recent such event.
+    /// The largest live event of the last few hours at or above the minimum magnitude, or else
+    /// the most recent such event. Kept past events are never picked by the app.
     fn auto_pick(&self, now: DateTime<Utc>) -> Option<u64> {
-        let candidates = self
-            .feed_events
-            .iter()
-            .filter(|s| s.feed.event.magnitude >= self.min_mag && s.feed.event.origin <= now);
+        let candidates = self.feed_events.iter().filter(|s| {
+            s.live && s.feed.event.magnitude >= self.min_mag && s.feed.event.origin <= now
+        });
         let recent = now - Duration::hours(AUTO_PICK_HOURS);
         candidates
             .clone()
@@ -267,7 +402,7 @@ impl EventList {
             .iter()
             .cloned()
             .chain(self.feed_events.iter().map(Listed::from_feed))
-            .filter(|l| l.event.magnitude >= min_mag || l.key.handle == selected)
+            .filter(|l| l.event.magnitude >= min_mag || l.saved || l.key.handle == selected)
             .collect();
         match shown.iter().find(|l| l.key.handle == selected) {
             Some(l) => self.selected_copy = l.clone(),
@@ -323,7 +458,16 @@ mod tests {
                 updated: origin,
                 status: "automatic".into(),
             },
+            live: true,
+            saved: false,
         }
+    }
+
+    /// A past event as a search finds it: neither live nor kept.
+    fn found(handle: u64, years_ago: i64, mag: f64) -> StoredEvent {
+        let mut s = stored(handle, years_ago * 365 * 24 * 60, mag);
+        s.live = false;
+        s
     }
 
     fn list() -> EventList {
@@ -465,6 +609,88 @@ mod tests {
         // Selecting another lets it go.
         assert!(l.select(2));
         assert_eq!(handles(&l), [2, BUILTIN_HANDLE]);
+    }
+
+    #[test]
+    fn picking_a_result_keeps_selects_and_replays() {
+        let mut l = list();
+        feed_in(&mut l, vec![stored(1, 10, 4.0)]);
+        assert_eq!(l.selected_handle(), 1);
+        assert!(!l.take_replay());
+        l.take_results(Ok(vec![found(7, 20, 8.0), found(8, 30, 7.0)]));
+        assert_eq!(l.search.message.as_deref(), Some("2 found"));
+        // Results are not listed until picked.
+        assert_eq!(handles(&l), [1, BUILTIN_HANDLE]);
+        assert!(l.pick_result(8));
+        assert_eq!(l.selected_handle(), 8);
+        assert!(l.user_chose);
+        assert!(l.take_replay());
+        assert!(!l.take_replay());
+        // Listed, oldest last.
+        assert_eq!(handles(&l), [1, BUILTIN_HANDLE, 8]);
+        assert!(l.shown()[2].saved);
+        // Still listed when the minimum magnitude rises above it and it is not selected.
+        l.set_min_mag(7.5);
+        l.select(BUILTIN_HANDLE);
+        assert_eq!(handles(&l), [BUILTIN_HANDLE, 8]);
+        // Forgotten while selected: stays until something else is selected.
+        l.select(8);
+        l.forget(8);
+        assert_eq!(handles(&l), [BUILTIN_HANDLE, 8]);
+        assert!(l.shown()[1].gone);
+        l.select(BUILTIN_HANDLE);
+        assert_eq!(handles(&l), [BUILTIN_HANDLE]);
+    }
+
+    #[test]
+    fn a_result_that_is_the_builtin_selects_it() {
+        let mut l = list();
+        feed_in(&mut l, vec![stored(1, 10, 4.0)]);
+        let mut tohoku = found(9, 15, 9.1);
+        tohoku.feed.event = tohoku.feed.event.with_ids(vec![
+            "official20110311054624120_30".into(),
+            "usp000hvnu".into(),
+        ]);
+        l.take_results(Ok(vec![tohoku]));
+        l.pick_result(9);
+        assert_eq!(l.selected_handle(), BUILTIN_HANDLE);
+        assert!(l.take_replay());
+        assert_eq!(handles(&l), [1, BUILTIN_HANDLE]);
+    }
+
+    #[test]
+    fn kept_events_never_picked_or_followed_by_the_app() {
+        let mut l = list();
+        // A kept M7.5 from an hour ago (picked in an earlier session) and a live M3.
+        let mut kept = stored(1, 60, 7.5);
+        kept.live = false;
+        kept.saved = true;
+        feed_in(&mut l, vec![kept.clone(), stored(2, 30, 3.0)]);
+        assert_eq!(l.selected_handle(), 2);
+        // Nor followed when it first appears later.
+        let mut l = list();
+        feed_in(&mut l, vec![stored(2, 30, 3.0)]);
+        feed_in(&mut l, vec![stored(2, 30, 3.0), kept]);
+        assert_eq!(l.selected_handle(), 2);
+        assert_eq!(l.feed_counts(), (1, 1));
+    }
+
+    #[test]
+    fn wanted_event_found_by_lookup_is_picked() {
+        let mut l = list();
+        l.wanted_id = Some("e7".into());
+        l.take_results(Err("USGS has no event with that code".into()));
+        assert_eq!(l.wanted_id.as_deref(), Some("e7"));
+        l.take_results(Ok(vec![found(7, 20, 8.0)]));
+        assert_eq!(l.wanted_id, None);
+        assert_eq!(l.selected_handle(), 7);
+        assert!(l.take_replay());
+        // A built-in id is selected at once, with no lookup.
+        let mut l = list();
+        l.want("usp000hvnu".into());
+        assert_eq!(l.selected_handle(), BUILTIN_HANDLE);
+        assert!(l.user_chose);
+        assert_eq!(l.wanted_id, None);
     }
 
     #[test]
