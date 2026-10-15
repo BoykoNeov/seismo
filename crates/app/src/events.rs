@@ -179,8 +179,11 @@ impl EventList {
         std::mem::take(&mut self.replay)
     }
 
-    /// Start a past-event search; the results arrive through [`Self::poll`].
+    /// Start a past-event search; the results arrive through [`Self::poll`]. The previous
+    /// results go at once: the feed drops the ones the new search does not find again, so
+    /// picking one meanwhile could not keep it.
     pub fn search(&mut self, search: Search) {
+        self.search.results.clear();
         let sent = self
             .feed
             .as_ref()
@@ -640,6 +643,18 @@ mod tests {
         assert!(l.shown()[1].gone);
         l.select(BUILTIN_HANDLE);
         assert_eq!(handles(&l), [BUILTIN_HANDLE]);
+    }
+
+    #[test]
+    fn a_new_search_clears_the_old_results() {
+        let mut l = list();
+        l.take_results(Ok(vec![found(7, 20, 8.0)]));
+        l.search(Search::Id("us1".into()));
+        assert!(l.search.results.is_empty());
+        // No feed: nothing to pick, and it says so.
+        assert!(!l.pick_result(7));
+        assert!(!l.search.busy);
+        assert!(l.search.message.is_some());
     }
 
     #[test]
