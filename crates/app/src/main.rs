@@ -4,6 +4,7 @@
 
 mod clock;
 mod events;
+mod made;
 mod mantle;
 mod traces;
 
@@ -22,6 +23,7 @@ use sim::{EARTH_RADIUS_KM, Event, EventKind, RayPhase, Simulation, Wave, azimuth
 
 use clock::{MAX_SPEED, MIN_SPEED, SimClock, secs};
 use events::{EventKey, EventList, FOLLOW_MIN_MAG, Listed};
+use made::{MakeForm, TIME_FORMAT};
 use mantle::{BendKey, CutKey, MantleWorker, Ready};
 use traces::{MAX_TRACES, Traces};
 
@@ -150,6 +152,15 @@ struct SeismoApp {
     /// `--event` with `--start-offset`: seek this many seconds after its origin once listed.
     pending_seek: Option<f64>,
     search_form: SearchForm,
+    make_form: MakeForm,
+    /// Where the user's own events are kept; `None` if the platform has no data folder.
+    made_path: Option<std::path::PathBuf>,
+    /// The user's events changed since they were last kept on disk.
+    made_dirty: bool,
+    /// The selected event's handle when the make-your-own form last followed it.
+    form_follow: u64,
+    /// The make-your-own section is open: its place is marked on the map.
+    make_open: bool,
     renderer: render::SceneRenderer,
     texture_id: egui::TextureId,
     crt: render::CrtSettings,
@@ -202,8 +213,9 @@ impl SeismoApp {
         cc.egui_ctx.set_visuals(phosphor_visuals());
 
         // Debug/screenshot flags:
-        //   --start-offset <s>  replay the built-in event: start the clock that many seconds
-        //                       after its origin (without it the clock starts at now, live)
+        //   --start-offset <s>  replay the selected event (the built-in one, or one of yours
+        //                       picked with --event): start the clock that many seconds after
+        //                       its origin (without it the clock starts at now, live)
         //   --offline           no network: events come from the saved copy only
         //   --speed <x>         initial clock speed
         //   --crt <list>        comma-separated: off, noscan, nopersist,
@@ -221,7 +233,32 @@ impl SeismoApp {
             )],
             Some(feed),
         );
-        //   --event <id>        select this USGS event: a built-in one, or once the feed
+        let mut make_form = MakeForm::default();
+        let made_path = made::default_path();
+        if let Some(path) = &made_path {
+            match made::load(path) {
+                Ok(made) => {
+                    tracing::info!(count = made.len(), path = %path.display(), "loaded your events");
+                    events.load_made(made);
+                }
+                Err(e) => {
+                    // Kept aside, not overwritten by the next save.
+                    let aside = path.with_extension("json.bad");
+                    let moved = std::fs::rename(path, &aside).is_ok();
+                    tracing::warn!(path = %path.display(), moved, "could not read your events: {e}");
+                    make_form.message = Some(format!(
+                        "Could not read your saved events ({e}); {}",
+                        if moved {
+                            format!("the file was moved to {}", aside.display())
+                        } else {
+                            "starting without them".to_owned()
+                        }
+                    ));
+                }
+            }
+        }
+        //   --event <id>        select this event: a built-in one or one of yours (made-<n>)
+        //                       at once; a USGS one once the feed
         //                       lists it, or once a USGS lookup finds it (then it is kept, and
         //                       replayed from its origin); with --start-offset, replay it from
         //                       that many seconds after its origin
@@ -232,9 +269,15 @@ impl SeismoApp {
         let pending_seek = replay.filter(|_| events.wanted_id.is_some());
         let mut clock = match replay.filter(|_| pending_seek.is_none()) {
             Some(offset) => {
-                // Replaying the built-in event: the feed must not pick another.
+                // Replaying the selected event: the feed must not pick another.
                 events.user_chose = true;
-                SimClock::new(tohoku().origin + secs(offset))
+                let selected = events.selected_handle();
+                let origin = events
+                    .shown()
+                    .iter()
+                    .find(|l| l.key.handle == selected)
+                    .map_or(tohoku().origin, |l| l.event.origin);
+                SimClock::new(origin + secs(offset))
             }
             None => SimClock::new(Utc::now()),
         };
@@ -330,6 +373,14 @@ impl SeismoApp {
             traces_follow: events.selected_handle(),
             pending_seek,
             search_form: SearchForm::default(),
+            make_form,
+            made_path,
+            made_dirty: false,
+            // No event yet: the first sync fills the form if one of the user's is selected.
+            form_follow: 0,
+            //   --make              open the make-your-own-event section (and fold the event
+            //                       list, so the form fits on screen)
+            make_open: flag("--make"),
             events,
             keys,
             renderer,
@@ -364,6 +415,9 @@ impl SeismoApp {
 
     /// Take the feed's news and bring the simulation's events up to date with the list.
     fn sync_events(&mut self) {
+        if std::mem::take(&mut self.made_dirty) {
+            self.save_made();
+        }
         self.events.poll(self.clock.now());
         if self.events.rev() != self.events_rev {
             self.events_rev = self.events.rev();
@@ -391,6 +445,32 @@ impl SeismoApp {
             if !self.traces.user_picked {
                 self.traces.pick_defaults(&self.sim.events[self.sel()]);
             }
+        }
+        // Selecting one of the user's events fills the form to edit it.
+        if handle != self.form_follow {
+            self.form_follow = handle;
+            let f = &mut self.make_form;
+            f.editing = None;
+            if let Some(l) = self.events.shown().iter().find(|l| l.key.handle == handle)
+                && l.made
+                && !l.gone
+            {
+                f.fill(&l.event, &l.place);
+                f.editing = Some(handle);
+            }
+        }
+    }
+
+    /// Keep the user's events on disk.
+    fn save_made(&mut self) {
+        let Some(path) = &self.made_path else {
+            self.make_form.message =
+                Some("No data folder on this computer: your events last only this session.".into());
+            return;
+        };
+        if let Err(e) = made::save(path, &self.events.made()) {
+            tracing::error!(path = %path.display(), "could not save your events: {e}");
+            self.make_form.message = Some(format!("Could not save to {}: {e}", path.display()));
         }
     }
 
@@ -599,7 +679,13 @@ impl SeismoApp {
                 let now = Utc::now();
                 for l in self.events.shown() {
                     let e = &l.event;
-                    let mark = if l.saved { '*' } else { ' ' };
+                    let mark = if l.made {
+                        '+'
+                    } else if l.saved {
+                        '*'
+                    } else {
+                        ' '
+                    };
                     let mut text =
                         format!("{mark}M{:<4.1}{}  ", e.magnitude, list_time(e.origin, now));
                     if !l.usgs_type.eq_ignore_ascii_case("earthquake") {
@@ -628,8 +714,159 @@ impl SeismoApp {
             format!(
                 "Until you pick an event, the app picks one and switches to each new \
                  M{FOLLOW_MIN_MAG:.0}+ quake. Picking from this list never moves the clock: use \
-                 Replay from origin, or Live. * = a past quake you picked from a search."
+                 Replay from origin, or Live. * = a past quake you picked from a search, \
+                 + = an event you made."
             ),
+        );
+    }
+
+    /// The make-your-own-event form: a new event, or changes to the selected one of yours.
+    fn make_controls(&mut self, ui: &mut egui::Ui) {
+        let clock_now = self.clock.now();
+        let f = &mut self.make_form;
+        ui.horizontal(|ui| {
+            ui.label("name");
+            ui.add(
+                egui::TextEdit::singleline(&mut f.name)
+                    .desired_width(180.0)
+                    .hint_text("e.g. Test blast"),
+            );
+        });
+        egui::ComboBox::from_label("type")
+            .selected_text(made::kind_label(f.kind))
+            .show_ui(ui, |ui| {
+                for kind in EventKind::ALL {
+                    ui.selectable_value(&mut f.kind, kind, made::kind_label(kind));
+                }
+            });
+        ui.horizontal(|ui| {
+            ui.label("lat");
+            ui.add(
+                egui::DragValue::new(&mut f.lat)
+                    .range(-90.0..=90.0)
+                    .speed(0.1)
+                    .max_decimals(3)
+                    .suffix("°"),
+            );
+            ui.label("lon");
+            ui.add(
+                egui::DragValue::new(&mut f.lon)
+                    .range(-180.0..=180.0)
+                    .speed(0.1)
+                    .max_decimals(3)
+                    .suffix("°"),
+            );
+        });
+        let pick_label = if f.picking {
+            "Click the map… (cancel)"
+        } else {
+            "Pick on map"
+        };
+        if ui
+            .button(pick_label)
+            .on_hover_text("The next click on the map sets the place")
+            .clicked()
+        {
+            f.picking = !f.picking;
+        }
+        // Each kind has its depth range; changing the kind brings the depth into it.
+        let profile = f.kind.profile();
+        f.depth_km = profile.clamp_depth(f.depth_km);
+        if profile.max_depth_km > profile.min_depth_km {
+            ui.add(
+                egui::Slider::new(&mut f.depth_km, profile.min_depth_km..=profile.max_depth_km)
+                    .text("depth km")
+                    .max_decimals(1),
+            );
+        } else {
+            ui.colored_label(
+                GREEN_DIM,
+                format!(
+                    "depth {:.0} km: a {} is at the surface",
+                    f.depth_km,
+                    made::kind_label(f.kind)
+                ),
+            );
+        }
+        ui.add(
+            egui::Slider::new(&mut f.magnitude, 1.0..=10.0)
+                .step_by(0.1)
+                .text("magnitude"),
+        );
+        ui.horizontal(|ui| {
+            ui.label("time");
+            ui.add(
+                egui::TextEdit::singleline(&mut f.time)
+                    .desired_width(140.0)
+                    .hint_text("the clock's time"),
+            );
+            if ui
+                .small_button("Clock")
+                .on_hover_text("Fill in the clock's current time")
+                .clicked()
+            {
+                f.time = clock_now.format(TIME_FORMAT).to_string();
+            }
+        });
+
+        // Update only while one of the user's events is selected and still listed.
+        let selected = self.events.selected_handle();
+        let selected_listed = self
+            .events
+            .shown()
+            .iter()
+            .find(|l| l.key.handle == selected);
+        let editing = f
+            .editing
+            .filter(|&h| h == selected && selected_listed.is_some_and(|l| l.made && !l.gone));
+        let (mut make, mut update, mut copy) = (false, false, false);
+        ui.horizontal(|ui| {
+            make = ui
+                .button("Make new")
+                .on_hover_text("Add this event to the list and select it")
+                .clicked();
+            update = ui
+                .add_enabled(editing.is_some(), egui::Button::new("Update"))
+                .on_hover_text("Change the selected event of yours to these values")
+                .on_disabled_hover_text("Select one of your events (+) to change it")
+                .clicked();
+            copy = ui
+                .button("Copy selected")
+                .on_hover_text("Fill the form from the selected event")
+                .clicked();
+        });
+        if copy && let Some(l) = selected_listed {
+            f.fill(&l.event, &l.place);
+            f.message = None;
+        }
+        if make || update {
+            match f.build(clock_now) {
+                Ok(m) => {
+                    let place = m.place.clone();
+                    if let Some(handle) = editing.filter(|_| update) {
+                        self.events.update_made(handle, m);
+                        f.message = Some(format!("Updated: {place}"));
+                    } else {
+                        let handle = self.events.make(m);
+                        f.message = Some(format!("Made: {place}"));
+                        // Already filled from this event: no need to fill again on follow.
+                        f.editing = Some(handle);
+                        self.form_follow = handle;
+                    }
+                    self.made_dirty = true;
+                }
+                Err(e) => f.message = Some(e),
+            }
+        }
+        if let Some(m) = &f.message {
+            ui.colored_label(GREEN_DIM, m);
+        }
+        ui.colored_label(
+            GREEN_DIM,
+            "Times are UTC, YYYY-MM-DD HH:MM:SS; empty = the clock's time, so the waves start \
+             where the clock is. Making an event never moves the clock: use Replay from origin. \
+             Each type has its own depth range and wave mix. Your events are kept across \
+             restarts; selecting one fills this form.",
         );
     }
 
@@ -890,8 +1127,22 @@ impl SeismoApp {
         if listed.gone {
             ui.colored_label(GREEN, "No longer in the event list; shown while selected.");
         }
-        if listed.saved {
-            let handle = listed.key.handle;
+        let handle = listed.key.handle;
+        let (mine, saved) = (listed.made && !listed.gone, listed.saved);
+        if mine {
+            ui.horizontal(|ui| {
+                ui.colored_label(GREEN_DIM, "Edit it under Make your own event.");
+                if ui
+                    .small_button("Delete")
+                    .on_hover_text("Take it off the list for good (it stays while selected)")
+                    .clicked()
+                {
+                    self.events.delete_made(handle);
+                    self.made_dirty = true;
+                }
+            });
+        }
+        if saved {
             ui.horizontal(|ui| {
                 ui.colored_label(GREEN_DIM, "Kept from a search.");
                 if ui
@@ -917,8 +1168,15 @@ impl SeismoApp {
 
         ui.separator();
         egui::CollapsingHeader::new("Events")
-            .default_open(true)
+            .default_open(!self.make_open)
             .show(ui, |ui| self.event_controls(ui));
+
+        ui.separator();
+        self.make_open = egui::CollapsingHeader::new("Make your own event")
+            .default_open(self.make_open)
+            .show(ui, |ui| self.make_controls(ui))
+            .body_returned
+            .is_some();
 
         ui.separator();
         egui::CollapsingHeader::new("Search past quakes")
@@ -1381,8 +1639,9 @@ impl SeismoApp {
             .map(|(i, _)| i)
     }
 
-    /// Map clicks show or hide a station's trace, or place a new station; hovering a marker
-    /// names it. Shown stations are labelled on the map.
+    /// Map clicks show or hide a station's trace, or place a new station, or (when asked) set
+    /// the place of the event being made; hovering a marker names it. Shown stations are
+    /// labelled on the map, and the event form's place is marked while the form is open.
     fn station_picking(&mut self, ui: &egui::Ui, rect: egui::Rect, response: &egui::Response) {
         let painter = ui.painter_at(rect);
         let font = egui::FontId::monospace(11.0);
@@ -1407,6 +1666,40 @@ impl SeismoApp {
                 font,
                 GREEN,
             );
+        }
+        // The make-your-own form's place, and picking it: the next map click sets it.
+        if self.make_open || self.make_form.picking {
+            let f = &self.make_form;
+            let c = self.map_to_ui(rect, f.lat, f.lon);
+            let stroke = egui::Stroke::new(1.5, GREEN);
+            for d in [egui::vec2(6.0, 6.0), egui::vec2(6.0, -6.0)] {
+                painter.line_segment([c - d, c + d], stroke);
+            }
+        }
+        if self.make_form.picking {
+            if let Some(pos) = response.hover_pos() {
+                painter.text(
+                    pos + egui::vec2(10.0, 10.0),
+                    egui::Align2::LEFT_TOP,
+                    "click: put your event here",
+                    egui::FontId::monospace(11.0),
+                    GREEN,
+                );
+            }
+            if response.clicked()
+                && let Some(pos) = response.interact_pointer_pos()
+                && let Some([x, y]) = self.ui_to_scene(rect, pos)
+            {
+                let (proj, vp) = self.map_frame();
+                if let Some((lat, lon)) = proj.lat_lon([x - vp.x, y - vp.y]) {
+                    let f = &mut self.make_form;
+                    // Rounded to what the form shows.
+                    f.lat = (lat * 1000.0).round() / 1000.0;
+                    f.lon = (lon * 1000.0).round() / 1000.0;
+                    f.picking = false;
+                }
+            }
+            return;
         }
         if !response.clicked() || !self.traces.show {
             return;

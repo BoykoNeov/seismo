@@ -185,6 +185,14 @@ limits. Nuclear: shallow, P-dominant, weak S and surface waves. Impact: surface,
 strong surface waves, optional tsunami flag (flag only — no tsunami model).
 Keep the raw USGS `type` string on every feed event.
 
+User-made events (decided 2026-10-15): a form makes an event of any kind (place typed or
+picked on the map, depth within the kind's `SourceProfile` range, magnitude, UTC time, empty =
+the clock's time). Made events are listed whatever the minimum magnitude (mark `+`), never
+picked or followed by the app, editable (a new revision, same handle) and deletable, and kept
+in `made.json` in the app's data folder (beside the `usgs` cache folder), loaded at start.
+They have no USGS type, so the UI shows a plain kind label ("nuclear test") for them: the one
+place a kind name is shown. Making or editing one never moves the clock.
+
 ## Feed
 
 - Sources: USGS GeoJSON summary feeds (`all_hour`, `all_day`,

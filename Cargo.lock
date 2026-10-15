@@ -199,6 +199,8 @@ dependencies = [
  "egui",
  "feed",
  "render",
+ "serde",
+ "serde_json",
  "sim",
  "tracing",
  "tracing-subscriber",

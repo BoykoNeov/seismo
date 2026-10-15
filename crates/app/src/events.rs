@@ -1,7 +1,7 @@
 //! The events the app shows: built-in examples plus everything the USGS feed reports, filtered
-//! by a minimum magnitude, plus past events the user picked from a search (kept across
-//! restarts), with the selection tracked by a stable handle so it survives the list being
-//! replaced, re-sorted, merged or pruned.
+//! by a minimum magnitude, plus past events the user picked from a search and events the user
+//! made (both kept across restarts), with the selection tracked by a stable handle so it
+//! survives the list being replaced, re-sorted, merged or pruned.
 
 use std::collections::HashSet;
 
@@ -9,10 +9,12 @@ use chrono::{DateTime, Duration, Utc};
 use feed::{FeedCmd, FeedHandle, FeedMsg, FeedStatus, Search, StoredEvent};
 use sim::Event;
 
+use crate::made::{MadeEvent, kind_label};
+
 /// Identity of an event version: `handle` stays put through new versions and merges, and
 /// `revision` changes whenever the event's physics does. Anything computed from an event is
-/// keyed by both. Built-in examples use handles from [`BUILTIN_HANDLE`] down; the feed's
-/// start at 1.
+/// keyed by both. Built-in examples use handles from [`BUILTIN_HANDLE`] down, the user's own
+/// events from [`MADE_HANDLE`] up; the feed's start at 1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct EventKey {
     pub handle: u64,
@@ -20,6 +22,7 @@ pub struct EventKey {
 }
 
 pub const BUILTIN_HANDLE: u64 = u64::MAX;
+pub const MADE_HANDLE: u64 = 1 << 63;
 
 /// Default minimum magnitude shown: smaller events are far too weak to be felt across the
 /// globe (decided by the user, 2026-10-14).
@@ -45,6 +48,8 @@ pub struct Listed {
     pub status: String,
     /// Kept by the user (a picked past event): listed whatever its magnitude.
     pub saved: bool,
+    /// Made by the user: listed whatever its magnitude, kept across restarts.
+    pub made: bool,
     /// No longer in the list (deleted by USGS, merged away, or forgotten); kept only while
     /// selected.
     pub gone: bool,
@@ -62,6 +67,20 @@ impl Listed {
             place: place.into(),
             status: "built-in".into(),
             saved: false,
+            made: false,
+            gone: false,
+        }
+    }
+
+    fn made(key: EventKey, m: MadeEvent) -> Self {
+        Self {
+            key,
+            usgs_type: kind_label(m.event.kind).into(),
+            event: m.event,
+            place: m.place,
+            status: "made by you".into(),
+            saved: false,
+            made: true,
             gone: false,
         }
     }
@@ -77,6 +96,7 @@ impl Listed {
             place: s.feed.place.clone(),
             status: s.feed.status.clone(),
             saved: s.saved,
+            made: false,
             gone: false,
         }
     }
@@ -98,6 +118,10 @@ pub struct EventList {
     pub status: Option<FeedStatus>,
     builtins: Vec<Listed>,
     feed_events: Vec<StoredEvent>,
+    /// The user's own events, oldest made first.
+    made: Vec<Listed>,
+    /// Handle and revision for the next made event or edit.
+    next_made: u64,
     min_mag: f64,
     selected: u64,
     /// The selected event as last seen, so it stays when the feed drops it.
@@ -131,6 +155,8 @@ impl EventList {
             status: None,
             builtins,
             feed_events: Vec::new(),
+            made: Vec::new(),
+            next_made: MADE_HANDLE,
             min_mag: DEFAULT_MIN_MAG,
             selected: first.key.handle,
             selected_copy: first,
@@ -192,10 +218,15 @@ impl EventList {
         self.search.message = (!sent).then(|| "the USGS feed is not running".to_owned());
     }
 
-    /// Select the event with USGS id `id` (`--event`): a built-in one at once, otherwise as
-    /// soon as the feed lists it or a lookup finds it.
+    /// Select the event with id `id` (`--event`): a built-in one or one the user made at once,
+    /// otherwise (a USGS id) as soon as the feed lists it or a lookup finds it.
     pub fn want(&mut self, id: String) {
-        if let Some(b) = self.builtins.iter().find(|b| b.event.ids.contains(&id)) {
+        if let Some(b) = self
+            .builtins
+            .iter()
+            .chain(&self.made)
+            .find(|b| b.event.ids.contains(&id))
+        {
             let handle = b.key.handle;
             self.select(handle);
             return;
@@ -381,6 +412,78 @@ impl EventList {
             .map(|s| s.handle)
     }
 
+    /// List `events` the user made earlier (read back at start). Selects nothing.
+    pub fn load_made(&mut self, events: Vec<MadeEvent>) -> bool {
+        for m in events {
+            let key = self.next_made_key();
+            self.made.push(Listed::made(key, m));
+        }
+        self.rebuild()
+    }
+
+    /// The user's events, to keep on disk.
+    pub fn made(&self) -> Vec<MadeEvent> {
+        self.made
+            .iter()
+            .map(|l| MadeEvent {
+                event: l.event.clone(),
+                place: l.place.clone(),
+            })
+            .collect()
+    }
+
+    /// List and select an event the user made; it gets a new id. Never moves the clock.
+    /// Returns its handle.
+    pub fn make(&mut self, mut m: MadeEvent) -> u64 {
+        let n = self
+            .made
+            .iter()
+            .filter_map(|l| l.event.id.strip_prefix("made-")?.parse::<u64>().ok())
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let id = format!("made-{n}");
+        m.event.ids = vec![id.clone()];
+        m.event.id = id;
+        let key = self.next_made_key();
+        self.made.push(Listed::made(key, m));
+        self.select(key.handle);
+        key.handle
+    }
+
+    /// Change the made event with `handle` (keeping its id), under a new revision so everything
+    /// computed from the old one is redone. Returns whether there was such an event.
+    pub fn update_made(&mut self, handle: u64, mut m: MadeEvent) -> bool {
+        let revision = self.next_made_key().revision;
+        let Some(l) = self.made.iter_mut().find(|l| l.key.handle == handle) else {
+            return false;
+        };
+        m.event.id = l.event.id.clone();
+        m.event.ids = l.event.ids.clone();
+        *l = Listed::made(EventKey { handle, revision }, m);
+        self.rebuild();
+        true
+    }
+
+    /// Delete the made event with `handle`. Like a forgotten past event, it stays (gone) while
+    /// selected. Returns whether there was such an event.
+    pub fn delete_made(&mut self, handle: u64) -> bool {
+        let before = self.made.len();
+        self.made.retain(|l| l.key.handle != handle);
+        self.rebuild();
+        self.made.len() != before
+    }
+
+    /// A fresh handle for a made event, and a revision no made event has had.
+    fn next_made_key(&mut self) -> EventKey {
+        let n = self.next_made;
+        self.next_made += 1;
+        EventKey {
+            handle: n,
+            revision: n,
+        }
+    }
+
     pub fn set_min_mag(&mut self, m: f64) -> bool {
         if m == self.min_mag {
             return false;
@@ -405,7 +508,10 @@ impl EventList {
             .iter()
             .cloned()
             .chain(self.feed_events.iter().map(Listed::from_feed))
-            .filter(|l| l.event.magnitude >= min_mag || l.saved || l.key.handle == selected)
+            .chain(self.made.iter().cloned())
+            .filter(|l| {
+                l.event.magnitude >= min_mag || l.saved || l.made || l.key.handle == selected
+            })
             .collect();
         match shown.iter().find(|l| l.key.handle == selected) {
             Some(l) => self.selected_copy = l.clone(),
@@ -721,5 +827,97 @@ mod tests {
         let after = l.shown()[0].key;
         assert_eq!(before.handle, after.handle);
         assert_ne!(before, after);
+    }
+
+    fn made_event(mins_ago: i64, mag: f64) -> MadeEvent {
+        MadeEvent {
+            event: Event::new(
+                "",
+                EventKind::NuclearTest,
+                now() - Duration::minutes(mins_ago),
+                41.3,
+                129.1,
+                1.0,
+                mag,
+            ),
+            place: "Test site".into(),
+        }
+    }
+
+    #[test]
+    fn making_an_event_lists_and_selects_it() {
+        let mut l = list();
+        feed_in(&mut l, vec![stored(1, 30, 4.0)]);
+        let rev = l.rev();
+        let h = l.make(made_event(5, 1.5));
+        assert!(h >= MADE_HANDLE);
+        assert_eq!(l.selected_handle(), h);
+        assert!(l.user_chose);
+        // Never a replay: making an event does not move the clock.
+        assert!(!l.take_replay());
+        assert!(l.rev() > rev);
+        // Listed below the minimum magnitude, newest first.
+        assert_eq!(handles(&l), [h, 1, BUILTIN_HANDLE]);
+        let shown = &l.shown()[0];
+        assert!(shown.made);
+        assert_eq!(shown.event.id, "made-1");
+        assert_eq!(shown.event.ids, ["made-1"]);
+        assert_eq!(shown.usgs_type, "nuclear test");
+        assert_eq!(shown.status, "made by you");
+        // Still listed when another event is selected.
+        l.select(1);
+        assert_eq!(handles(&l), [h, 1, BUILTIN_HANDLE]);
+        // The next one gets the next id; ids survive a save and reload.
+        l.make(made_event(2, 3.0));
+        let kept = l.made();
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[1].event.id, "made-2");
+        let mut again = list();
+        assert!(again.load_made(kept));
+        assert_eq!(again.selected_handle(), BUILTIN_HANDLE);
+        assert_eq!(again.shown().len(), 3);
+        again.make(made_event(1, 3.0));
+        assert_eq!(again.made()[2].event.id, "made-3");
+    }
+
+    #[test]
+    fn made_events_are_never_picked_or_followed_by_the_app() {
+        let mut l = list();
+        l.load_made(vec![made_event(10, 8.0)]);
+        feed_in(&mut l, vec![stored(2, 30, 3.0)]);
+        assert_eq!(l.selected_handle(), 2);
+        assert_eq!(l.feed_counts(), (1, 1));
+    }
+
+    #[test]
+    fn updating_a_made_event_keeps_handle_and_id_but_changes_the_key() {
+        let mut l = list();
+        let h = l.make(made_event(5, 5.0));
+        let before = l.shown()[0].clone();
+        let mut changed = made_event(5, 6.5);
+        changed.place = "Bigger".into();
+        assert!(l.update_made(h, changed));
+        let after = &l.shown()[0];
+        assert_eq!(after.key.handle, h);
+        assert_ne!(after.key, before.key);
+        assert_eq!(after.event.id, before.event.id);
+        assert_eq!(after.event.magnitude, 6.5);
+        assert_eq!(after.place, "Bigger");
+        assert_eq!(l.selected_handle(), h);
+        assert!(!l.update_made(12345, made_event(1, 1.0)));
+    }
+
+    #[test]
+    fn deleting_a_made_event() {
+        let mut l = list();
+        let h = l.make(made_event(5, 5.0));
+        // Deleted while selected: stays, gone, until something else is selected.
+        assert!(l.delete_made(h));
+        assert!(l.made().is_empty());
+        assert_eq!(handles(&l), [h, BUILTIN_HANDLE]);
+        assert!(l.shown()[0].gone);
+        l.select(BUILTIN_HANDLE);
+        assert_eq!(handles(&l), [BUILTIN_HANDLE]);
+        assert!(!l.delete_made(h));
     }
 }

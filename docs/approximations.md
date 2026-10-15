@@ -374,6 +374,16 @@ their sizes only roughly physical. The UI says so.
   waves would be under 1% of its size). An event's waves join a trace once its ray tubes are
   built, a moment after it appears.
 
+## Events you make
+
+- **Depth ranges by kind.** The form keeps each kind of source within a fixed depth range:
+  earthquake 0–700 km (the deepest the travel-time tables go), nuclear test 0–2 km, volcanic
+  tremor 0–20 km, landslide 0–1 km, impact at the surface (0 km). These are plausible limits
+  for display, not physical ones; USGS events are never clamped to them.
+- **One magnitude for every kind.** A made event's magnitude is used as moment magnitude
+  whatever its kind, exactly as for USGS events; the kind only changes the mix of P, S and
+  surface waves on the traces.
+
 ## USGS events: source kinds and the small-event filter
 
 - **Source kind from the USGS type** (decided by the user, 2026-10-14). USGS labels events

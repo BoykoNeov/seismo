@@ -27,6 +27,14 @@ pub struct SourceProfile {
 }
 
 impl EventKind {
+    pub const ALL: [EventKind; 5] = [
+        EventKind::Earthquake,
+        EventKind::NuclearTest,
+        EventKind::VolcanicTremor,
+        EventKind::Landslide,
+        EventKind::Impact,
+    ];
+
     pub fn profile(self) -> SourceProfile {
         let (p, s, surface, max_depth_km) = match self {
             // Shear faulting: S several times P, strong surface waves when shallow.
@@ -45,6 +53,13 @@ impl EventKind {
             min_depth_km: 0.0,
             max_depth_km,
         }
+    }
+}
+
+impl SourceProfile {
+    /// `depth_km` brought into the kind's depth range.
+    pub fn clamp_depth(&self, depth_km: f64) -> f64 {
+        depth_km.clamp(self.min_depth_km, self.max_depth_km)
     }
 }
 
@@ -172,6 +187,22 @@ mod tests {
         let e = e.with_ids(vec!["a".into(), "b".into()]).with_mag_type("mb");
         assert_eq!(e.ids, vec!["x".to_owned(), "a".into(), "b".into()]);
         assert_eq!(e.mag_type, "mb");
+    }
+
+    #[test]
+    fn depth_limits_by_kind() {
+        let quake = EventKind::Earthquake.profile();
+        assert_eq!(quake.clamp_depth(650.0), 650.0);
+        assert_eq!(quake.clamp_depth(900.0), 700.0);
+        assert_eq!(quake.clamp_depth(-3.0), 0.0);
+        // Explosions and slides stay shallow; an impact is at the surface.
+        assert_eq!(EventKind::NuclearTest.profile().clamp_depth(30.0), 2.0);
+        assert_eq!(EventKind::Landslide.profile().clamp_depth(30.0), 1.0);
+        assert_eq!(EventKind::Impact.profile().clamp_depth(10.0), 0.0);
+        for kind in EventKind::ALL {
+            let p = kind.profile();
+            assert!(p.min_depth_km <= p.max_depth_km, "{kind:?}");
+        }
     }
 
     #[test]
