@@ -1,8 +1,9 @@
 // Slice pass, background: the half-disc cross-section of the Earth along a great circle, with
-// the surface, layer boundaries, faint region fills, the 3D mantle's fast and slow rock,
+// the surface, layer boundaries, region fills, the 3D mantle's fast and slow rock,
 // distance ticks and the source.
 // The epicentre is at the left end of the flat edge, the antipode at the right end; epicentral
-// distance delta runs over the arc. All values are display-space intensities.
+// distance delta runs over the arc. Each feature is painted in its theme colour at its level
+// (display space) and the per-channel maximum is kept.
 
 struct Uniforms {
     // viewport width_px, height_px, disc centre x_px, centre y_px (y down)
@@ -14,10 +15,21 @@ struct Uniforms {
     rings_b: vec4<f32>,
     // boundary line brightness, region fill brightness, unused, unused
     style: vec4<f32>,
-    // phosphor colour rgb (display space), unused
-    phosphor: vec4<f32>,
-    // background rgb, unused
+    // theme colours, rgb (display space) + unused
     background: vec4<f32>,
+    // region fills: mantle, outer core, inner core, and their level weights (x, y, z)
+    fill_mantle: vec4<f32>,
+    fill_outer: vec4<f32>,
+    fill_inner: vec4<f32>,
+    fill_weights: vec4<f32>,
+    boundary_colour: vec4<f32>,
+    // the surface, ticks and the flat edge
+    chrome_colour: vec4<f32>,
+    source_colour: vec4<f32>,
+    // rock shading colours, and its levels: base, fast gain, slow gain (see `Theme`)
+    rock_fast: vec4<f32>,
+    rock_slow: vec4<f32>,
+    rock_levels: vec4<f32>,
     // rock shading on (0/1), display gain, Moho fraction (top of the shading; < 0 = surface),
     // bottom of the grid as a fraction of the Earth radius
     rock: vec4<f32>,
@@ -78,6 +90,12 @@ fn ring(r_px: f32, frac: f32, w: f32) -> f32 {
     return line(r_px - frac * u.disc.x, w);
 }
 
+// A feature of colour `c` at brightness `level` over the background; above 1 it overshoots for
+// the bloom.
+fn paint(c: vec4<f32>, level: f32) -> vec3<f32> {
+    return mix(u.background.rgb, c.rgb, clamp(level, 0.0, 1.0)) * max(1.0, level);
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let px = in.uv * u.view.xy;
@@ -88,23 +106,29 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // Angle from the +x axis; delta = 0 at the left (source), 180 at the right (antipode).
     let delta = 180.0 - degrees(atan2(max(rel.y, 0.0), rel.x));
 
-    var level = 0.0;
+    var colour = u.background.rgb;
     let upper = rel.y >= -0.5;
     if (upper && r <= 1.0) {
-        // Faint region fills: mantle, liquid outer core (brightest), inner core.
-        var fill = 0.35;
+        // Region fills: mantle, liquid outer core, inner core.
+        var fill = u.fill_mantle;
+        var weight = u.fill_weights.x;
         if (r < u.disc.z) {
-            fill = 1.0;
+            fill = u.fill_outer;
+            weight = u.fill_weights.y;
         }
         if (r < u.disc.w) {
-            fill = 0.6;
+            fill = u.fill_inner;
+            weight = u.fill_weights.z;
         }
-        level = u.style.y * fill;
-        // Fast rock brighter, slow rock darker, around a dim mantle level; +-1% spans the range.
+        colour = max(colour, paint(fill, u.style.y * weight));
+        // Fast and slow rock; +-1% spans the range.
         let top = select(1.0, u.rock.z, u.rock.z > 0.0);
         if (u.rock.x > 0.5 && r >= u.rock.w && r <= top) {
             let x = clamp(rock_lookup(r, delta) / 0.01, -1.0, 1.0);
-            level = max(level, u.rock.y * 0.09 * (1.0 + x));
+            let fast = u.rock_levels.x + u.rock_levels.y * x;
+            let slow = u.rock_levels.z * -x;
+            colour = max(colour, paint(u.rock_fast, u.rock.y * max(fast, 0.0)));
+            colour = max(colour, paint(u.rock_slow, u.rock.y * max(slow, 0.0)));
         }
     }
     if (upper) {
@@ -119,27 +143,27 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         b = max(b, ring(r_px, u.rings_b.z, 0.4));
         b = max(b, ring(r_px, u.rings_b.w, 0.4));
         let core = max(ring(r_px, u.disc.z, 0.6), ring(r_px, u.disc.w, 0.6));
-        level = max(level, u.style.x * max(0.6 * b, core));
+        colour = max(colour, paint(u.boundary_colour, u.style.x * max(0.6 * b, core)));
         // Surface.
-        level = max(level, 0.75 * line(r_px - radius, 0.8));
+        colour = max(colour, paint(u.chrome_colour, 0.75 * line(r_px - radius, 0.8)));
         // Distance ticks outside the surface: every 10 deg, longer every 30 deg.
         let step10 = abs(delta - 10.0 * round(delta / 10.0)) * PI / 180.0 * radius;
         let step30 = abs(delta - 30.0 * round(delta / 30.0)) * PI / 180.0 * radius;
         let out_px = r_px - radius;
         let t10 = line(step10, 0.4) * step(0.0, out_px) * step(out_px, 5.0);
         let t30 = line(step30, 0.6) * step(0.0, out_px) * step(out_px, 10.0);
-        level = max(level, 0.6 * max(t10, t30));
+        colour = max(colour, paint(u.chrome_colour, 0.6 * max(t10, t30)));
     }
     // The flat edge (a diameter through the centre): the vertical below the source on the
     // left, below the antipode on the right.
     if (abs(rel.x) <= radius) {
-        level = max(level, 0.3 * line(rel.y, 0.4));
+        colour = max(colour, paint(u.chrome_colour, 0.3 * line(rel.y, 0.4)));
     }
     // Source: a bright dot with a ring.
     let src = vec2<f32>(-u.disc.y * radius, 0.0);
     let ds = length(rel - src);
-    level = max(level, max(1.4 * (1.0 - smoothstep(2.5, 3.5, ds)), line(ds - 7.0, 0.5)));
+    let source = max(1.4 * (1.0 - smoothstep(2.5, 3.5, ds)), line(ds - 7.0, 0.5));
+    colour = max(colour, paint(u.source_colour, source));
 
-    let colour = mix(u.background.rgb, u.phosphor.rgb, clamp(level, 0.0, 1.0)) * max(1.0, level);
     return vec4<f32>(colour, 1.0);
 }

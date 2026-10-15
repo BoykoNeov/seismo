@@ -6,6 +6,7 @@ use std::fmt;
 
 use crate::lines::{DASH_SOLID, LineVertex, push_polyline};
 use crate::map::MapProjection;
+use crate::theme::Rgb;
 
 /// Coastline polylines, each a list of `[lat, lon]` in degrees.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -70,14 +71,16 @@ impl Coastlines {
     }
 }
 
-/// Line quads for every coastline in map pixels, `half_w` pixels either side of the line. A step of more than 180 deg in longitude
-/// would run across the whole map, so a line is broken there instead (Natural Earth cuts its
-/// lines at the antimeridian, so this is only a guard).
+/// Line quads for every coastline in map pixels, `half_w` pixels either side of the line, in
+/// `colour`. A step of more than 180 deg in longitude would run across the whole map, so a
+/// line is broken there instead (Natural Earth cuts its lines at the antimeridian, so this is
+/// only a guard).
 pub(crate) fn coast_vertices(
     projection: &MapProjection,
     coast: &Coastlines,
     half_w: f32,
     intensity: f32,
+    colour: Rgb,
 ) -> Vec<LineVertex> {
     let mut out = Vec::new();
     let mut run: Vec<[f32; 2]> = Vec::new();
@@ -85,12 +88,12 @@ pub(crate) fn coast_vertices(
         run.clear();
         for (k, &[lat, lon]) in line.iter().enumerate() {
             if k > 0 && (lon - line[k - 1][1]).abs() > 180.0 {
-                push_polyline(&mut out, &run, half_w, intensity, DASH_SOLID);
+                push_polyline(&mut out, &run, half_w, intensity, DASH_SOLID, colour);
                 run.clear();
             }
             run.push(projection.pixel(f64::from(lat), f64::from(lon)));
         }
-        push_polyline(&mut out, &run, half_w, intensity, DASH_SOLID);
+        push_polyline(&mut out, &run, half_w, intensity, DASH_SOLID, colour);
     }
     out
 }
@@ -133,7 +136,7 @@ mod tests {
         // Three points, the middle step crossing the antimeridian: two separate one-segment
         // pieces, no quad spanning the map.
         let c = Coastlines::from_bytes(b"0,170 0,179 0,-179 0,-170\n").unwrap();
-        let v = coast_vertices(&p, &c, 0.5, 0.5);
+        let v = coast_vertices(&p, &c, 0.5, 0.5, crate::PHOSPHOR);
         assert_eq!(v.len(), 2 * 6);
         let span = v.iter().fold((f32::MAX, f32::MIN), |(lo, hi), q| {
             (lo.min(q.pos[0]), hi.max(q.pos[0]))

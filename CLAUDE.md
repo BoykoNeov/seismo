@@ -3,7 +3,7 @@
 Desktop app in Rust. Simulates seismic wave propagation through a 1D Earth
 (ak135, optionally perturbed by a 3D mantle model) for user-entered or live USGS events, rendered as a world map, a
 vertical great-circle slice, and virtual seismograph traces, with a retro
-green-phosphor CRT look.
+green-phosphor CRT look or a modern dark multi-colour look (toggle).
 
 ## Workspace layout
 
@@ -230,15 +230,29 @@ place a kind name is shown. Making or editing one never moves the clock.
 
 ## Rendering and look
 
-- One palette: phosphor green `#33ff33` on `#050805`, with two dimmer greens for
-  secondary data. No other hues. Accents are brightness, not colour. Phases are
-  told apart by line style (solid/dashed/dotted) and labels as well as
-  brightness.
+- Two looks (decided 2026-10-15), a toggle at the top of the controls and `--look crt|modern`;
+  CRT is the default. Every pass paints each feature in its `render::Theme` colour at its
+  level (`mix(background, colour, level) * max(1, level)`) and keeps the per-channel maximum
+  over features, so a dim feature never darkens a bright one. Phases are told apart by line
+  style (solid/dashed/dotted) and labels in both looks.
+  - CRT: one palette, phosphor green `#33ff33` on `#050805`, with two dimmer greens for
+    secondary data; no other hues, accents are brightness. With one colour the maximum over
+    features equals the green at the largest level, so this look is pixel-identical to the
+    single-hue rendering it grew from; keep it so.
+  - Modern: dark slate `#0b0f17`; amber P, cyan S, violet Rayleigh, pink Love, coral
+    epicentre/source, light grey coast and chrome, blue fast / red slow rock (the tomography
+    convention), amber outer core; proportional overlay font and a slate/blue egui theme. Only
+    a soft glow as post-process (bloom from a higher threshold); no scanlines, barrel,
+    persistence or flicker.
+  - The theme is colours only (plus the CRT's fill weights and rock levels); per-look sliders
+    live in the app (`SliceStyle::for_look`, `CrtSettings::for_look`), map and trace sliders
+    are shared.
 - CRT pass is a single full-screen post-process over the scene only:
-  scanlines, bloom (half-resolution blur), slight barrel distortion, phosphor
+  scanlines, bloom (half-resolution blur, threshold per look), slight barrel distortion, phosphor
   persistence (decay buffer), subtle flicker. Every effect has a uniform so it
   can be disabled for debugging. egui controls are drawn on top, undistorted;
-  mouse picking on the scene undoes the barrel distortion.
+  mouse picking on the scene undoes the barrel distortion. The modern look runs the same pass
+  with only bloom on.
 - Persistence decays per real second (frame-rate independent) and is cleared on
   scrub/seek. Wave trails themselves are drawn analytically from `t - T` so
   they are correct at any speed and when scrubbing backwards; the decay buffer

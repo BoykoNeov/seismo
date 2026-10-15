@@ -14,6 +14,7 @@ use sim::{EARTH_RADIUS_KM, RayPhase, Wave};
 
 use crate::gpu;
 use crate::lines::{DASH_DASHED, DASH_DOTTED, DASH_SOLID, LineBatch, LineVertex, push_polyline};
+use crate::theme::{Look, Theme, vec4};
 
 /// Most boundaries the disc shader draws; matches `rings_a` + `rings_b` in `slice_disc.wgsl`.
 pub const MAX_SLICE_BOUNDARIES: usize = 8;
@@ -101,13 +102,31 @@ pub struct SliceStyle {
 }
 
 impl Default for SliceStyle {
+    /// The CRT look's values.
     fn default() -> Self {
-        Self {
-            front_width_px: 2.0,
-            path_width_px: 1.0,
-            boundary_brightness: 0.45,
-            fill_brightness: 0.06,
-            rock_gain: 1.0,
+        Self::for_look(Look::Crt)
+    }
+}
+
+impl SliceStyle {
+    /// Each look's tuned defaults: the CRT's fills are faint tints of its one green, the modern
+    /// look's are full region colours (its theme carries them already dimmed).
+    pub fn for_look(look: Look) -> Self {
+        match look {
+            Look::Crt => Self {
+                front_width_px: 2.0,
+                path_width_px: 1.0,
+                boundary_brightness: 0.45,
+                fill_brightness: 0.06,
+                rock_gain: 1.0,
+            },
+            Look::Modern => Self {
+                front_width_px: 2.0,
+                path_width_px: 1.0,
+                boundary_brightness: 0.6,
+                fill_brightness: 1.0,
+                rock_gain: 1.0,
+            },
         }
     }
 }
@@ -131,14 +150,28 @@ struct DiscUniforms {
     rings_a: [f32; 4],
     rings_b: [f32; 4],
     style: [f32; 4],
-    phosphor: [f32; 4],
     background: [f32; 4],
+    fill_mantle: [f32; 4],
+    fill_outer: [f32; 4],
+    fill_inner: [f32; 4],
+    fill_weights: [f32; 4],
+    boundary_colour: [f32; 4],
+    chrome_colour: [f32; 4],
+    source_colour: [f32; 4],
+    rock_fast: [f32; 4],
+    rock_slow: [f32; 4],
+    rock_levels: [f32; 4],
     rock: [f32; 4],
     rock_axis: [f32; 4],
 }
 
 /// Build the vertex list for every layer.
-fn build_vertices(view: &SliceView, scene: &SliceScene, style: &SliceStyle) -> Vec<LineVertex> {
+fn build_vertices(
+    view: &SliceView,
+    scene: &SliceScene,
+    style: &SliceStyle,
+    theme: &Theme,
+) -> Vec<LineVertex> {
     let mut out = Vec::new();
     let mut pts: Vec<[f32; 2]> = Vec::new();
     for layer in scene.layers {
@@ -149,13 +182,13 @@ fn build_vertices(view: &SliceView, scene: &SliceScene, style: &SliceStyle) -> V
                     .iter()
                     .map(|p| view.project(p.r_km, p.delta_deg)),
             );
-            let (width, dash) = match (layer.kind, line.wave) {
-                (StrokeKind::Front, Wave::P) => (style.front_width_px, DASH_SOLID),
-                (StrokeKind::Front, Wave::S) => (style.front_width_px, DASH_DASHED),
-                (StrokeKind::Path, _) => (style.path_width_px, DASH_DOTTED),
+            let (width, dash, colour) = match (layer.kind, line.wave) {
+                (StrokeKind::Front, Wave::P) => (style.front_width_px, DASH_SOLID, theme.p_front),
+                (StrokeKind::Front, Wave::S) => (style.front_width_px, DASH_DASHED, theme.s_front),
+                (StrokeKind::Path, _) => (style.path_width_px, DASH_DOTTED, theme.ray_path),
             };
             let intensity = layer.intensity * phase_gain(line.phase);
-            push_polyline(&mut out, &pts, 0.5 * width, intensity, dash);
+            push_polyline(&mut out, &pts, 0.5 * width, intensity, dash, colour);
         }
     }
     out
@@ -264,6 +297,7 @@ impl SlicePass {
         viewport: gpu::Viewport,
         scene: &SliceScene,
         style: &SliceStyle,
+        theme: &Theme,
     ) {
         let view = SliceView::new((viewport.w, viewport.h));
         let frac = |depth_km: f64| ((EARTH_RADIUS_KM - depth_km) / EARTH_RADIUS_KM) as f32;
@@ -278,8 +312,8 @@ impl SlicePass {
         for (r, b) in rings.iter_mut().zip(scene.boundaries) {
             *r = frac(b.depth_km);
         }
-        let [pr, pg, pb] = crate::PHOSPHOR;
-        let [br, bg, bb] = crate::BACKGROUND;
+        let [fw0, fw1, fw2] = theme.fill_weights;
+        let [rl0, rl1, rl2] = theme.rock_levels;
         let disc = DiscUniforms {
             view: [viewport.w, viewport.h, view.centre[0], view.centre[1]],
             disc: [
@@ -291,8 +325,17 @@ impl SlicePass {
             rings_a: [rings[0], rings[1], rings[2], rings[3]],
             rings_b: [rings[4], rings[5], rings[6], rings[7]],
             style: [style.boundary_brightness, style.fill_brightness, 0.0, 0.0],
-            phosphor: [pr, pg, pb, 0.0],
-            background: [br, bg, bb, 0.0],
+            background: vec4(theme.background),
+            fill_mantle: vec4(theme.fills[0]),
+            fill_outer: vec4(theme.fills[1]),
+            fill_inner: vec4(theme.fills[2]),
+            fill_weights: [fw0, fw1, fw2, 0.0],
+            boundary_colour: vec4(theme.boundary),
+            chrome_colour: vec4(theme.chrome),
+            source_colour: vec4(theme.epicentre),
+            rock_fast: vec4(theme.rock_fast),
+            rock_slow: vec4(theme.rock_slow),
+            rock_levels: [rl0, rl1, rl2, 0.0],
             rock: [
                 if scene.rock_shading { 1.0 } else { 0.0 },
                 style.rock_gain,
@@ -307,9 +350,14 @@ impl SlicePass {
             ],
         };
         queue.write_buffer(&self.disc_uniforms, 0, bytemuck::bytes_of(&disc));
-        let vertices = build_vertices(&view, scene, style);
-        self.lines
-            .upload(device, queue, (viewport.w, viewport.h), &vertices);
+        let vertices = build_vertices(&view, scene, style, theme);
+        self.lines.upload(
+            device,
+            queue,
+            (viewport.w, viewport.h),
+            theme.background,
+            &vertices,
+        );
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("slice"),
@@ -345,5 +393,65 @@ mod tests {
         assert_eq!(centre, v.centre);
         // The half-disc fits in the viewport.
         assert!(src[0] >= 0.0 && anti[0] <= 800.0 && top[1] >= 0.0 && v.centre[1] <= 400.0);
+    }
+
+    #[test]
+    fn fronts_take_their_wave_colour_and_paths_their_own() {
+        use sim::slice::SlicePoint;
+        let v = SliceView::new((800.0, 400.0));
+        let line = |wave: Wave| SliceLine {
+            phase: RayPhase::P,
+            wave,
+            points: vec![
+                SlicePoint {
+                    r_km: EARTH_RADIUS_KM,
+                    delta_deg: 0.0,
+                },
+                SlicePoint {
+                    r_km: EARTH_RADIUS_KM - 500.0,
+                    delta_deg: 10.0,
+                },
+            ],
+        };
+        let (p, s) = (vec![line(Wave::P)], vec![line(Wave::S)]);
+        let layers = [
+            SliceLayer {
+                lines: &p,
+                kind: StrokeKind::Front,
+                intensity: 1.0,
+            },
+            SliceLayer {
+                lines: &s,
+                kind: StrokeKind::Front,
+                intensity: 1.0,
+            },
+            SliceLayer {
+                lines: &p,
+                kind: StrokeKind::Path,
+                intensity: 0.3,
+            },
+        ];
+        let scene = SliceScene {
+            source_depth_km: 0.0,
+            boundaries: &[],
+            layers: &layers,
+            rock_shading: false,
+        };
+        let t = Theme::modern();
+        let out = build_vertices(&v, &scene, &SliceStyle::for_look(Look::Modern), &t);
+        assert_eq!(out.len(), 3 * 6);
+        assert_eq!(out[0].colour, vec4(t.p_front));
+        assert_eq!(out[6].colour, vec4(t.s_front));
+        assert_eq!(out[12].colour, vec4(t.ray_path));
+        assert_eq!(out[12].params[2], DASH_DOTTED);
+    }
+
+    #[test]
+    fn default_style_is_the_crt_look() {
+        assert_eq!(SliceStyle::default(), SliceStyle::for_look(Look::Crt));
+        assert!(
+            SliceStyle::for_look(Look::Modern).fill_brightness
+                > SliceStyle::for_look(Look::Crt).fill_brightness
+        );
     }
 }

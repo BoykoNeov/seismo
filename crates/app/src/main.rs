@@ -48,10 +48,48 @@ const SCRUB_AFTER_S: f64 = 90.0 * 60.0;
 /// Events older than this show their year in lists; newer ones show the time of day instead.
 const SHOW_YEAR_AFTER_DAYS: i64 = 300;
 
+// The CRT look's UI colours.
 const GREEN: egui::Color32 = egui::Color32::from_rgb(0x33, 0xff, 0x33);
 const GREEN_DIM: egui::Color32 = egui::Color32::from_rgb(0x1f, 0x99, 0x1f);
 const GREEN_DARK: egui::Color32 = egui::Color32::from_rgb(0x0e, 0x40, 0x0e);
 const BACKGROUND: egui::Color32 = egui::Color32::from_rgb(0x05, 0x08, 0x05);
+
+// The modern look's UI colours: slate panels, light text, a blue accent.
+const SLATE_BG: egui::Color32 = egui::Color32::from_rgb(0x0b, 0x0f, 0x17);
+const SLATE_PANEL: egui::Color32 = egui::Color32::from_rgb(0x12, 0x17, 0x21);
+const SLATE_WIDGET: egui::Color32 = egui::Color32::from_rgb(0x1c, 0x24, 0x31);
+const SLATE_HOVER: egui::Color32 = egui::Color32::from_rgb(0x26, 0x30, 0x41);
+const SLATE_ACTIVE: egui::Color32 = egui::Color32::from_rgb(0x2f, 0x3c, 0x52);
+const SLATE_LINE: egui::Color32 = egui::Color32::from_rgb(0x2a, 0x34, 0x44);
+const TEXT: egui::Color32 = egui::Color32::from_rgb(0xe3, 0xea, 0xf3);
+const TEXT_DIM: egui::Color32 = egui::Color32::from_rgb(0x93, 0xa1, 0xb5);
+const ACCENT: egui::Color32 = egui::Color32::from_rgb(0x5a, 0xb0, 0xff);
+const ACCENT_DIM: egui::Color32 = egui::Color32::from_rgb(0x24, 0x4a, 0x78);
+
+/// The colours of the text the app writes over the scene and in its notes, per look.
+#[derive(Debug, Clone, Copy)]
+struct UiPalette {
+    text: egui::Color32,
+    dim: egui::Color32,
+    background: egui::Color32,
+}
+
+impl UiPalette {
+    fn for_look(look: render::Look) -> Self {
+        match look {
+            render::Look::Crt => Self {
+                text: GREEN,
+                dim: GREEN_DIM,
+                background: BACKGROUND,
+            },
+            render::Look::Modern => Self {
+                text: TEXT,
+                dim: TEXT_DIM,
+                background: SLATE_BG,
+            },
+        }
+    }
+}
 
 fn main() -> eframe::Result {
     tracing_subscriber::fmt()
@@ -108,7 +146,8 @@ struct SliceSettings {
     labels: bool,
     /// Which wave's speed the mantle shading shows; `None` hides it.
     rock: Option<Wave>,
-    style: render::SliceStyle,
+    /// The look of the slice, per [`render::Look`] (its fills differ between the two).
+    style: [render::SliceStyle; 2],
 }
 
 impl Default for SliceSettings {
@@ -121,7 +160,7 @@ impl Default for SliceSettings {
             trail_fronts: 3,
             labels: true,
             rock: Some(Wave::S),
-            style: render::SliceStyle::default(),
+            style: render::Look::ALL.map(render::SliceStyle::for_look),
         }
     }
 }
@@ -163,7 +202,12 @@ struct SeismoApp {
     make_open: bool,
     renderer: render::SceneRenderer,
     texture_id: egui::TextureId,
-    crt: render::CrtSettings,
+    /// The look drawn: the CRT or the modern one.
+    look: render::Look,
+    /// The look was switched since the last frame: the CRT afterglow is dropped.
+    look_changed: bool,
+    /// Post-process settings per [`render::Look`]: the CRT's effects, the modern look's glow.
+    post: [render::CrtSettings; 2],
     style: render::MapStyle,
     started: Instant,
     last_frame: Instant,
@@ -210,9 +254,8 @@ impl SeismoApp {
             wgpu::FilterMode::Nearest,
         );
 
-        cc.egui_ctx.set_visuals(phosphor_visuals());
-
         // Debug/screenshot flags:
+        //   --look crt|modern   the look to start with (default crt)
         //   --start-offset <s>  replay the selected event (the built-in one, or one of yours
         //                       picked with --event): start the clock that many seconds after
         //                       its origin (without it the clock starts at now, live)
@@ -222,6 +265,11 @@ impl SeismoApp {
         //                       nobloom, nobarrel, noflicker
         let arg = |name: &str| std::env::args().skip_while(|a| a != name).nth(1);
         let flag = |name: &str| std::env::args().any(|a| a == name);
+        let look = match arg("--look").as_deref() {
+            Some("modern") => render::Look::Modern,
+            _ => render::Look::Crt,
+        };
+        cc.egui_ctx.set_visuals(visuals_for(look));
         let feed = feed::spawn(feed::FeedConfig {
             online: !flag("--offline"),
             ..Default::default()
@@ -337,7 +385,8 @@ impl SeismoApp {
         if let Some(az) = arg("--azimuth").and_then(|s| s.parse::<f64>().ok()) {
             slice.azimuth_deg = az.rem_euclid(360.0);
         }
-        let mut crt = render::CrtSettings::default();
+        let mut post = render::Look::ALL.map(render::CrtSettings::for_look);
+        let crt = &mut post[render::Look::Crt.index()];
         for flag in arg("--crt").unwrap_or_default().split(',') {
             match flag {
                 "off" => crt.enabled = false,
@@ -385,7 +434,9 @@ impl SeismoApp {
             keys,
             renderer,
             texture_id,
-            crt,
+            look,
+            look_changed: false,
+            post,
             style,
             started: now,
             last_frame: now,
@@ -394,6 +445,35 @@ impl SeismoApp {
             capture,
             capture_ui,
         })
+    }
+
+    /// The current look's UI colours.
+    fn pal(&self) -> UiPalette {
+        UiPalette::for_look(self.look)
+    }
+
+    /// The font of the text written over the scene: the CRT's typewriter, the modern look's
+    /// proportional face.
+    fn font(&self, size: f32) -> egui::FontId {
+        match self.look {
+            render::Look::Crt => egui::FontId::monospace(size),
+            render::Look::Modern => egui::FontId::proportional(size),
+        }
+    }
+
+    /// The current look's post-process settings.
+    fn post(&self) -> &render::CrtSettings {
+        &self.post[self.look.index()]
+    }
+
+    /// Switch looks: the UI theme follows, and the next frame starts without afterglow.
+    fn set_look(&mut self, ctx: &egui::Context, look: render::Look) {
+        if look == self.look {
+            return;
+        }
+        self.look = look;
+        self.look_changed = true;
+        ctx.set_visuals(visuals_for(look));
     }
 
     /// Index of the selected event in `sim.events`. The list always shows the selected event.
@@ -508,15 +588,18 @@ impl SeismoApp {
     }
 
     fn slice_controls(&mut self, ui: &mut egui::Ui) {
+        let pal = self.pal();
         let three_d = self.style.mantle_strength > 0.0;
+        let look = self.look;
         let s = &mut self.slice;
+        let style = &mut s.style[look.index()];
         ui.add(
             egui::Slider::new(&mut s.azimuth_deg, 0.0..=360.0)
                 .text("azimuth °")
                 .max_decimals(0),
         );
         ui.colored_label(
-            GREEN_DIM,
+            pal.dim,
             if three_d {
                 "Each azimuth cuts through different rock; the other half of the circle is at \
                  azimuth + 180°."
@@ -532,7 +615,7 @@ impl SeismoApp {
         });
         ui.add_enabled(
             s.rock.is_some() && three_d,
-            egui::Slider::new(&mut s.style.rock_gain, 0.0..=3.0).text("rock shading"),
+            egui::Slider::new(&mut style.rock_gain, 0.0..=3.0).text("rock shading"),
         );
         ui.horizontal_wrapped(|ui| {
             for (on, phase) in s.phases.iter_mut().zip(RayPhase::ALL) {
@@ -546,19 +629,34 @@ impl SeismoApp {
             egui::Slider::new(&mut s.paths_per_phase, 1..=40).text("rays/phase"),
         );
         ui.add(egui::Slider::new(&mut s.trail_fronts, 0..=6).text("trail fronts"));
-        ui.add(egui::Slider::new(&mut s.style.front_width_px, 1.0..=6.0).text("front px"));
-        ui.add(egui::Slider::new(&mut s.style.boundary_brightness, 0.0..=1.0).text("layers"));
-        ui.add(egui::Slider::new(&mut s.style.fill_brightness, 0.0..=0.3).text("fill"));
+        ui.add(egui::Slider::new(&mut style.front_width_px, 1.0..=6.0).text("front px"));
+        ui.add(egui::Slider::new(&mut style.boundary_brightness, 0.0..=1.0).text("layers"));
+        let fill_max = match look {
+            render::Look::Crt => 0.3,
+            render::Look::Modern => 1.0,
+        };
+        ui.add(egui::Slider::new(&mut style.fill_brightness, 0.0..=fill_max).text("fill"));
         ui.colored_label(
-            GREEN_DIM,
-            "Solid: P (compression). Dashed: S (shear). Dotted: ray paths. \
-             Shown: from the epicentre along the azimuth to the antipode. Brighter rock is \
-             faster (±1% spans the shading). With the 3D mantle on, rays bend through the \
-             rock in the plane of the cut.",
+            pal.dim,
+            match look {
+                render::Look::Crt => {
+                    "Solid: P (compression). Dashed: S (shear). Dotted: ray paths. \
+                     Shown: from the epicentre along the azimuth to the antipode. Brighter rock \
+                     is faster (±1% spans the shading). With the 3D mantle on, rays bend \
+                     through the rock in the plane of the cut."
+                }
+                render::Look::Modern => {
+                    "Amber solid: P (compression). Cyan dashed: S (shear). Dotted: ray paths. \
+                     Shown: from the epicentre along the azimuth to the antipode. Blue rock is \
+                     faster, red slower (±1% spans the shading). With the 3D mantle on, rays \
+                     bend through the rock in the plane of the cut."
+                }
+            },
         );
     }
 
     fn trace_controls(&mut self, ui: &mut egui::Ui) {
+        let pal = self.pal();
         let event = self.sim.events[self.sel()].clone();
         let tr = &mut self.traces;
         ui.checkbox(&mut tr.show, "show traces");
@@ -643,10 +741,10 @@ impl SeismoApp {
         }
         let tr = &self.traces;
         if let Some(note) = &tr.note {
-            ui.colored_label(GREEN, note);
+            ui.colored_label(pal.text, note);
         }
         ui.colored_label(
-            GREEN_DIM,
+            pal.dim,
             format!(
                 "Synthetic traces: display-plausible, not waveform-accurate. Up to {MAX_TRACES}. \
                  Click a station on the map to show or hide it. Triangles: real stations \
@@ -656,7 +754,8 @@ impl SeismoApp {
     }
 
     fn event_controls(&mut self, ui: &mut egui::Ui) {
-        ui.colored_label(GREEN_DIM, self.feed_line());
+        let pal = self.pal();
+        ui.colored_label(pal.dim, self.feed_line());
         let mut min_mag = self.events.min_mag();
         ui.add(
             egui::Slider::new(&mut min_mag, 0.0..=8.0)
@@ -666,7 +765,7 @@ impl SeismoApp {
         self.events.set_min_mag(min_mag);
         let (above, all) = self.events.feed_counts();
         ui.colored_label(
-            GREEN_DIM,
+            pal.dim,
             format!("USGS: {above} of {all} events at M{min_mag:.1}+ (past day, and the month's significant ones)"),
         );
         let selected = self.events.selected_handle();
@@ -710,7 +809,7 @@ impl SeismoApp {
             self.events.select(handle);
         }
         ui.colored_label(
-            GREEN_DIM,
+            pal.dim,
             format!(
                 "Until you pick an event, the app picks one and switches to each new \
                  M{FOLLOW_MIN_MAG:.0}+ quake. Picking from this list never moves the clock: use \
@@ -722,6 +821,7 @@ impl SeismoApp {
 
     /// The make-your-own-event form: a new event, or changes to the selected one of yours.
     fn make_controls(&mut self, ui: &mut egui::Ui) {
+        let pal = self.pal();
         let clock_now = self.clock.now();
         let f = &mut self.make_form;
         ui.horizontal(|ui| {
@@ -780,7 +880,7 @@ impl SeismoApp {
             );
         } else {
             ui.colored_label(
-                GREEN_DIM,
+                pal.dim,
                 format!(
                     "depth {:.0} km: a {} is at the surface",
                     f.depth_km,
@@ -862,10 +962,10 @@ impl SeismoApp {
             }
         }
         if let Some(m) = &f.message {
-            ui.colored_label(GREEN_DIM, m);
+            ui.colored_label(pal.dim, m);
         }
         ui.colored_label(
-            GREEN_DIM,
+            pal.dim,
             "Times are UTC, YYYY-MM-DD HH:MM:SS; empty = the clock's time, so the waves start \
              where the clock is. Making an event never moves the clock: use Replay from origin. \
              Each type has its own depth range and wave mix. Your events are kept across \
@@ -875,6 +975,7 @@ impl SeismoApp {
 
     /// The USGS past-event search: by dates and size, or by event code.
     fn search_controls(&mut self, ui: &mut egui::Ui) {
+        let pal = self.pal();
         let busy = self.events.search.busy;
         let f = &mut self.search_form;
         let mut search = None;
@@ -927,7 +1028,7 @@ impl SeismoApp {
             f.error.as_deref().or(self.events.search.message.as_deref())
         };
         if let Some(status) = status {
-            ui.colored_label(GREEN_DIM, status);
+            ui.colored_label(pal.dim, status);
         }
 
         let selected = self.events.selected_handle();
@@ -1003,6 +1104,7 @@ impl SeismoApp {
     }
 
     fn mantle_controls(&mut self, ui: &mut egui::Ui) {
+        let pal = self.pal();
         let strength = &mut self.style.mantle_strength;
         ui.add(
             egui::Slider::new(strength, 0.0..=MAX_MANTLE_STRENGTH)
@@ -1024,7 +1126,7 @@ impl SeismoApp {
             ui.label("Published model strength");
         } else if s > 1.0 {
             ui.colored_label(
-                GREEN,
+                pal.text,
                 egui::RichText::new(format!("EXAGGERATED ×{s:.1}")).strong(),
             );
         } else {
@@ -1032,13 +1134,13 @@ impl SeismoApp {
         }
         let status = self.mantle.status(self.selected_key());
         if !status.is_empty() {
-            ui.colored_label(GREEN_DIM, status);
+            ui.colored_label(pal.dim, status);
         }
         if s > 0.0 && !self.bent_current() {
-            ui.colored_label(GREEN_DIM, "Bending slice rays… (1D rays shown meanwhile)");
+            ui.colored_label(pal.dim, "Bending slice rays… (1D rays shown meanwhile)");
         }
         ui.colored_label(
-            GREEN_DIM,
+            pal.dim,
             "Fast and slow rock in the mantle (SP12RTS, Koelemeijer et al. 2016) moves the map \
              fronts earlier or later (times nudged along the 1D rays). In the slice the rays \
              bend through the rock.",
@@ -1046,12 +1148,21 @@ impl SeismoApp {
     }
 
     fn controls(&mut self, ui: &mut egui::Ui) {
+        let pal = self.pal();
         ui.horizontal(|ui| {
             ui.heading("SEISMO");
             ui.colored_label(
-                GREEN_DIM,
+                pal.dim,
                 format!("{:.0} fps", 1.0 / self.frame_time_s.max(1e-6)),
             );
+        });
+        ui.horizontal(|ui| {
+            ui.label("look:");
+            let mut look = self.look;
+            for l in render::Look::ALL {
+                ui.selectable_value(&mut look, l, l.name());
+            }
+            self.set_look(ui.ctx(), look);
         });
         ui.separator();
 
@@ -1126,15 +1237,18 @@ impl SeismoApp {
             "{:.3}°N {:.3}°E  {:.0} km",
             event.lat, event.lon, event.depth_km
         ));
-        ui.colored_label(GREEN_DIM, format!("{}  {}", event.id, listed.status));
+        ui.colored_label(pal.dim, format!("{}  {}", event.id, listed.status));
         if listed.gone {
-            ui.colored_label(GREEN, "No longer in the event list; shown while selected.");
+            ui.colored_label(
+                pal.text,
+                "No longer in the event list; shown while selected.",
+            );
         }
         let handle = listed.key.handle;
         let (mine, saved) = (listed.made && !listed.gone, listed.saved);
         if mine {
             ui.horizontal(|ui| {
-                ui.colored_label(GREEN_DIM, "Edit it under Make your own event.");
+                ui.colored_label(pal.dim, "Edit it under Make your own event.");
                 if ui
                     .small_button("Delete")
                     .on_hover_text("Take it off the list for good (it stays while selected)")
@@ -1147,7 +1261,7 @@ impl SeismoApp {
         }
         if saved {
             ui.horizontal(|ui| {
-                ui.colored_label(GREEN_DIM, "Kept from a search.");
+                ui.colored_label(pal.dim, "Kept from a search.");
                 if ui
                     .small_button("Forget")
                     .on_hover_text("Take it off the list (it stays while selected)")
@@ -1165,8 +1279,17 @@ impl SeismoApp {
         ui.monospace(format!("P   {}", fmt(p)));
         ui.monospace(format!("S   {}", fmt(s)));
         ui.colored_label(
-            GREEN_DIM,
-            "Map: P solid, S dashed (direct waves only); surface waves: Rayleigh glow, Love dotted.",
+            pal.dim,
+            match self.look {
+                render::Look::Crt => {
+                    "Map: P solid, S dashed (direct waves only); surface waves: Rayleigh glow, \
+                     Love dotted."
+                }
+                render::Look::Modern => {
+                    "Map: P amber (solid), S cyan (dashed), direct waves only; surface waves: \
+                     Rayleigh violet glow, Love pink dots."
+                }
+            },
         );
 
         ui.separator();
@@ -1192,10 +1315,69 @@ impl SeismoApp {
             .show(ui, |ui| self.mantle_controls(ui));
 
         ui.separator();
+        match self.look {
+            render::Look::Crt => self.crt_controls(ui),
+            render::Look::Modern => self.glow_controls(ui),
+        }
+
+        egui::CollapsingHeader::new("Seismographs")
+            .default_open(true)
+            .show(ui, |ui| self.trace_controls(ui));
+
+        egui::CollapsingHeader::new("Slice")
+            .default_open(true)
+            .show(ui, |ui| self.slice_controls(ui));
+
+        egui::CollapsingHeader::new("Map")
+            .default_open(false)
+            .show(ui, |ui| {
+                let s = &mut self.style;
+                ui.add(egui::Slider::new(&mut s.front_width_px, 1.0..=6.0).text("front px"));
+                ui.add(
+                    egui::Slider::new(&mut s.trail_s, 1.0..=300.0)
+                        .logarithmic(true)
+                        .text("trail s"),
+                );
+                ui.add(egui::Slider::new(&mut s.trail_strength, 0.0..=1.0).text("trail"));
+                ui.add(egui::Slider::new(&mut s.grid_brightness, 0.0..=1.0).text("grid"));
+                ui.add(egui::Slider::new(&mut s.coast_brightness, 0.0..=1.0).text("coast"));
+                ui.add(egui::Slider::new(&mut s.surface_brightness, 0.0..=1.0).text("surface"))
+                    .on_hover_text("Surface-wave bands; 0 hides them");
+                ui.checkbox(&mut s.coast_wide, "Wide coastlines")
+                    .on_hover_text(
+                        "Wider lines stay solid; thin ones are hatched by the scanlines",
+                    );
+            });
+    }
+
+    /// The modern look's only post-process: a soft glow around the bright fronts.
+    fn glow_controls(&mut self, ui: &mut egui::Ui) {
+        egui::CollapsingHeader::new("Glow")
+            .default_open(true)
+            .show(ui, |ui| {
+                let c = &mut self.post[render::Look::Modern.index()];
+                ui.checkbox(&mut c.bloom, "glow around bright lines");
+                ui.add_enabled(
+                    c.bloom,
+                    egui::Slider::new(&mut c.bloom_intensity, 0.0..=2.0).text("strength"),
+                );
+                ui.add_enabled(
+                    c.bloom,
+                    egui::Slider::new(&mut c.bloom_radius_px, 2.0..=24.0).text("radius px"),
+                );
+                ui.add_enabled(
+                    c.bloom,
+                    egui::Slider::new(&mut c.bloom_threshold, 0.0..=1.0).text("from brightness"),
+                )
+                .on_hover_text("Only parts brighter than this glow");
+            });
+    }
+
+    fn crt_controls(&mut self, ui: &mut egui::Ui) {
         egui::CollapsingHeader::new("CRT")
             .default_open(true)
             .show(ui, |ui| {
-                let c = &mut self.crt;
+                let c = &mut self.post[render::Look::Crt.index()];
                 ui.checkbox(&mut c.enabled, "enabled (master)");
                 ui.add_enabled_ui(c.enabled, |ui| {
                     ui.checkbox(&mut c.scanlines, "scanlines");
@@ -1235,41 +1417,13 @@ impl SeismoApp {
                     );
                 });
             });
-
-        egui::CollapsingHeader::new("Seismographs")
-            .default_open(true)
-            .show(ui, |ui| self.trace_controls(ui));
-
-        egui::CollapsingHeader::new("Slice")
-            .default_open(true)
-            .show(ui, |ui| self.slice_controls(ui));
-
-        egui::CollapsingHeader::new("Map")
-            .default_open(false)
-            .show(ui, |ui| {
-                let s = &mut self.style;
-                ui.add(egui::Slider::new(&mut s.front_width_px, 1.0..=6.0).text("front px"));
-                ui.add(
-                    egui::Slider::new(&mut s.trail_s, 1.0..=300.0)
-                        .logarithmic(true)
-                        .text("trail s"),
-                );
-                ui.add(egui::Slider::new(&mut s.trail_strength, 0.0..=1.0).text("trail"));
-                ui.add(egui::Slider::new(&mut s.grid_brightness, 0.0..=1.0).text("grid"));
-                ui.add(egui::Slider::new(&mut s.coast_brightness, 0.0..=1.0).text("coast"));
-                ui.add(egui::Slider::new(&mut s.surface_brightness, 0.0..=1.0).text("surface"))
-                    .on_hover_text("Surface-wave bands; 0 hides them");
-                ui.checkbox(&mut s.coast_wide, "Wide coastlines")
-                    .on_hover_text(
-                        "Wider lines stay solid; thin ones are hatched by the scanlines",
-                    );
-            });
     }
 
     fn scene(&mut self, ui: &mut egui::Ui, frame: &eframe::Frame, real_dt: f64) {
         let Some(rs) = frame.wgpu_render_state() else {
             return;
         };
+        let pal = self.pal();
 
         // A square block (the 2:1 map above the 2:1 slice), with the traces column filling the
         // rest of the width; without traces, the largest square, centred.
@@ -1539,9 +1693,12 @@ impl SeismoApp {
         let time = render::FrameTime {
             dt_s: real_dt as f32,
             time_s: self.started.elapsed().as_secs_f32(),
-            clear_persistence: seek != self.last_seek_count,
+            clear_persistence: seek != self.last_seek_count
+                || std::mem::take(&mut self.look_changed),
         };
         self.last_seek_count = seek;
+        let theme = render::Theme::for_look(self.look);
+        let post = *self.post();
 
         let mut encoder = rs
             .device
@@ -1552,15 +1709,16 @@ impl SeismoApp {
             &rs.device,
             &rs.queue,
             &mut encoder,
+            &theme,
             &events,
             &self.style,
             slice_line,
             &markers,
             &slice_scene,
-            &self.slice.style,
+            &self.slice.style[self.look.index()],
             &trace_scene,
             &self.trace_style,
-            &self.crt,
+            &post,
             time,
         );
         rs.queue.submit([encoder.finish()]);
@@ -1594,8 +1752,8 @@ impl SeismoApp {
                 self.scene_to_ui(rect, [12.0, map_h - 12.0]),
                 egui::Align2::LEFT_BOTTOM,
                 format!("3D MANTLE EXAGGERATED ×{:.1}", self.style.mantle_strength),
-                egui::FontId::monospace(13.0),
-                GREEN,
+                self.font(13.0),
+                pal.text,
             );
         }
     }
@@ -1604,7 +1762,7 @@ impl SeismoApp {
     fn scene_to_ui(&self, rect: egui::Rect, p: [f32; 2]) -> egui::Pos2 {
         let size = self.renderer.size();
         let scale = rect.width() / size.0.max(1) as f32;
-        let [x, y] = self.crt.scene_to_display(size, p);
+        let [x, y] = self.post().scene_to_display(size, p);
         rect.min + egui::vec2(x, y) * scale
     }
 
@@ -1614,7 +1772,7 @@ impl SeismoApp {
         let size = self.renderer.size();
         let scale = rect.width() / size.0.max(1) as f32;
         let d = (pos - rect.min) / scale;
-        self.crt.display_to_scene(size, [d.x, d.y])
+        self.post().display_to_scene(size, [d.x, d.y])
     }
 
     /// The map's projection and the UI point of a station's marker.
@@ -1646,8 +1804,9 @@ impl SeismoApp {
     /// the place of the event being made; hovering a marker names it. Shown stations are
     /// labelled on the map, and the event form's place is marked while the form is open.
     fn station_picking(&mut self, ui: &egui::Ui, rect: egui::Rect, response: &egui::Response) {
+        let pal = self.pal();
         let painter = ui.painter_at(rect);
-        let font = egui::FontId::monospace(11.0);
+        let font = self.font(11.0);
         for &i in &self.traces.chosen {
             let s = &self.traces.stations[i];
             painter.text(
@@ -1655,7 +1814,7 @@ impl SeismoApp {
                 egui::Align2::LEFT_CENTER,
                 &s.code,
                 font.clone(),
-                GREEN,
+                pal.text,
             );
         }
         if let Some(pos) = response.hover_pos()
@@ -1667,14 +1826,14 @@ impl SeismoApp {
                 egui::Align2::LEFT_BOTTOM,
                 format!("{}  {}", s.label(), s.name),
                 font,
-                GREEN,
+                pal.text,
             );
         }
         // The make-your-own form's place, and picking it: the next map click sets it.
         if self.make_open || self.make_form.picking {
             let f = &self.make_form;
             let c = self.map_to_ui(rect, f.lat, f.lon);
-            let stroke = egui::Stroke::new(1.5, GREEN);
+            let stroke = egui::Stroke::new(1.5, pal.text);
             for d in [egui::vec2(6.0, 6.0), egui::vec2(6.0, -6.0)] {
                 painter.line_segment([c - d, c + d], stroke);
             }
@@ -1685,8 +1844,8 @@ impl SeismoApp {
                     pos + egui::vec2(10.0, 10.0),
                     egui::Align2::LEFT_TOP,
                     "click: put your event here",
-                    egui::FontId::monospace(11.0),
-                    GREEN,
+                    self.font(11.0),
+                    pal.text,
                 );
             }
             if response.clicked()
@@ -1736,11 +1895,12 @@ impl SeismoApp {
         from: f64,
         to: f64,
     ) {
+        let pal = self.pal();
         let scale = rect.width() / self.renderer.size().0.max(1) as f32;
         let to_ui = |x: f32, y: f32| self.scene_to_ui(rect, [x + vp.x, y + vp.y]);
         let painter = ui.painter_at(rect);
-        let font = egui::FontId::monospace(11.0);
-        let small = egui::FontId::monospace(9.5);
+        let font = self.font(11.0);
+        let small = self.font(9.5);
         let component = match self.traces.component {
             Component::Vertical => "UP-DOWN (Z)",
             Component::Transverse => "SIDE-TO-SIDE (T)",
@@ -1756,14 +1916,14 @@ impl SeismoApp {
             egui::Align2::LEFT_TOP,
             format!("SEISMOGRAMS  {component}  {scaling}"),
             font.clone(),
-            GREEN,
+            pal.text,
         );
         painter.text(
             header + egui::vec2(0.0, 17.0),
             egui::Align2::LEFT_TOP,
             "synthetic: display-plausible, not waveform-accurate",
             small.clone(),
-            GREEN_DIM,
+            pal.dim,
         );
         if rows.is_empty() {
             painter.text(
@@ -1775,7 +1935,7 @@ impl SeismoApp {
                     "No stations chosen: click one on the map."
                 },
                 font.clone(),
-                GREEN_DIM,
+                pal.dim,
             );
         }
         for (i, row) in rows.iter().enumerate() {
@@ -1784,7 +1944,7 @@ impl SeismoApp {
                 egui::Align2::LEFT_TOP,
                 &row.text,
                 font.clone(),
-                GREEN_DIM,
+                pal.dim,
             );
             // Phase names at their ticks, skipping any that would overlap the previous one.
             let (base, half) = layout.band(i);
@@ -1800,7 +1960,7 @@ impl SeismoApp {
                     egui::Align2::LEFT_TOP,
                     name,
                     small.clone(),
-                    GREEN_DIM,
+                    pal.dim,
                 );
             }
         }
@@ -1825,7 +1985,7 @@ impl SeismoApp {
                 align,
                 label,
                 small.clone(),
-                GREEN_DIM,
+                pal.dim,
             );
         }
     }
@@ -1833,13 +1993,14 @@ impl SeismoApp {
     /// Text over the slice, drawn by egui on top of the scene (undistorted): distances along
     /// the surface, layer names, and phase names at their fronts.
     fn slice_labels(&self, ui: &egui::Ui, rect: egui::Rect, labels: &[PhaseLabel]) {
+        let pal = self.pal();
         let vp = self.renderer.slice_viewport();
         let view = render::SliceView::new((vp.w, vp.h));
         // Scene pixels to UI points.
         let to_ui = |p: [f32; 2]| self.scene_to_ui(rect, [p[0] + vp.x, p[1] + vp.y]);
         let at = |r_km: f64, delta_deg: f64| to_ui(view.project(r_km, delta_deg));
         let painter = ui.painter_at(rect);
-        let font = egui::FontId::monospace(11.0);
+        let font = self.font(11.0);
         let text = |pos: egui::Pos2, align: egui::Align2, s: &str, colour: egui::Color32| {
             painter.text(pos, align, s, font.clone(), colour);
         };
@@ -1847,20 +2008,20 @@ impl SeismoApp {
         // Distance from the epicentre, outside the arc; the two ends of the flat edge.
         for d in (0..=180).step_by(30) {
             let p = at(EARTH_RADIUS_KM * 1.08, f64::from(d));
-            text(p, egui::Align2::CENTER_CENTER, &format!("{d}°"), GREEN_DIM);
+            text(p, egui::Align2::CENTER_CENTER, &format!("{d}°"), pal.dim);
         }
         let under = egui::vec2(0.0, 14.0);
         text(
             at(EARTH_RADIUS_KM, 0.0) + under,
             egui::Align2::LEFT_CENTER,
             "EPICENTRE",
-            GREEN_DIM,
+            pal.dim,
         );
         text(
             at(EARTH_RADIUS_KM, 180.0) + under,
             egui::Align2::RIGHT_CENTER,
             "ANTIPODE",
-            GREEN_DIM,
+            pal.dim,
         );
 
         // Region and boundary names.
@@ -1873,20 +2034,20 @@ impl SeismoApp {
                 at(0.5 * (EARTH_RADIUS_KM + r_cmb), 90.0),
                 centre,
                 "MANTLE",
-                GREEN_DIM,
+                pal.dim,
             );
             text(
                 at(0.5 * (r_cmb + r_icb), 90.0),
                 centre,
                 "OUTER CORE (LIQUID)",
-                GREEN_DIM,
+                pal.dim,
             );
-            text(at(0.45 * r_icb, 90.0), centre, "INNER CORE", GREEN_DIM);
+            text(at(0.45 * r_icb, 90.0), centre, "INNER CORE", pal.dim);
         }
         for name in ["660", "CMB", "ICB"] {
             if let Some(d) = depth(name) {
                 let p = at(EARTH_RADIUS_KM - d, 125.0);
-                text(p, egui::Align2::LEFT_BOTTOM, name, GREEN_DIM);
+                text(p, egui::Align2::LEFT_BOTTOM, name, pal.dim);
             }
         }
 
@@ -1897,7 +2058,7 @@ impl SeismoApp {
                     p + egui::vec2(4.0, -4.0),
                     egui::Align2::LEFT_BOTTOM,
                     l.phase.name(),
-                    GREEN,
+                    pal.text,
                 );
             }
         }
@@ -1938,7 +2099,7 @@ impl eframe::App for SeismoApp {
         // The controls may have picked an event or changed the filter.
         self.sync_events();
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(BACKGROUND))
+            .frame(egui::Frame::new().fill(self.pal().background))
             .show(ui, |ui| self.scene(ui, frame, real_dt));
 
         self.capture_window(ui.ctx());
@@ -2042,6 +2203,55 @@ fn write_ppm(path: &std::path::Path, w: u32, h: u32, rgba: &[u8]) -> std::io::Re
             .flat_map(|p| [p[0], p[1], p[2]]),
     );
     std::fs::write(path, out)
+}
+
+/// The egui theme of a look.
+fn visuals_for(look: render::Look) -> egui::Visuals {
+    match look {
+        render::Look::Crt => phosphor_visuals(),
+        render::Look::Modern => modern_visuals(),
+    }
+}
+
+/// Slate panels, light text, blue accents, rounded widgets.
+fn modern_visuals() -> egui::Visuals {
+    let mut v = egui::Visuals::dark();
+    v.override_text_color = Some(TEXT);
+    v.panel_fill = SLATE_PANEL;
+    v.window_fill = SLATE_PANEL;
+    v.extreme_bg_color = SLATE_BG;
+    v.faint_bg_color = SLATE_WIDGET;
+    v.hyperlink_color = ACCENT;
+    v.selection.bg_fill = ACCENT_DIM;
+    v.selection.stroke = egui::Stroke::new(1.0, ACCENT);
+    v.slider_trailing_fill = true;
+    let radius = egui::CornerRadius::same(5);
+    for w in [
+        &mut v.widgets.noninteractive,
+        &mut v.widgets.inactive,
+        &mut v.widgets.hovered,
+        &mut v.widgets.active,
+        &mut v.widgets.open,
+    ] {
+        w.corner_radius = radius;
+        w.bg_fill = SLATE_WIDGET;
+        w.weak_bg_fill = SLATE_WIDGET;
+        w.bg_stroke = egui::Stroke::NONE;
+        w.fg_stroke = egui::Stroke::new(1.0, TEXT);
+    }
+    v.widgets.noninteractive.bg_fill = SLATE_PANEL;
+    v.widgets.noninteractive.weak_bg_fill = SLATE_PANEL;
+    v.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, SLATE_LINE);
+    v.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, TEXT_DIM);
+    v.widgets.hovered.bg_fill = SLATE_HOVER;
+    v.widgets.hovered.weak_bg_fill = SLATE_HOVER;
+    v.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, ACCENT_DIM);
+    v.widgets.active.bg_fill = SLATE_ACTIVE;
+    v.widgets.active.weak_bg_fill = SLATE_ACTIVE;
+    v.widgets.active.bg_stroke = egui::Stroke::new(1.0, ACCENT);
+    v.widgets.active.fg_stroke = egui::Stroke::new(1.5, egui::Color32::WHITE);
+    v.widgets.open.bg_fill = SLATE_ACTIVE;
+    v
 }
 
 fn phosphor_visuals() -> egui::Visuals {

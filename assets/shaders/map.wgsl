@@ -1,6 +1,7 @@
 // Map pass: equirectangular world grid, epicentres, and per-pixel wavefronts from the
-// travel-time table, nudged per event by 3D-mantle delays, plus dispersed surface-wave bands. All values written are display-space intensities (gamma-encoded green),
-// possibly > 1 for later bloom.
+// travel-time table, nudged per event by 3D-mantle delays, plus dispersed surface-wave bands.
+// Each feature is painted in its theme colour at its level (display space, possibly > 1 for
+// later bloom) and the per-channel maximum is kept, so a dim feature never darkens a bright one.
 
 const MAX_EVENTS: u32 = 32u;
 const MISSING: f32 = -1.0;
@@ -27,10 +28,15 @@ struct Uniforms {
     layers: vec4<f32>,
     // front line width (px), trail length (s), trail strength, grid brightness
     style: vec4<f32>,
-    // phosphor colour rgb (display space), background level
-    phosphor: vec4<f32>,
-    // background rgb, unused
+    // theme colours, rgb (display space) + unused: background, then one per feature
     background: vec4<f32>,
+    grid_colour: vec4<f32>,
+    p_colour: vec4<f32>,
+    s_colour: vec4<f32>,
+    rayleigh_colour: vec4<f32>,
+    love_colour: vec4<f32>,
+    epicentre_colour: vec4<f32>,
+    circle_colour: vec4<f32>,
     // slice great circle: epicentre lat_deg, lon_deg, azimuth_deg, enabled (0/1)
     slice: vec4<f32>,
     // delay grid: dist_step_deg, dist_count, az_step_deg, az_count
@@ -197,13 +203,13 @@ fn surface_train(layer: i32, path: f32, t: f32) -> f32 {
     return mix(mix(c00, c10, fx), mix(c01, c11, fx), fy);
 }
 
-// Surface-wave bands at this pixel (`px` = pixel position): Rayleigh as a smooth glow, Love as
-// dots on a fixed 4-pixel grid (fixed in pixels, so they never beat into a moire); the second
-// pass (the long way round, R2/L2) dimmer. Squaring the brightness keeps the bands' faint
-// edges dark, so a wide train shows its strongest part.
-fn surface_glow(dist: f32, t: f32, px: vec2<f32>) -> f32 {
+// Surface-wave bands at this pixel (`px` = pixel position), as (Rayleigh, Love): Rayleigh as
+// a smooth glow, Love as dots on a fixed 4-pixel grid (fixed in pixels, so they never beat into
+// a moire); the second pass (the long way round, R2/L2) dimmer. Squaring the brightness keeps
+// the bands' faint edges dark, so a wide train shows its strongest part.
+fn surface_glow(dist: f32, t: f32, px: vec2<f32>) -> vec2<f32> {
     if (u.surface.w <= 0.0 || t <= 0.0) {
-        return 0.0;
+        return vec2<f32>(0.0);
     }
     let back = 360.0 - dist;
     let r1 = surface_train(0, dist, t);
@@ -216,12 +222,18 @@ fn surface_glow(dist: f32, t: f32, px: vec2<f32>) -> f32 {
         let cell = fract(floor(px) / 4.0);
         l = l * select(0.0, 1.0, cell.x < 0.3 && cell.y < 0.3);
     }
-    return u.surface.w * max(r, l);
+    return u.surface.w * vec2<f32>(r, l);
 }
 
 fn grid_line(coord: f32, spacing: f32, px: f32) -> f32 {
     let d = abs(fract(coord / spacing + 0.5) - 0.5) * spacing;
     return 1.0 - smoothstep(0.0, px, d);
+}
+
+// A feature of colour `c` at brightness `level` over the background; above 1 it overshoots for
+// the bloom.
+fn paint(c: vec4<f32>, level: f32) -> vec3<f32> {
+    return mix(u.background.rgb, c.rgb, clamp(level, 0.0, 1.0)) * max(1.0, level);
 }
 
 @fragment
@@ -231,13 +243,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // Size of one pixel in degrees of longitude/latitude on the map.
     let px = vec2<f32>(360.0 / u.view.x, 180.0 / u.view.y);
 
-    var level = 0.0;
+    var colour = u.background.rgb;
 
     // Graticule: 30 deg majors, 10 deg minors, equator brighter.
     let major = max(grid_line(lon, 30.0, px.x), grid_line(lat, 30.0, px.y));
     let minor = max(grid_line(lon, 10.0, px.x), grid_line(lat, 10.0, px.y));
     let equator = 1.0 - smoothstep(0.0, px.y * 1.5, abs(lat));
-    level = max(level, u.style.w * max(max(0.35 * minor, 0.7 * major), equator));
+    let grid = u.style.w * max(max(0.35 * minor, 0.7 * major), equator);
+    colour = max(colour, paint(u.grid_colour, grid));
 
     let n = u32(u.view.z);
     for (var k = 0u; k < min(n, MAX_EVENTS); k = k + 1u) {
@@ -251,16 +264,18 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let dl_s = select(-1, dl + 1, dl >= 0);
         let p = phase_glow(i32(u.layers.x), dl, e.b.z, e.a.z, dist, az, e.a.w, px_deg, 0.0);
         let s = phase_glow(i32(u.layers.y), dl_s, e.b.z, e.a.z, dist, az, e.a.w, px_deg, 3.0);
-        var bands = 0.0;
+        colour = max(colour, paint(u.p_colour, p));
+        colour = max(colour, paint(u.s_colour, 0.8 * s));
         if (e.b.w > 0.5) {
-            bands = surface_glow(dist, e.a.w, in.pos.xy);
+            let bands = surface_glow(dist, e.a.w, in.pos.xy);
+            colour = max(colour, paint(u.rayleigh_colour, bands.x));
+            colour = max(colour, paint(u.love_colour, bands.y));
         }
-        level = max(level, max(max(p, 0.8 * s), bands));
         // Epicentre: bright dot plus a ring.
         let r = dist / px_deg;
         let dot = 1.0 - smoothstep(2.0, 3.0, r);
         let ring = 1.0 - smoothstep(0.5, 1.5, abs(r - 7.0));
-        level = max(level, max(1.4 * dot, ring));
+        colour = max(colour, paint(u.epicentre_colour, max(1.4 * dot, ring)));
     }
 
     // The slice's great circle, epicentre to antipode: dotted, brighter every 30 deg.
@@ -275,10 +290,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
             let to_tick = abs(da.x - 30.0 * round(da.x / 30.0));
             let tick = (1.0 - smoothstep(2.0 * px_deg, 3.0 * px_deg, to_tick))
                 * (1.0 - smoothstep(3.0 * px_deg, 4.0 * px_deg, cross));
-            level = max(level, max(0.55 * on_line * dots, 0.9 * tick));
+            colour = max(colour, paint(u.circle_colour, max(0.55 * on_line * dots, 0.9 * tick)));
         }
     }
 
-    let colour = mix(u.background.rgb, u.phosphor.rgb, clamp(level, 0.0, 1.0)) * max(1.0, level);
     return vec4<f32>(colour, 1.0);
 }

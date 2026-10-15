@@ -1,8 +1,8 @@
-//! `render`: wgpu passes (map, slice, traces, CRT post-process).
+//! `render`: wgpu passes (map, slice, traces, post-process).
 //! Allowed dependencies: `sim` (tables via `sim::tables`), wgpu, bytemuck. No egui, no I/O.
 //!
 //! Colours are display-space (gamma-encoded) values written to non-sRGB targets, so
-//! `#33ff33` lands on screen as `#33ff33`.
+//! `#33ff33` lands on screen as `#33ff33`. Which colours: a [`Theme`], one per [`Look`].
 
 mod coast;
 mod crt;
@@ -10,6 +10,7 @@ mod gpu;
 mod lines;
 mod map;
 mod slice;
+mod theme;
 mod traces;
 
 pub use coast::{CoastError, Coastlines};
@@ -22,6 +23,7 @@ pub use slice::{
     MAX_SLICE_BOUNDARIES, SliceLayer, SlicePass, SliceScene, SliceStyle, SliceView, StrokeKind,
     phase_gain,
 };
+pub use theme::{Look, Rgb, Theme};
 pub use traces::{TraceLayout, TracePass, TraceRow, TraceScene, TraceStyle};
 
 /// Phosphor green `#33ff33`, display space.
@@ -140,13 +142,15 @@ impl SceneRenderer {
         self.crt.read_output(device, queue)
     }
 
-    /// Encode one frame: map, slice and traces into the scene texture, then CRT into the output.
+    /// Encode one frame: map, slice and traces into the scene texture in the theme's colours,
+    /// then the post-process into the output.
     #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
+        theme: &Theme,
         events: &[MapEventInstance],
         style: &MapStyle,
         slice_line: Option<MapSliceLine>,
@@ -167,6 +171,7 @@ impl SceneRenderer {
             map_vp,
             events,
             style,
+            theme,
             slice_line,
             markers,
         );
@@ -178,6 +183,7 @@ impl SceneRenderer {
             slice_vp,
             slice,
             slice_style,
+            theme,
         );
         if let Some(vp) = self.traces_viewport() {
             self.traces.draw(
@@ -188,6 +194,7 @@ impl SceneRenderer {
                 vp,
                 traces,
                 trace_style,
+                theme,
             );
         }
         self.crt.draw(queue, encoder, self.size, crt, time);

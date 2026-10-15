@@ -4,6 +4,7 @@
 
 use crate::gpu;
 use crate::lines::{DASH_DASHED, DASH_DOTTED, DASH_SOLID, LineBatch, LineVertex, push_polyline};
+use crate::theme::Theme;
 
 /// Where the rows sit in a viewport of a given size. Shared with the app, which writes the
 /// labels over it.
@@ -124,11 +125,17 @@ impl Default for TraceStyle {
     }
 }
 
-fn build_vertices(layout: &TraceLayout, scene: &TraceScene, style: &TraceStyle) -> Vec<LineVertex> {
+fn build_vertices(
+    layout: &TraceLayout,
+    scene: &TraceScene,
+    style: &TraceStyle,
+    theme: &Theme,
+) -> Vec<LineVertex> {
     let mut out = Vec::new();
     let (x0, x1) = layout.plot_x();
     let top = layout.label_y(0);
     let bottom = layout.axis_y();
+    let chrome = theme.chrome;
     // A dim rule down the left edge, separating the column from the map and slice.
     push_polyline(
         &mut out,
@@ -136,6 +143,7 @@ fn build_vertices(layout: &TraceLayout, scene: &TraceScene, style: &TraceStyle) 
         0.5,
         0.3,
         DASH_SOLID,
+        chrome,
     );
     for &f in scene.grid {
         let x = layout.x_at(f);
@@ -145,6 +153,7 @@ fn build_vertices(layout: &TraceLayout, scene: &TraceScene, style: &TraceStyle) 
             0.5,
             style.grid_brightness,
             DASH_DOTTED,
+            chrome,
         );
         push_polyline(
             &mut out,
@@ -152,6 +161,7 @@ fn build_vertices(layout: &TraceLayout, scene: &TraceScene, style: &TraceStyle) 
             0.5,
             0.5,
             DASH_SOLID,
+            chrome,
         );
     }
     push_polyline(
@@ -160,6 +170,7 @@ fn build_vertices(layout: &TraceLayout, scene: &TraceScene, style: &TraceStyle) 
         0.5,
         0.4,
         DASH_SOLID,
+        chrome,
     );
 
     let mut pts: Vec<[f32; 2]> = Vec::new();
@@ -171,6 +182,7 @@ fn build_vertices(layout: &TraceLayout, scene: &TraceScene, style: &TraceStyle) 
             0.5,
             style.baseline_brightness,
             DASH_SOLID,
+            chrome,
         );
         for &f in row.ticks {
             let x = layout.x_at(f);
@@ -180,6 +192,7 @@ fn build_vertices(layout: &TraceLayout, scene: &TraceScene, style: &TraceStyle) 
                 0.5,
                 0.6,
                 DASH_SOLID,
+                theme.tick,
             );
         }
         let n = layout.columns();
@@ -201,11 +214,19 @@ fn build_vertices(layout: &TraceLayout, scene: &TraceScene, style: &TraceStyle) 
             0.5 * style.trace_width_px,
             style.trace_brightness,
             DASH_SOLID,
+            theme.trace,
         );
     }
     if let Some(f) = scene.pen.filter(|f| (0.0..=1.0).contains(f)) {
         let x = layout.x_at(f);
-        push_polyline(&mut out, &[[x, top], [x, bottom]], 0.5, 0.45, DASH_DASHED);
+        push_polyline(
+            &mut out,
+            &[[x, top], [x, bottom]],
+            0.5,
+            0.45,
+            DASH_DASHED,
+            chrome,
+        );
     }
     out
 }
@@ -232,11 +253,17 @@ impl TracePass {
         viewport: gpu::Viewport,
         scene: &TraceScene,
         style: &TraceStyle,
+        theme: &Theme,
     ) {
         let layout = TraceLayout::new((viewport.w, viewport.h), scene.rows.len(), scene.px_per_pt);
-        let vertices = build_vertices(&layout, scene, style);
-        self.lines
-            .upload(device, queue, (viewport.w, viewport.h), &vertices);
+        let vertices = build_vertices(&layout, scene, style, theme);
+        self.lines.upload(
+            device,
+            queue,
+            (viewport.w, viewport.h),
+            theme.background,
+            &vertices,
+        );
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("traces"),
             color_attachments: &[gpu::color_attachment_load(target)],
@@ -288,7 +315,7 @@ mod tests {
             grid: &[],
             px_per_pt: 1.0,
         };
-        let v = build_vertices(&l, &scene, &TraceStyle::default());
+        let v = build_vertices(&l, &scene, &TraceStyle::default(), &Theme::crt());
         let (base, half) = l.band(0);
         // Every vertex stays within the band plus the line's soft edge.
         let ext = 0.5 * TraceStyle::default().trace_width_px + 1.0;

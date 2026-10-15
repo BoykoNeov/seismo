@@ -24,6 +24,9 @@ pub struct CrtSettings {
     pub bloom_intensity: f32,
     /// Glow radius: Gaussian sigma in scene pixels.
     pub bloom_radius_px: f32,
+    /// Channel values at or below this do not glow (the background and faint shading stay
+    /// clean).
+    pub bloom_threshold: f32,
     pub barrel: bool,
     /// Bulge of the glass: 0 is flat; the corners move out by about this fraction.
     pub barrel_amount: f32,
@@ -33,6 +36,7 @@ pub struct CrtSettings {
 }
 
 impl Default for CrtSettings {
+    /// The CRT look: every effect on.
     fn default() -> Self {
         Self {
             enabled: true,
@@ -44,6 +48,7 @@ impl Default for CrtSettings {
             bloom: true,
             bloom_intensity: 0.8,
             bloom_radius_px: 8.0,
+            bloom_threshold: 0.1,
             barrel: true,
             barrel_amount: 0.04,
             flicker: true,
@@ -52,12 +57,35 @@ impl Default for CrtSettings {
     }
 }
 
-/// Channel values at or below this do not glow (the background and faint shading stay clean).
-const BLOOM_THRESHOLD: f32 = 0.1;
 /// Flicker picks a new brightness this many times per real second, whatever the frame rate.
 const FLICKER_HZ: f32 = 24.0;
 
 impl CrtSettings {
+    /// The modern look's post-process: flat glass, steady, no afterglow; only a soft glow
+    /// around the bright fronts (the threshold keeps the region fills and chrome out of it).
+    pub fn modern() -> Self {
+        Self {
+            enabled: true,
+            scanlines: false,
+            persistence: false,
+            bloom: true,
+            bloom_intensity: 0.45,
+            bloom_radius_px: 7.0,
+            bloom_threshold: 0.45,
+            barrel: false,
+            flicker: false,
+            ..Self::default()
+        }
+    }
+
+    /// The settings a look starts with.
+    pub fn for_look(look: crate::Look) -> Self {
+        match look {
+            crate::Look::Crt => Self::default(),
+            crate::Look::Modern => Self::modern(),
+        }
+    }
+
     /// Factor applied to last frame's persistence buffer after `real_dt_s` real seconds:
     /// decay is per real second, so it is independent of frame rate and of sim speed.
     pub fn persistence_decay(&self, real_dt_s: f32) -> f32 {
@@ -417,7 +445,7 @@ impl CrtPass {
             persistence: [flag(on(s.persistence)), decay, 0.0, 0.0],
             bloom: [
                 if bloom { s.bloom_intensity } else { 0.0 },
-                BLOOM_THRESHOLD,
+                s.bloom_threshold.max(0.0),
                 // Scene pixels to half-res pixels.
                 s.bloom_radius_px * 0.5,
                 0.0,
@@ -561,6 +589,22 @@ mod tests {
                 assert!(close(back, p, 1e-2), "{p:?} -> {d:?} -> {back:?}");
             }
         }
+    }
+
+    #[test]
+    fn modern_post_is_flat_and_steady() {
+        let m = CrtSettings::modern();
+        assert!(!m.scanlines && !m.persistence && !m.barrel && !m.flicker);
+        assert_eq!(m.flicker_gain(2.5), 1.0);
+        let p = [100.0, 200.0];
+        assert_eq!(m.scene_to_display(SIZE, p), p);
+        // Its glow starts higher up, so only bright features get one.
+        assert!(m.bloom_threshold > CrtSettings::default().bloom_threshold);
+        assert_eq!(CrtSettings::for_look(crate::Look::Modern), m);
+        assert_eq!(
+            CrtSettings::for_look(crate::Look::Crt),
+            CrtSettings::default()
+        );
     }
 
     #[test]

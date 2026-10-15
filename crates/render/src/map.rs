@@ -7,6 +7,7 @@ use wgpu::util::DeviceExt;
 use crate::coast::{Coastlines, coast_vertices};
 use crate::gpu;
 use crate::lines::{DASH_SOLID, LineBatch, LineVertex, push_polyline};
+use crate::theme::{Rgb, Theme, vec4};
 use sim::mantle::{
     DELAY_AZ_COUNT, DELAY_AZ_STEP_DEG, DELAY_DIST_COUNT, DELAY_DIST_STEP_DEG, DELAY_PHASES,
     DelayGrid,
@@ -90,11 +91,19 @@ pub struct MapMarker {
     pub user: bool,
 }
 
-fn marker_vertices(projection: &MapProjection, markers: &[MapMarker]) -> Vec<LineVertex> {
+fn marker_vertices(
+    projection: &MapProjection,
+    markers: &[MapMarker],
+    theme: &Theme,
+) -> Vec<LineVertex> {
     let mut out = Vec::new();
     for m in markers {
         let [x, y] = projection.pixel(f64::from(m.lat), f64::from(m.lon));
-        let (r, intensity) = if m.selected { (6.0, 1.0) } else { (3.5, 0.45) };
+        let (r, intensity, colour) = if m.selected {
+            (6.0, 1.0, theme.marker_selected)
+        } else {
+            (3.5, 0.45, theme.marker)
+        };
         let shape: Vec<[f32; 2]> = if m.user {
             vec![[x, y - r], [x + r, y], [x, y + r], [x - r, y], [x, y - r]]
         } else {
@@ -106,7 +115,7 @@ fn marker_vertices(projection: &MapProjection, markers: &[MapMarker]) -> Vec<Lin
                 [x, y - r],
             ]
         };
-        push_polyline(&mut out, &shape, 0.5, intensity, DASH_SOLID);
+        push_polyline(&mut out, &shape, 0.5, intensity, DASH_SOLID, colour);
     }
     out
 }
@@ -164,8 +173,14 @@ struct Uniforms {
     dist_axis: [f32; 4],
     layers: [f32; 4],
     style: [f32; 4],
-    phosphor: [f32; 4],
     background: [f32; 4],
+    grid_colour: [f32; 4],
+    p_colour: [f32; 4],
+    s_colour: [f32; 4],
+    rayleigh_colour: [f32; 4],
+    love_colour: [f32; 4],
+    epicentre_colour: [f32; 4],
+    circle_colour: [f32; 4],
     slice: [f32; 4],
     delay_axis: [f32; 4],
     mantle: [f32; 4],
@@ -178,8 +193,8 @@ pub struct MapPass {
     markers: LineBatch,
     coast: LineBatch,
     coastlines: Coastlines,
-    /// Map size, brightness and half width the coastline vertices were last built for.
-    coast_built: Option<((f32, f32), f32, f32)>,
+    /// Map size, brightness, half width and colour the coastline vertices were last built for.
+    coast_built: Option<((f32, f32), f32, f32, Rgb)>,
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     delay_texture: wgpu::Texture,
@@ -385,6 +400,7 @@ impl MapPass {
         viewport: gpu::Viewport,
         events: &[MapEventInstance],
         style: &MapStyle,
+        theme: &Theme,
         slice: Option<MapSliceLine>,
         markers: &[MapMarker],
     ) {
@@ -395,7 +411,8 @@ impl MapPass {
             device,
             queue,
             projection.size,
-            &marker_vertices(&projection, markers),
+            theme.background,
+            &marker_vertices(&projection, markers, theme),
         );
         // The coastlines only change with the map's size or their style, so their vertices are
         // rebuilt then.
@@ -404,7 +421,7 @@ impl MapPass {
         } else {
             COAST_HALF_WIDTH_PX
         };
-        let coast_key = (projection.size, style.coast_brightness, half_w);
+        let coast_key = (projection.size, style.coast_brightness, half_w, theme.coast);
         if self.coast_built != Some(coast_key) {
             let vertices = if style.coast_brightness > 0.0 {
                 coast_vertices(
@@ -412,11 +429,13 @@ impl MapPass {
                     &self.coastlines,
                     half_w,
                     style.coast_brightness,
+                    theme.coast,
                 )
             } else {
                 Vec::new()
             };
-            self.coast.upload(device, queue, projection.size, &vertices);
+            self.coast
+                .upload(device, queue, projection.size, theme.background, &vertices);
             self.coast_built = Some(coast_key);
         }
         let n = events.len().min(MAX_MAP_EVENTS);
@@ -433,8 +452,6 @@ impl MapPass {
                 ],
             };
         }
-        let [pr, pg, pb] = crate::PHOSPHOR;
-        let [br, bg, bb] = crate::BACKGROUND;
         let uniforms = Uniforms {
             view: [viewport.w, viewport.h, n as f32, 0.0],
             depth_axis: self.depth_axis,
@@ -446,8 +463,14 @@ impl MapPass {
                 style.trail_strength,
                 style.grid_brightness,
             ],
-            phosphor: [pr, pg, pb, 0.0],
-            background: [br, bg, bb, 0.0],
+            background: vec4(theme.background),
+            grid_colour: vec4(theme.grid),
+            p_colour: vec4(theme.p_front),
+            s_colour: vec4(theme.s_front),
+            rayleigh_colour: vec4(theme.rayleigh),
+            love_colour: vec4(theme.love),
+            epicentre_colour: vec4(theme.epicentre),
+            circle_colour: vec4(theme.great_circle),
             slice: slice.map_or([0.0; 4], |l| [l.lat, l.lon, l.azimuth_deg, 1.0]),
             delay_axis: [
                 DELAY_DIST_STEP_DEG as f32,
@@ -561,12 +584,19 @@ mod tests {
             selected,
             user,
         };
+        let t = Theme::modern();
         let extent =
             |v: Vec<LineVertex>| v.iter().fold(0.0f32, |e, q| e.max((q.pos[1] - 90.0).abs()));
         assert!(
-            extent(marker_vertices(&p, &[m(true, false)]))
-                > extent(marker_vertices(&p, &[m(false, false)]))
+            extent(marker_vertices(&p, &[m(true, false)], &t))
+                > extent(marker_vertices(&p, &[m(false, false)], &t))
         );
-        assert_eq!(marker_vertices(&p, &[m(false, true)]).len(), 4 * 6);
+        let user = marker_vertices(&p, &[m(false, true)], &t);
+        assert_eq!(user.len(), 4 * 6);
+        assert_eq!(user[0].colour, vec4(t.marker));
+        assert_eq!(
+            marker_vertices(&p, &[m(true, true)], &t)[0].colour,
+            vec4(t.marker_selected)
+        );
     }
 }

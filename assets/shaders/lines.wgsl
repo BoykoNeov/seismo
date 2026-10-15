@@ -1,13 +1,11 @@
 // Lines for the slice, traces and map markers: anti-aliased quads (one quad per polyline
-// segment, built on the CPU per line, not per pixel). Blended with max so overlaps do not
-// brighten.
+// segment, built on the CPU per line, not per pixel), each in its own colour. Blended with max
+// so overlaps do not brighten.
 
 struct Uniforms {
     // viewport width_px, height_px, unused, unused
     view: vec4<f32>,
-    // phosphor colour rgb (display space), unused
-    phosphor: vec4<f32>,
-    // background rgb, unused
+    // background rgb (display space), unused
     background: vec4<f32>,
 };
 
@@ -20,12 +18,15 @@ struct VsIn {
     @location(1) along_across: vec2<f32>,
     // half width (px), intensity, dash pattern (0 solid, 1 dashed, 2 dotted), unused
     @location(2) params: vec4<f32>,
+    // line colour rgb (display space), unused
+    @location(3) colour: vec4<f32>,
 };
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) along_across: vec2<f32>,
     @location(1) params: vec4<f32>,
+    @location(2) colour: vec4<f32>,
 };
 
 @vertex
@@ -35,6 +36,7 @@ fn vs_main(v: VsIn) -> VsOut {
     out.pos = vec4<f32>(ndc, 0.0, 1.0);
     out.along_across = v.along_across;
     out.params = v.params;
+    out.colour = v.colour;
     return out;
 }
 
@@ -49,6 +51,6 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         dash = step(fract(in.along_across.x / 10.0), 0.6);
     }
     let level = in.params.y * cover * dash;
-    let colour = mix(u.background.rgb, u.phosphor.rgb, clamp(level, 0.0, 1.0)) * max(1.0, level);
+    let colour = mix(u.background.rgb, in.colour.rgb, clamp(level, 0.0, 1.0)) * max(1.0, level);
     return vec4<f32>(colour, 1.0);
 }
