@@ -205,13 +205,17 @@ fn surface_glow(dist: f32, t: f32, px: vec2<f32>) -> f32 {
         return 0.0;
     }
     let back = 360.0 - dist;
-    let r = max(surface_train(0, dist, t), 0.6 * surface_train(0, back, t));
-    var l = max(surface_train(1, dist, t), 0.6 * surface_train(1, back, t));
+    let r1 = surface_train(0, dist, t);
+    let r2 = surface_train(0, back, t);
+    let l1 = surface_train(1, dist, t);
+    let l2 = surface_train(1, back, t);
+    let r = max(r1 * r1, 0.6 * r2 * r2);
+    var l = max(l1 * l1, 0.6 * l2 * l2);
     if (l > 0.0) {
         let cell = fract(floor(px) / 4.0);
         l = l * select(0.0, 1.0, cell.x < 0.3 && cell.y < 0.3);
     }
-    return u.surface.w * max(r * r, l * l);
+    return u.surface.w * max(r, l);
 }
 
 fn grid_line(coord: f32, spacing: f32, px: f32) -> f32 {
