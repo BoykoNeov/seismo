@@ -4,10 +4,11 @@
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-use crate::coast::{Coastlines, coast_vertices};
+use crate::coast::coast_vertices;
 use crate::gpu;
 use crate::lines::{DASH_SOLID, LineBatch, LineVertex, push_polyline};
 use crate::theme::{Rgb, Theme, vec4};
+use sim::coast::Coastlines;
 use sim::mantle::{
     DELAY_AZ_COUNT, DELAY_AZ_STEP_DEG, DELAY_DIST_COUNT, DELAY_DIST_STEP_DEG, DELAY_PHASES,
     DelayGrid,

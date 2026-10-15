@@ -13,12 +13,12 @@ mod slice;
 mod theme;
 mod traces;
 
-pub use coast::{CoastError, Coastlines};
 pub use crt::{CrtPass, CrtSettings, FrameTime};
 pub use gpu::Viewport;
 pub use map::{
     MAX_MAP_EVENTS, MapEventInstance, MapMarker, MapPass, MapProjection, MapSliceLine, MapStyle,
 };
+pub use sim::coast::{CoastError, Coastlines};
 pub use slice::{
     MAX_SLICE_BOUNDARIES, SliceLayer, SlicePass, SliceScene, SliceStyle, SliceView, StrokeKind,
     phase_gain,
@@ -197,6 +197,7 @@ impl SceneRenderer {
                 theme,
             );
         }
-        self.crt.draw(queue, encoder, self.size, crt, theme.p_front, time);
+        self.crt
+            .draw(queue, encoder, self.size, crt, theme.p_front, time);
     }
 }

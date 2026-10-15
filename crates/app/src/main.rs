@@ -2,18 +2,14 @@
 //! `app`: the eframe/egui shell. Owns the sim clock and wires sim, render and feed together.
 //! Allowed dependencies: everything in the workspace.
 
-mod clock;
-mod events;
-mod made;
 mod mantle;
-mod traces;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context as _, anyhow};
-use chrono::{DateTime, NaiveDate, TimeZone, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use eframe::{egui, wgpu};
 use sim::mantle::DelayGrid;
 use sim::seismogram::Component;
@@ -21,17 +17,16 @@ use sim::slice::{PhaseLabel, SliceFans, SliceLine};
 use sim::tables::{Dispersion, EarthModel, TravelTimeTable};
 use sim::{EARTH_RADIUS_KM, Event, EventKind, RayPhase, Simulation, Wave, azimuth_deg};
 
-use clock::{MAX_SPEED, MIN_SPEED, SimClock, secs};
-use events::{EventKey, EventList, FOLLOW_MIN_MAG, Listed};
-use made::{MakeForm, TIME_FORMAT};
 use mantle::{BendKey, CutKey, MantleWorker, Ready};
-use traces::{MAX_TRACES, Traces};
+use session::clock::{MAX_SPEED, MIN_SPEED, SimClock, secs};
+use session::events::{EventKey, EventList, FOLLOW_MIN_MAG, Listed};
+use session::made::{self, MakeForm, TIME_FORMAT};
+use session::traces::{MAX_TRACES, Traces};
 
-static TABLE_BYTES: &[u8] = include_bytes!("../../../assets/ak135.tt");
-static MODEL_BYTES: &[u8] = include_bytes!("../../../assets/ak135_model.csv");
-static STATIONS_BYTES: &[u8] = include_bytes!("../../../assets/stations.csv");
-static COAST_BYTES: &[u8] = include_bytes!("../../../assets/coastlines.txt");
-static DISPERSION_BYTES: &[u8] = include_bytes!("../../../assets/surface_dispersion.csv");
+use session::assets::{
+    COAST as COAST_BYTES, DISPERSION as DISPERSION_BYTES, MODEL as MODEL_BYTES,
+    STATIONS as STATIONS_BYTES, TABLE as TABLE_BYTES, TOHOKU_PLACE, tohoku,
+};
 
 /// Narrowest traces column (points) beside the map and slice.
 const MIN_TRACES_WIDTH: f32 = 260.0;
@@ -115,20 +110,6 @@ fn main() -> eframe::Result {
                 .map(|a| Box::new(a) as Box<dyn eframe::App>)
                 .map_err(Into::into)
         }),
-    )
-}
-
-/// The built-in example event, there with or without the feed: 2011 Tōhoku.
-fn tohoku() -> Event {
-    let origin = Utc.with_ymd_and_hms(2011, 3, 11, 5, 46, 24).unwrap();
-    Event::new(
-        "usp000hvnu",
-        EventKind::Earthquake,
-        origin,
-        38.297,
-        142.373,
-        29.0,
-        9.1,
     )
 }
 
@@ -277,13 +258,7 @@ impl SeismoApp {
             online: !flag("--offline"),
             ..Default::default()
         });
-        let mut events = EventList::new(
-            vec![Listed::builtin(
-                tohoku(),
-                "2011 Tōhoku, near the east coast of Honshu, Japan (built-in example)",
-            )],
-            Some(feed),
-        );
+        let mut events = EventList::new(vec![Listed::builtin(tohoku(), TOHOKU_PLACE)], Some(feed));
         let mut make_form = MakeForm::default();
         let made_path = made::default_path();
         if let Some(path) = &made_path {
@@ -1081,36 +1056,7 @@ impl SeismoApp {
 
     /// One line on where the events come from and how fresh they are.
     fn feed_line(&self) -> String {
-        let Some(status) = &self.events.status else {
-            return "USGS feed: starting…".to_owned();
-        };
-        let ago = |t: DateTime<Utc>| {
-            let s = (Utc::now() - t).num_seconds().max(0);
-            if s < 120 {
-                format!("{s} s ago")
-            } else if s < 2 * 3600 {
-                format!("{} min ago", s / 60)
-            } else {
-                format!("{} UTC", t.format("%Y-%m-%d %H:%M"))
-            }
-        };
-        let latest = |f: fn(&feed::FeedState) -> Option<DateTime<Utc>>| {
-            status.feeds.iter().filter_map(f).max()
-        };
-        let data = latest(|s| s.data_from);
-        let saved = data.map_or("no saved copy yet".to_owned(), |t| {
-            format!("saved copy from {}", ago(t))
-        });
-        if status.offline {
-            return format!("Offline: {saved}");
-        }
-        let error = status.feeds.iter().find_map(|s| s.error.as_deref());
-        match (latest(|s| s.last_ok), error) {
-            (Some(ok), None) => format!("USGS live: checked {}", ago(ok)),
-            (Some(ok), Some(e)) => format!("USGS reached {}; now failing: {e}", ago(ok)),
-            (None, Some(e)) => format!("USGS unreachable ({e}); {saved}"),
-            (None, None) => format!("USGS: connecting… ({saved})"),
-        }
+        self.events.feed_line()
     }
 
     fn mantle_controls(&mut self, ui: &mut egui::Ui) {
@@ -1425,9 +1371,10 @@ impl SeismoApp {
                         c.flicker,
                         egui::Slider::new(&mut c.flicker_amount, 0.0..=0.2).text("amount"),
                     );
-                    ui.checkbox(&mut c.hot_spots, "hot spots go pale").on_hover_text(
-                        "The overbright core of a line whitens, as a saturated phosphor does",
-                    );
+                    ui.checkbox(&mut c.hot_spots, "hot spots go pale")
+                        .on_hover_text(
+                            "The overbright core of a line whitens, as a saturated phosphor does",
+                        );
                     ui.add_enabled(
                         c.hot_spots,
                         egui::Slider::new(&mut c.hot_spot_amount, 0.0..=2.0).text("amount"),

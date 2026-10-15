@@ -1,6 +1,14 @@
 [workspace]
 resolver = "3"
-members = ["crates/sim", "crates/tables", "crates/feed", "crates/render", "crates/app"]
+members = [
+    "crates/sim",
+    "crates/tables",
+    "crates/feed",
+    "crates/render",
+    "crates/session",
+    "crates/app",
+    "crates/tui",
+]
 
 [workspace.package]
 edition = "2024"
@@ -12,6 +20,7 @@ sim = { path = "crates/sim" }
 tables = { path = "crates/tables" }
 feed = { path = "crates/feed" }
 render = { path = "crates/render" }
+session = { path = "crates/session" }
 
 # UI / GPU. `wgpu` must stay at exactly the version egui-wgpu 0.36.2 uses (30.x),
 # so `app` and `render` share one wgpu. Check with `cargo tree -d -i wgpu`.

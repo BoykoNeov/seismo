@@ -528,23 +528,48 @@ impl CrtPass {
             barrel: [s.barrel_k(), 0.0, 0.0, 0.0],
             flicker: [s.flicker_gain(time.time_s), 0.0, 0.0, 0.0],
             glass: [
-                if on(s.vignette) { s.vignette_amount.clamp(0.0, 1.0) } else { 0.0 },
+                if on(s.vignette) {
+                    s.vignette_amount.clamp(0.0, 1.0)
+                } else {
+                    0.0
+                },
                 if on(s.vignette) {
                     s.corner_radius.max(0.0) * size.0.min(size.1) as f32
                 } else {
                     0.0
                 },
-                if on(s.noise) { s.noise_amount.max(0.0) } else { 0.0 },
-                if on(s.hot_spots) { s.hot_spot_amount.max(0.0) } else { 0.0 },
+                if on(s.noise) {
+                    s.noise_amount.max(0.0)
+                } else {
+                    0.0
+                },
+                if on(s.hot_spots) {
+                    s.hot_spot_amount.max(0.0)
+                } else {
+                    0.0
+                },
             ],
             signal: [
                 s.hum_bar_centre(time.time_s),
-                if on(s.hum_bar) { s.hum_bar_amount.max(0.0) } else { 0.0 },
+                if on(s.hum_bar) {
+                    s.hum_bar_amount.max(0.0)
+                } else {
+                    0.0
+                },
                 s.warm_up_progress(time.since_on_s),
-                if on(s.scanlines) { s.scanline_fill.clamp(0.0, 1.0) } else { 0.0 },
+                if on(s.scanlines) {
+                    s.scanline_fill.clamp(0.0, 1.0)
+                } else {
+                    0.0
+                },
             ],
             // The noise seed changes every frame; it only needs to differ frame to frame.
-            tint: [phosphor[0], phosphor[1], phosphor[2], (time.time_s * 1000.0) % 65536.0],
+            tint: [
+                phosphor[0],
+                phosphor[1],
+                phosphor[2],
+                (time.time_s * 1000.0) % 65536.0,
+            ],
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 

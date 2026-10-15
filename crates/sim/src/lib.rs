@@ -4,6 +4,7 @@
 
 pub use tables;
 
+pub mod coast;
 mod event;
 mod geo;
 pub mod mantle;

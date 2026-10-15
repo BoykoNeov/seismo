@@ -173,6 +173,39 @@ impl EventList {
         list
     }
 
+    /// One line on how the USGS feed is doing, for the status display.
+    pub fn feed_line(&self) -> String {
+        let Some(status) = &self.status else {
+            return "USGS feed: starting…".to_owned();
+        };
+        let ago = |t: DateTime<Utc>| {
+            let s = (Utc::now() - t).num_seconds().max(0);
+            if s < 120 {
+                format!("{s} s ago")
+            } else if s < 2 * 3600 {
+                format!("{} min ago", s / 60)
+            } else {
+                format!("{} UTC", t.format("%Y-%m-%d %H:%M"))
+            }
+        };
+        let latest = |f: fn(&feed::FeedState) -> Option<DateTime<Utc>>| {
+            status.feeds.iter().filter_map(f).max()
+        };
+        let data = latest(|s| s.data_from);
+        let saved = data.map_or("no saved copy yet".to_owned(), |t| {
+            format!("saved copy from {}", ago(t))
+        });
+        if status.offline {
+            return format!("Offline: {saved}");
+        }
+        let error = status.feeds.iter().find_map(|s| s.error.as_deref());
+        match (latest(|s| s.last_ok), error) {
+            (Some(ok), None) => format!("USGS live: checked {}", ago(ok)),
+            (Some(ok), Some(e)) => format!("USGS reached {}; now failing: {e}", ago(ok)),
+            (None, Some(e)) => format!("USGS unreachable ({e}); {saved}"),
+            (None, None) => format!("USGS: connecting… ({saved})"),
+        }
+    }
     pub fn shown(&self) -> &[Listed] {
         &self.shown
     }

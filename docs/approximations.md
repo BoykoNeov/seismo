@@ -402,3 +402,23 @@ their sizes only roughly physical. The UI says so.
 - **Deletions.** An event USGS deletes is noticed only while it is less than about 23 hours
   old (it disappears from the past-day feed). Older events, which come only from the month's
   significant events, are never removed in a session.
+
+## Terminal version: 1D, at terminal resolution
+
+`seismo-tui` draws the same simulation as the desktop app with text characters, so it sees less
+and simplifies more:
+
+- **1D only.** The 3D mantle (SP12RTS) is not used: map fronts are not nudged by 3D delays, the
+  slice's rays are not bent, the mantle is not shaded by rock speed, and the traces have no 3D
+  delays. Every time and amplitude is the 1D ak135 one.
+- **Coarse map.** Each terminal cell holds 2 × 4 braille dots, so on a 160-column terminal one
+  dot is about 1.5° of arc. Fronts are drawn on the dots within about half a dot's width of the
+  tabulated front, as on the desktop map. Trails and the Rayleigh-wave glow are a tint over
+  whole cells, sampled at each cell's centre, and the trail starts dimmer (0.25, not 0.35)
+  because a cell is several degrees wide. Love waves are one dot per cell where the band is at
+  least 20% of its peak. At most 12 events are drawn (the desktop map draws 32).
+- **Coarse traces.** A trace is a few braille rows high; every column keeps the smallest and
+  largest sample under it, so no wiggle is lost, but small arrivals on a large trace can vanish
+  into one dot. Arrival marks are written only where the trace leaves room.
+- **Slice.** The phases' fronts and a few ray paths per phase, without the earlier-time trail
+  fronts the desktop slice draws.

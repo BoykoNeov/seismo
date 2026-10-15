@@ -13,7 +13,7 @@ use sim::slice::{Boundary, Fan, SliceFans};
 use sim::tables::MantleModel;
 use sim::{RayTracer, Wave};
 
-use crate::events::EventKey;
+use session::events::EventKey;
 
 static SP12RTS_VS: &[u8] = include_bytes!("../../../assets/sp12rts/SP12RTS..ES.sph");
 static SP12RTS_VP: &[u8] = include_bytes!("../../../assets/sp12rts/SP12RTS..EP.sph");

@@ -1,6 +1,6 @@
 # SEISMO — Global Earthquake Simulator
 
-Desktop app in Rust. Simulates seismic wave propagation through a 1D Earth
+Desktop app in Rust, plus a terminal version (`seismo-tui`). Simulates seismic wave propagation through a 1D Earth
 (ak135, optionally perturbed by a 3D mantle model) for user-entered or live USGS events, rendered as a world map, a
 vertical great-circle slice, and virtual seismograph traces, with a retro
 green-phosphor CRT look or a modern dark multi-colour look (toggle).
@@ -15,7 +15,9 @@ seismo/               # = repo root
     tables/           # travel-time table + ak135 velocity model + SP12RTS 3D mantle: format, parsing, interpolation
     feed/             # USGS fetch/cache/parse (tokio + reqwest + serde)
     render/           # wgpu passes: map, slice, traces, CRT post-process
+    session/          # what a front end needs that is not drawing: clock, event list, made events, traces, embedded assets
     app/              # eframe (wgpu backend) + egui shell, owns the clock, wires everything together
+    tui/              # seismo-tui: the terminal version (ratatui): braille map, slice, traces, event list
   assets/
     ak135.tt          # travel-time tables (generated, committed)
     ak135_model.csv   # ak135 velocity model: depth_km, vp_km_s, vs_km_s, density_g_cm3 (generated, committed)
@@ -35,14 +37,15 @@ seismo/               # = repo root
   CLAUDE.md
 ```
 
-Dependency direction is strict: `app -> render -> sim`, `app -> feed -> sim`,
-`sim -> tables`. `sim` re-exports `tables` (`pub use tables;`), so `render`
+Dependency direction is strict: `app -> render -> sim`, `app -> session -> feed -> sim`,
+`tui -> session`, `sim -> tables`. `tui` never depends on `render` or `app`; `render` never on
+`session`. `sim` re-exports `tables` (`pub use tables;`), so `render`
 reaches table data as `sim::tables` without its own dependency on it. `sim`
 and `tables` must compile with no GPU, no network, and
 no std::thread, so they can be unit-tested in CI and reused by a future TUI.
 `tables` parses from a byte slice (`from_bytes`); a path-based `load` is only a
-thin wrapper. The app embeds the assets with `include_bytes!` so it starts with
-no dependence on the working directory.
+thin wrapper. `session::assets` embeds the assets with `include_bytes!` so both front ends
+start with no dependence on the working directory.
 
 ## Units and conventions (never deviate)
 
@@ -117,6 +120,13 @@ no dependence on the working directory.
   azimuth, slider 0–360°): forward fans up to the antipode plus back fans past
   it. With the 3D mantle on, a per-cut dlnV grid (1° × 25 km, computed on the
   worker, never per pixel) shades the mantle; greens only.
+- Terminal version (decided 2026-10-15): `crates/tui`, binary `seismo-tui`, built on ratatui
+  (the user OK'd ratatui as the terminal's screen library; "no second UI framework" is about
+  the desktop app). Same simulation, feed, event list and traces as the app through `session`;
+  1D only (no 3D mantle), no search or make-your-own form (it lists your made and kept events,
+  never writes them). Map, slice and traces are drawn on a braille canvas (2 × 4 dots a cell)
+  per frame on the CPU, in the CRT or modern colours. `--dump <cols>x<rows> [--after s]
+  [--ansi]` prints one frame without a terminal, for tests and screenshots.
 - The feed runs on a tokio runtime in its own thread and talks to the app via
   `crossbeam_channel`. The UI thread is synchronous.
 - Every new feature touching physics gets a unit test in `sim` or `tables`.
@@ -275,6 +285,7 @@ cargo build --workspace
 cargo test --workspace              # must pass before any commit
 cargo clippy --workspace -- -D warnings
 cargo run -p app
+cargo run -p tui --release             # the terminal version (seismo-tui); press ? for keys
 pip install -r tools/requirements.txt   # in a virtualenv outside the repo
 python tools/gen_tables.py              # regenerates both ak135 assets (slow: minutes)
 python tools/gen_dispersion.py          # regenerates surface_dispersion.csv (needs ak135_model.csv)
@@ -288,7 +299,8 @@ python tools/gen_dispersion.py          # regenerates surface_dispersion.csv (ne
 
 - Do not add velocity constants, travel-time formulas, or Earth-layer depths
   anywhere outside `tables` and `sim`.
-- Do not introduce Bevy, an ECS, or a second UI framework.
+- Do not introduce Bevy, an ECS, or a second UI framework in the desktop app (the terminal
+  version's ratatui is the one exception, OK'd by the user 2026-10-15).
 - Do not block the UI thread on network I/O.
 - Do not use local time anywhere.
 - Do not rewrite the eframe/wgpu scaffold once it works; extend it.
