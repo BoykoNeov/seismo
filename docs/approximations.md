@@ -49,7 +49,7 @@ than the first depth row (5 km) has none either; there the echo would trail P by
 deep, so they never show depth phases. An sP ray leaving close to horizontal has a ray parameter no P wave at the
 surface can carry, so it has no sP; ObsPy and the tracer agree on that edge.
 
-- **Shown on the seismograms and in the slice, not on the map.** The map draws P and S only.
+- **Shown on the seismograms and in the slice, not on the map.** The map draws only the P and S fronts (and the surface-wave bands).
 - **1D times.** The 3D-mantle delay is computed along the direct P and S rays; the depth phases
   take a different path, so their times stay 1D (in the slice, their rays are bent through the
   3D mantle like the others).
@@ -183,6 +183,24 @@ tabulated ray parameter (dT/dΔ). Where the ray parameter approaches 0 (directly
 source, and for PKIKP near 180°), it is clamped to 0.5 s/deg for this conversion only. The
 fading trail behind a front is a display effect (exponential in time since arrival), not a
 model of the coda.
+
+## Map: surface-wave bands show where, not how strong
+
+The map draws each event's surface waves as bands: Rayleigh as a smooth glow, Love as dots on a
+fixed 4-pixel grid, the way round the short side (R1, L1) at full brightness and the second
+pass (R2, L2, coming back from the antipode) at 0.6. Where a band is bright comes from the same
+trains as the seismograms (`sim::surface`): their envelope, sampled per path length (every
+2.5°) against apparent speed (path ÷ time since origin), so a band crosses a station when its
+trace shows the train. What it leaves out:
+
+- **Brightness is not amplitude.** Each path's envelope is scaled to peak at 1 and then squared
+  (so a long train shows its strongest part, not its faint edges); every event's bands look
+  alike whatever its magnitude, as the P and S fronts do. The surface slider dims or hides them.
+- **Near the epicentre** (under 2.5°) the first row's shape is reused, as apparent speed means
+  nothing there.
+- **How long they stay.** An event stays on the map until its slowest train has been once round
+  the globe (about four hours), but only in the room left after the events whose body waves are
+  still out, so old surface waves never push fresh fronts off the map.
 
 ## Map coastlines: simplified
 

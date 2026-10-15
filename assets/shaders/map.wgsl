@@ -1,5 +1,5 @@
 // Map pass: equirectangular world grid, epicentres, and per-pixel wavefronts from the
-// travel-time table, nudged per event by 3D-mantle delays. All values written are display-space intensities (gamma-encoded green),
+// travel-time table, nudged per event by 3D-mantle delays, plus dispersed surface-wave bands. All values written are display-space intensities (gamma-encoded green),
 // possibly > 1 for later bloom.
 
 const MAX_EVENTS: u32 = 32u;
@@ -36,6 +36,9 @@ struct Uniforms {
     delay_axis: vec4<f32>,
     // 3D-mantle strength (0 = 1D, 1 = published model), unused, unused, unused
     mantle: vec4<f32>,
+    // surface-wave grid: speed_start (deg/s), speed_step (deg/s), path_step (deg), brightness
+    // (0 = no bands)
+    surface: vec4<f32>,
     events: array<MapEvent, MAX_EVENTS>,
 };
 
@@ -46,6 +49,9 @@ struct Uniforms {
 // R32Float, delay (s, at strength 1) of each event's P and S; width = distance, height =
 // azimuth (clockwise from north, wrapping); 0 where the phase has no ray.
 @group(0) @binding(2) var delays: texture_2d_array<f32>;
+// R32Float, brightness 0..1 of the surface-wave trains; width = apparent speed (path / time
+// since origin, deg/s), height = path length (deg, 0 to 360); layer 0 Rayleigh, 1 Love.
+@group(0) @binding(3) var surf: texture_2d_array<f32>;
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -167,6 +173,47 @@ fn phase_glow(layer: i32, dlayer: i32, max_delay: f32, depth: f32, dist: f32, az
     return max(front, trail);
 }
 
+// Brightness of one surface wave's train (layer 0 Rayleigh, 1 Love) after `path` deg, `t` s
+// after origin: manual bilinear lookup, returning before any load where the apparent speed is
+// off the grid (most pixels, most of the time).
+fn surface_train(layer: i32, path: f32, t: f32) -> f32 {
+    let dims = vec2<f32>(textureDimensions(surf));
+    let fu = (path / t - u.surface.x) / u.surface.y;
+    let fv = path / u.surface.z;
+    if (fu < 0.0 || fu > dims.x - 1.0 || fv < 0.0 || fv > dims.y - 1.0) {
+        return 0.0;
+    }
+    let i = min(floor(fu), dims.x - 2.0);
+    let j = min(floor(fv), dims.y - 2.0);
+    let fx = fu - i;
+    let fy = fv - j;
+    let x = i32(i);
+    let y = i32(j);
+    let c00 = textureLoad(surf, vec2<i32>(x, y), layer, 0).r;
+    let c10 = textureLoad(surf, vec2<i32>(x + 1, y), layer, 0).r;
+    let c01 = textureLoad(surf, vec2<i32>(x, y + 1), layer, 0).r;
+    let c11 = textureLoad(surf, vec2<i32>(x + 1, y + 1), layer, 0).r;
+    return mix(mix(c00, c10, fx), mix(c01, c11, fx), fy);
+}
+
+// Surface-wave bands at this pixel (`px` = pixel position): Rayleigh as a smooth glow, Love as
+// dots on a fixed 4-pixel grid (fixed in pixels, so they never beat into a moire); the second
+// pass (the long way round, R2/L2) dimmer. Squaring the brightness keeps the bands' faint
+// edges dark, so a wide train shows its strongest part.
+fn surface_glow(dist: f32, t: f32, px: vec2<f32>) -> f32 {
+    if (u.surface.w <= 0.0 || t <= 0.0) {
+        return 0.0;
+    }
+    let back = 360.0 - dist;
+    let r = max(surface_train(0, dist, t), 0.6 * surface_train(0, back, t));
+    var l = max(surface_train(1, dist, t), 0.6 * surface_train(1, back, t));
+    if (l > 0.0) {
+        let cell = fract(floor(px) / 4.0);
+        l = l * select(0.0, 1.0, cell.x < 0.3 && cell.y < 0.3);
+    }
+    return u.surface.w * max(r * r, l * l);
+}
+
 fn grid_line(coord: f32, spacing: f32, px: f32) -> f32 {
     let d = abs(fract(coord / spacing + 0.5) - 0.5) * spacing;
     return 1.0 - smoothstep(0.0, px, d);
@@ -199,7 +246,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let dl_s = select(-1, dl + 1, dl >= 0);
         let p = phase_glow(i32(u.layers.x), dl, e.b.z, e.a.z, dist, az, e.a.w, px_deg, 0.0);
         let s = phase_glow(i32(u.layers.y), dl_s, e.b.z, e.a.z, dist, az, e.a.w, px_deg, 3.0);
-        level = max(level, max(p, 0.8 * s));
+        level = max(level, max(max(p, 0.8 * s), surface_glow(dist, e.a.w, in.pos.xy)));
         // Epicentre: bright dot plus a ring.
         let r = dist / px_deg;
         let dot = 1.0 - smoothstep(2.0, 3.0, r);

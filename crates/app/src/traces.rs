@@ -11,6 +11,7 @@ use sim::mantle::DelayGrid;
 use sim::seismogram::{
     Component, Seismogram, Spreading, StationArrival, seed_from, station_arrivals, synthesize,
 };
+use sim::surface::TrainCache;
 use sim::{Event, RayTracer, Simulation, Station, great_circle_deg};
 
 use crate::events::EventKey;
@@ -61,6 +62,8 @@ pub struct Traces {
     /// Ray-tube spreading per source depth (f64 bits), built on the `tubes` thread.
     spreading: HashMap<u64, Spreading>,
     tubes: TubeWorker,
+    /// Surface-wave trains already computed, reused when traces are rebuilt.
+    trains: TrainCache,
     /// The selected event's ray tubes are still being built, so no trace is drawn yet.
     pub pending: bool,
 }
@@ -127,6 +130,7 @@ impl Traces {
             built: HashMap::new(),
             spreading: HashMap::new(),
             tubes: TubeWorker::spawn(tracer),
+            trains: TrainCache::default(),
             pending: false,
         }
     }
@@ -284,6 +288,7 @@ impl Traces {
                 to,
                 seed,
                 sim.surface_waves(),
+                &mut self.trains,
             );
             self.built.insert(
                 i,

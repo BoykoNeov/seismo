@@ -11,6 +11,7 @@ use sim::mantle::{
     DELAY_AZ_COUNT, DELAY_AZ_STEP_DEG, DELAY_DIST_COUNT, DELAY_DIST_STEP_DEG, DELAY_PHASES,
     DelayGrid,
 };
+use sim::surface::{MAP_PATH_COUNT, MAP_PATH_STEP_DEG, MAP_SPEED_COUNT, SurfaceMapGrid};
 use sim::tables::TravelTimeTable;
 
 /// Half width (px) of a coastline, normal and wide (see [`MapStyle::coast_wide`]).
@@ -127,6 +128,8 @@ pub struct MapStyle {
     /// Strength of the 3D-mantle delays: 0 draws the 1D arrival times, 1 the model's real
     /// strength, larger values exaggerate them linearly.
     pub mantle_strength: f32,
+    /// Brightness of the surface-wave bands (Rayleigh glow, Love dots), [0, 1]; 0 hides them.
+    pub surface_brightness: f32,
 }
 
 impl Default for MapStyle {
@@ -139,6 +142,7 @@ impl Default for MapStyle {
             coast_brightness: 0.45,
             coast_wide: false,
             mantle_strength: 1.0,
+            surface_brightness: 0.45,
         }
     }
 }
@@ -163,6 +167,7 @@ struct Uniforms {
     slice: [f32; 4],
     delay_axis: [f32; 4],
     mantle: [f32; 4],
+    surface_axis: [f32; 4],
     events: [GpuEvent; MAX_MAP_EVENTS],
 }
 
@@ -176,6 +181,10 @@ pub struct MapPass {
     uniform_buffer: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
     delay_texture: wgpu::Texture,
+    surface_texture: wgpu::Texture,
+    /// Apparent-speed axis of the uploaded surface-wave grid (start, step in deg/s); `None`
+    /// until [`MapPass::upload_surface`] is called, and no bands are drawn before.
+    surface_speeds: Option<(f32, f32)>,
     depth_axis: [f32; 4],
     dist_axis: [f32; 4],
     layers: [f32; 4],
@@ -189,6 +198,7 @@ impl MapPass {
                 gpu::uniform_entry(0),
                 gpu::texture_entry(1, wgpu::TextureViewDimension::D2Array),
                 gpu::texture_entry(2, wgpu::TextureViewDimension::D2Array),
+                gpu::texture_entry(3, wgpu::TextureViewDimension::D2Array),
             ],
         });
         let pipeline = gpu::fullscreen_pipeline(
@@ -223,6 +233,25 @@ impl MapPass {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             ..Default::default()
         });
+        let surface_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("surface waves"),
+            size: wgpu::Extent3d {
+                width: MAP_SPEED_COUNT as u32,
+                height: MAP_PATH_COUNT as u32,
+                depth_or_array_layers: 2,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let surface_view = surface_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("surface waves"),
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("map uniforms"),
             size: std::mem::size_of::<Uniforms>() as u64,
@@ -245,6 +274,10 @@ impl MapPass {
                     binding: 2,
                     resource: wgpu::BindingResource::TextureView(&delay_view),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&surface_view),
+                },
             ],
         });
 
@@ -259,6 +292,8 @@ impl MapPass {
             uniform_buffer,
             bind_group,
             delay_texture,
+            surface_texture,
+            surface_speeds: None,
             depth_axis: [d.start as f32, d.step as f32, d.count as f32, 0.0],
             dist_axis: [x.start as f32, x.step as f32, x.count as f32, 0.0],
             layers: [layer("P"), layer("S"), -1.0, -1.0],
@@ -303,6 +338,37 @@ impl MapPass {
                 },
             );
         }
+    }
+
+    /// Store the surface-wave brightness grid (one for all events; see
+    /// [`sim::surface::SurfaceWaves::map_grid`]). Bands are drawn from then on.
+    pub fn upload_surface(&mut self, queue: &wgpu::Queue, grid: &SurfaceMapGrid) {
+        for (layer, values) in grid.layers.iter().enumerate() {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.surface_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: layer as u32,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                bytemuck::cast_slice(values),
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(4 * MAP_SPEED_COUNT as u32),
+                    rows_per_image: Some(MAP_PATH_COUNT as u32),
+                },
+                wgpu::Extent3d {
+                    width: MAP_SPEED_COUNT as u32,
+                    height: MAP_PATH_COUNT as u32,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        self.surface_speeds = Some((grid.speed_start_deg_s as f32, grid.speed_step_deg_s as f32));
     }
 
     /// Draw into `viewport` of `target`, clearing the whole target first. At most
@@ -388,6 +454,15 @@ impl MapPass {
                 DELAY_AZ_COUNT as f32,
             ],
             mantle: [style.mantle_strength, 0.0, 0.0, 0.0],
+            surface_axis: match self.surface_speeds {
+                Some((start, step)) if style.surface_brightness > 0.0 => [
+                    start,
+                    step,
+                    MAP_PATH_STEP_DEG as f32,
+                    style.surface_brightness,
+                ],
+                _ => [0.0; 4],
+            },
             events: gpu_events,
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));

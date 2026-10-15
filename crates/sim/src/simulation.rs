@@ -47,6 +47,9 @@ pub struct EventState {
 pub struct MapEvent {
     pub index: usize,
     pub t: f64,
+    /// Its body waves (the table's phases) are still on the globe; otherwise only its surface
+    /// waves are.
+    pub body: bool,
 }
 
 impl Simulation {
@@ -134,25 +137,35 @@ impl Simulation {
         None
     }
 
-    /// Events whose waves are on the globe at `now` (origin passed, and within `linger_s`
-    /// seconds of the table's last arrival), largest magnitude first, at most `cap`.
-    /// Ties keep event order, so the result is deterministic.
+    /// Events whose waves are on the globe at `now`, at most `cap`: first those whose body
+    /// waves still are (origin passed, and within `linger_s` seconds of the table's last
+    /// arrival), largest magnitude first; then, in the room left, those with only surface waves
+    /// left (until the slowest has been once round the globe), largest first. So an old large
+    /// event's surface waves never push a fresh small event's fronts off the map. Ties keep
+    /// event order, so the result is deterministic.
     pub fn map_events(&self, now: DateTime<Utc>, cap: usize, linger_s: f64) -> Vec<MapEvent> {
-        let horizon = self.table.max_arrival_time() + linger_s;
+        let body_horizon = self.table.max_arrival_time() + linger_s;
+        let horizon = body_horizon.max(self.surface.once_round_s());
         let mut out: Vec<MapEvent> = self
             .events
             .iter()
             .enumerate()
-            .map(|(index, e)| MapEvent {
-                index,
-                t: e.t_at(now),
+            .map(|(index, e)| {
+                let t = e.t_at(now);
+                MapEvent {
+                    index,
+                    t,
+                    body: t <= body_horizon,
+                }
             })
             .filter(|m| m.t >= 0.0 && m.t <= horizon)
             .collect();
         out.sort_by(|a, b| {
-            self.events[b.index]
-                .magnitude
-                .total_cmp(&self.events[a.index].magnitude)
+            b.body.cmp(&a.body).then(
+                self.events[b.index]
+                    .magnitude
+                    .total_cmp(&self.events[a.index].magnitude),
+            )
         });
         out.truncate(cap);
         out
@@ -267,14 +280,23 @@ mod tests {
             mk("small", 1, 4.0),
             mk("big", 2, 7.0),
             mk("mid", 3, 5.5),
+            mk("surface only", 3 * 60, 8.5), // body waves gone, surface waves still circling
         ];
         let sim = sim(events);
         let ids = |v: Vec<MapEvent>| -> Vec<String> {
             v.iter().map(|m| sim.events[m.index].id.clone()).collect()
         };
-        assert_eq!(ids(sim.map_events(now, 32, 0.0)), ["big", "mid", "small"]);
+        assert_eq!(
+            ids(sim.map_events(now, 32, 0.0)),
+            ["big", "mid", "small", "surface only"]
+        );
+        // The large old event's surface waves never push a fresh small event off.
+        assert_eq!(ids(sim.map_events(now, 3, 0.0)), ["big", "mid", "small"]);
         assert_eq!(ids(sim.map_events(now, 2, 0.0)), ["big", "mid"]);
         let m = sim.map_events(now, 1, 0.0)[0];
         assert_eq!(m.t, 120.0);
+        assert!(m.body);
+        let all = sim.map_events(now, 32, 0.0);
+        assert!(!all[3].body);
     }
 }

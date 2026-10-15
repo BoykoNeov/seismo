@@ -83,7 +83,8 @@ no dependence on the working directory.
   Rayleigh and Love phase and group velocity, 8–200 s, Earth-flattened ak135,
   checked against Mineos). Seismogram trains are summed over period in
   `sim::surface` (phase velocity for the crests, group velocity for the energy,
-  PREM Q, fixed source spectrum, faded in before the fastest energy); 1D only.
+  PREM Q, fixed source spectrum, faded in before the fastest energy); the map
+  draws where those trains are (see Map); 1D only.
 - Map: the shader receives the travel-time table as an RG32Float 2D array
   texture (R = arrival time, G = ray parameter; one array layer per phase,
   width = distance, height = depth) and evaluates arrival time per
@@ -93,9 +94,16 @@ no dependence on the working directory.
   R32Float 2D array texture (width = distance, height = azimuth, wrapping; two
   layers per GPU slot: P, S), slots assigned per event by `app` (never by the
   re-sorted map list), computed on a worker thread; 1D rings show until ready.
-  CPU code computes nothing per-pixel.
-- Map events are culled before upload: only events whose waves are still on the
-  globe, capped (default 32, largest magnitude first).
+  Surface waves are bands from one R32Float 2D array texture shared by every
+  event (width = apparent speed path/t in deg/s, height = path 0–360° in 2.5°
+  steps, layer 0 Rayleigh, 1 Love; each row the train's envelope scaled to peak
+  1), built once at start by `sim::surface` from the same synthesis as the
+  traces; R1/L1 and the dimmer R2/L2; Rayleigh a smooth glow, Love pixel-grid
+  dots. CPU code computes nothing per-pixel.
+- Map events are culled before upload, capped (default 32): first events whose
+  body waves are still on the globe, largest magnitude first; then, in the room
+  left, events with only surface waves left (until the slowest train has been
+  once round), largest first. Only the first group gets 3D-delay slots.
 - Slice: `sim` computes a ray fan per (source depth, phase) — per ray, not per
   pixel — cached, since a 1D model depends only on source depth. With the 3D
   mantle on, fans are bent through it in the plane of the cut

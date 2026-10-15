@@ -16,6 +16,7 @@
 //! train that had not dispersed would peak at 1. The sum is evaluated with one inverse FFT
 //! per train.
 
+use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, PI};
 
 use crate::geo::EARTH_RADIUS_KM;
@@ -112,9 +113,53 @@ impl Train {
                 + f * (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3 + f * (3.0 * (p1 - p2) + p3 - p0)))
     }
 
+    /// The samples at time `t_s`, interpolated linearly; 0 outside them.
+    pub fn linear(&self, t_s: f64) -> f64 {
+        let n = self.samples.len();
+        let x = (t_s - self.start_s) / self.dt_s;
+        if n < 2 || x < 0.0 || x > (n - 1) as f64 {
+            return 0.0;
+        }
+        let k = (x.floor() as usize).min(n - 2);
+        let f = x - k as f64;
+        self.samples[k] * (1.0 - f) + self.samples[k + 1] * f
+    }
+
     /// Largest |sample|.
     pub fn peak(&self) -> f64 {
         self.samples.iter().fold(0.0f64, |m, v| m.max(v.abs()))
+    }
+}
+
+/// Trains already computed by one [`SurfaceWaves`], by wave and path, so rebuilding a
+/// seismogram reuses them. Holds at most [`TrainCache::CAPACITY`] trains and starts afresh
+/// when full.
+#[derive(Debug, Clone, Default)]
+pub struct TrainCache {
+    trains: HashMap<(SurfaceWave, u64), Train>,
+}
+
+impl TrainCache {
+    /// About 20 MB at most: a train is a few thousand samples.
+    pub const CAPACITY: usize = 512;
+
+    /// The `wave` train after `path_km`, computed by `surface` unless cached.
+    pub fn get(&mut self, surface: &SurfaceWaves, wave: SurfaceWave, path_km: f64) -> &Train {
+        let key = (wave, path_km.to_bits());
+        if self.trains.len() >= Self::CAPACITY && !self.trains.contains_key(&key) {
+            self.trains.clear();
+        }
+        self.trains
+            .entry(key)
+            .or_insert_with(|| surface.train(wave, path_km))
+    }
+
+    pub fn len(&self) -> usize {
+        self.trains.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.trains.is_empty()
     }
 }
 
@@ -150,6 +195,11 @@ impl SurfaceWaves {
         (path_km / fast - PAD_S, path_km / slow + PAD_S)
     }
 
+    /// When the train after `path_km` starts fading in (s since origin): it is silent before.
+    pub fn onset_s(&self, wave: SurfaceWave, path_km: f64) -> f64 {
+        path_km.max(0.0) / self.dispersion.group_range(wave).1 - FADE_IN_S.0
+    }
+
     /// The end (s since origin) of the slowest train once round the globe: past this an event's
     /// surface waves (R2, L2 at most) are over everywhere.
     pub fn once_round_s(&self) -> f64 {
@@ -178,6 +228,29 @@ impl SurfaceWaves {
     /// peak at 1 had it not dispersed, attenuated by Q along the way. Paths longer than half
     /// the globe have passed the antipode (R2, L2) and are a quarter cycle shifted per pass.
     pub fn train(&self, wave: SurfaceWave, path_km: f64) -> Train {
+        let (start_s, z) = self.analytic(wave, path_km);
+        Train {
+            start_s,
+            dt_s: TRAIN_DT_S,
+            samples: z.into_iter().map(|v| v.0).collect(),
+        }
+    }
+
+    /// The train's envelope (its amplitude, smoothed over each cycle), sampled like
+    /// [`Self::train`].
+    pub fn envelope(&self, wave: SurfaceWave, path_km: f64) -> Train {
+        let (start_s, z) = self.analytic(wave, path_km);
+        Train {
+            start_s,
+            dt_s: TRAIN_DT_S,
+            samples: z.into_iter().map(|v| v.0.hypot(v.1)).collect(),
+        }
+    }
+
+    /// The train as a complex (analytic) signal, faded in: its real part is the train, its
+    /// magnitude the envelope. The spectrum holds positive frequencies only, so one inverse FFT
+    /// gives both. Returns the start time (s) and the samples, [`TRAIN_DT_S`] apart.
+    fn analytic(&self, wave: SurfaceWave, path_km: f64) -> (f64, Vec<(f64, f64)>) {
         let (t0, t1) = self.span_s(wave, path_km.max(0.0));
         let needed = ((t1 - t0) / TRAIN_DT_S).ceil() as usize + 1;
         let n = needed.next_power_of_two().max(64);
@@ -214,23 +287,94 @@ impl SurfaceWaves {
             }
         }
         inverse_fft(&mut spec);
-        let fastest = path_km.max(0.0) / self.dispersion.group_range(wave).1;
-        let (from, to) = (fastest - FADE_IN_S.0, fastest - FADE_IN_S.1);
-        let samples = spec
-            .into_iter()
-            .take(needed)
-            .enumerate()
-            .map(|(k, v)| {
-                let t = t0 + k as f64 * TRAIN_DT_S;
-                let f = ((t - from) / (to - from)).clamp(0.0, 1.0);
-                v.0 * (0.5 * PI * f).sin().powi(2)
-            })
-            .collect();
-        Train {
-            start_s: t0,
-            dt_s: TRAIN_DT_S,
-            samples,
+        let from = self.onset_s(wave, path_km);
+        let to = from + FADE_IN_S.0 - FADE_IN_S.1;
+        spec.truncate(needed);
+        for (k, v) in spec.iter_mut().enumerate() {
+            let t = t0 + k as f64 * TRAIN_DT_S;
+            let f = ((t - from) / (to - from)).clamp(0.0, 1.0);
+            let fade = (0.5 * PI * f).sin().powi(2);
+            *v = (v.0 * fade, v.1 * fade);
         }
+        (t0, spec)
+    }
+
+    /// The map's surface-wave brightness: per wave, the envelope of the train after each path
+    /// (rows [`MAP_PATH_STEP_DEG`] apart, 0° to 360°), sampled at apparent speeds path ÷ time
+    /// (columns). Each row is scaled to peak at 1: the map shows where a train is, not how
+    /// strong.
+    pub fn map_grid(&self) -> SurfaceMapGrid {
+        let (r_slow, r_fast) = self.dispersion.group_range(SurfaceWave::Rayleigh);
+        let (l_slow, l_fast) = self.dispersion.group_range(SurfaceWave::Love);
+        let km_per_deg = EARTH_RADIUS_KM.to_radians();
+        let lo = (r_slow.min(l_slow) - MAP_SPEED_MARGIN_KM_S) / km_per_deg;
+        let hi = (r_fast.max(l_fast) + MAP_SPEED_MARGIN_KM_S) / km_per_deg;
+        let step = (hi - lo) / (MAP_SPEED_COUNT - 1) as f64;
+        let mut layers = Vec::new();
+        for wave in [SurfaceWave::Rayleigh, SurfaceWave::Love] {
+            let mut grid = vec![0.0f32; MAP_SPEED_COUNT * MAP_PATH_COUNT];
+            for row in 0..MAP_PATH_COUNT {
+                // At the epicentre apparent speed means nothing; use the next row's shape.
+                let path_deg = row.max(1) as f64 * MAP_PATH_STEP_DEG;
+                let env = self.envelope(wave, path_deg * km_per_deg);
+                let cells = &mut grid[row * MAP_SPEED_COUNT..(row + 1) * MAP_SPEED_COUNT];
+                for (col, cell) in cells.iter_mut().enumerate() {
+                    let speed = lo + col as f64 * step;
+                    *cell = env.linear(path_deg / speed) as f32;
+                }
+                let peak = cells.iter().fold(0.0f32, |m, &v| m.max(v));
+                if peak > 0.0 {
+                    cells.iter_mut().for_each(|v| *v /= peak);
+                }
+            }
+            layers.push(grid);
+        }
+        SurfaceMapGrid {
+            speed_start_deg_s: lo,
+            speed_step_deg_s: step,
+            layers,
+        }
+    }
+}
+
+/// Columns of [`SurfaceMapGrid`]: apparent speeds from a little below the slowest group velocity
+/// of either wave to a little above the fastest.
+pub const MAP_SPEED_COUNT: usize = 128;
+const MAP_SPEED_MARGIN_KM_S: f64 = 0.3;
+/// Rows of [`SurfaceMapGrid`]: path lengths 0° to 360° (R2 and L2 come back to the epicentre).
+pub const MAP_PATH_STEP_DEG: f64 = 2.5;
+pub const MAP_PATH_COUNT: usize = 145;
+
+/// Where the surface-wave trains are, for the map: per wave (Rayleigh, then Love), a grid of
+/// brightness 0..1, row-major `[path][speed]`, rows [`MAP_PATH_STEP_DEG`] apart from 0°, columns
+/// apparent speeds (degrees of arc per second since origin) from `speed_start_deg_s`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SurfaceMapGrid {
+    pub speed_start_deg_s: f64,
+    pub speed_step_deg_s: f64,
+    pub layers: Vec<Vec<f32>>,
+}
+
+impl SurfaceMapGrid {
+    /// Brightness of `layer` at `path_deg` and `t_s` since origin, bilinear as in the map
+    /// shader; 0 outside the grid.
+    pub fn sample(&self, layer: usize, path_deg: f64, t_s: f64) -> f64 {
+        if t_s <= 0.0 {
+            return 0.0;
+        }
+        let fu = (path_deg / t_s - self.speed_start_deg_s) / self.speed_step_deg_s;
+        let fv = path_deg / MAP_PATH_STEP_DEG;
+        let (nu, nv) = (MAP_SPEED_COUNT as f64, MAP_PATH_COUNT as f64);
+        if !(0.0..=nu - 1.0).contains(&fu) || !(0.0..=nv - 1.0).contains(&fv) {
+            return 0.0;
+        }
+        let (i, j) = (fu.floor().min(nu - 2.0), fv.floor().min(nv - 2.0));
+        let (fx, fy) = (fu - i, fv - j);
+        let g = &self.layers[layer];
+        let at = |x: f64, y: f64| f64::from(g[y as usize * MAP_SPEED_COUNT + x as usize]);
+        let top = at(i, j) * (1.0 - fx) + at(i + 1.0, j) * fx;
+        let bottom = at(i, j + 1.0) * (1.0 - fx) + at(i + 1.0, j + 1.0) * fx;
+        top * (1.0 - fy) + bottom * fy
     }
 }
 
@@ -437,6 +581,72 @@ mod tests {
         }
         assert_eq!(a.at(a.start_s - 1.0), 0.0);
         assert_eq!(a.at(a.end_s() + 1.0), 0.0);
+    }
+
+    #[test]
+    fn cache_returns_the_same_train_and_stays_bounded() {
+        let sw = waves();
+        let mut cache = TrainCache::default();
+        let a = cache.get(&sw, SurfaceWave::Love, km(30.0)).clone();
+        assert_eq!(a, sw.train(SurfaceWave::Love, km(30.0)));
+        assert_eq!(cache.get(&sw, SurfaceWave::Love, km(30.0)), &a);
+        assert_eq!(cache.len(), 1);
+        for k in 0..TrainCache::CAPACITY + 3 {
+            cache.get(&sw, SurfaceWave::Rayleigh, k as f64);
+        }
+        assert!(cache.len() <= TrainCache::CAPACITY);
+    }
+
+    /// The map draws each train where the traces have it: in each row the brightest apparent
+    /// speed is the path over the time of the train's envelope peak, within a column.
+    #[test]
+    fn map_grid_puts_the_band_where_the_train_is() {
+        let sw = waves();
+        let grid = sw.map_grid();
+        assert_eq!(grid.layers.len(), 2);
+        for (layer, wave) in [SurfaceWave::Rayleigh, SurfaceWave::Love]
+            .into_iter()
+            .enumerate()
+        {
+            for row in [4, 24, 60, 100, 140] {
+                let path_deg = row as f64 * MAP_PATH_STEP_DEG;
+                let env = sw.envelope(wave, km(path_deg));
+                let k = (0..env.samples.len())
+                    .max_by(|&a, &b| env.samples[a].total_cmp(&env.samples[b]))
+                    .unwrap();
+                let want = path_deg / (env.start_s + k as f64 * env.dt_s);
+                let cells = &grid.layers[layer][row * MAP_SPEED_COUNT..(row + 1) * MAP_SPEED_COUNT];
+                let col = (0..MAP_SPEED_COUNT)
+                    .max_by(|&a, &b| cells[a].total_cmp(&cells[b]))
+                    .unwrap();
+                let got = grid.speed_start_deg_s + col as f64 * grid.speed_step_deg_s;
+                assert!(
+                    (got - want).abs() <= 1.01 * grid.speed_step_deg_s,
+                    "{wave:?} {path_deg}°: grid {got:.5} deg/s, train {want:.5}"
+                );
+                assert_eq!(cells[col], 1.0);
+                // The shader's lookup agrees with the cells at a node.
+                let t = path_deg / got;
+                assert!((grid.sample(layer, path_deg, t) - 1.0).abs() < 1e-5);
+            }
+        }
+        // Nothing before origin, nothing far outside the speeds.
+        assert_eq!(grid.sample(0, 30.0, -5.0), 0.0);
+        assert_eq!(grid.sample(0, 30.0, 1.0), 0.0);
+    }
+
+    #[test]
+    fn envelope_bounds_the_train() {
+        let sw = waves();
+        let t = sw.train(SurfaceWave::Rayleigh, km(70.0));
+        let e = sw.envelope(SurfaceWave::Rayleigh, km(70.0));
+        assert_eq!(t.samples.len(), e.samples.len());
+        assert!(
+            t.samples
+                .iter()
+                .zip(&e.samples)
+                .all(|(a, b)| a.abs() <= b + 1e-12)
+        );
     }
 
     #[test]

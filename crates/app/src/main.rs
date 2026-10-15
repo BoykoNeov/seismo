@@ -243,6 +243,14 @@ impl SeismoApp {
         let shown: Vec<Event> = events.shown().iter().map(|l| l.event.clone()).collect();
         let keys: Vec<EventKey> = events.shown().iter().map(|l| l.key).collect();
         let sim = Simulation::new(table, model, dispersion, shown).context("ray tracer")?;
+        let started = Instant::now();
+        renderer
+            .map
+            .upload_surface(&rs.queue, &sim.surface_waves().map_grid());
+        tracing::info!(
+            ms = started.elapsed().as_millis() as u64,
+            "built surface-wave map grid"
+        );
         let mut traces = Traces::new(stations, sim.tracer().clone());
         traces.pick_defaults(&sim.events[0]);
         let mantle = MantleWorker::spawn(sim.tracer().clone(), sim.boundaries().to_vec());
@@ -268,6 +276,10 @@ impl SeismoApp {
         let mut style = render::MapStyle::default();
         if let Some(x) = arg("--mantle").and_then(|s| s.parse::<f32>().ok()) {
             style.mantle_strength = x.clamp(0.0, MAX_MANTLE_STRENGTH);
+        }
+        //   --surface <x>       surface-wave band brightness (0 hides them)
+        if let Some(x) = arg("--surface").and_then(|s| s.parse::<f32>().ok()) {
+            style.surface_brightness = x.clamp(0.0, 1.0);
         }
         //   --coast <list>      comma-separated: off, wide
         for flag in arg("--coast").unwrap_or_default().split(',') {
@@ -898,7 +910,10 @@ impl SeismoApp {
         ui.monospace(format!("t   {t:9.1} s"));
         ui.monospace(format!("P   {}", fmt(p)));
         ui.monospace(format!("S   {}", fmt(s)));
-        ui.colored_label(GREEN_DIM, "Map: P solid, S dashed. Direct waves only.");
+        ui.colored_label(
+            GREEN_DIM,
+            "Map: P solid, S dashed (direct waves only); surface waves: Rayleigh glow, Love dotted.",
+        );
 
         ui.separator();
         egui::CollapsingHeader::new("Events")
@@ -981,6 +996,8 @@ impl SeismoApp {
                 ui.add(egui::Slider::new(&mut s.trail_strength, 0.0..=1.0).text("trail"));
                 ui.add(egui::Slider::new(&mut s.grid_brightness, 0.0..=1.0).text("grid"));
                 ui.add(egui::Slider::new(&mut s.coast_brightness, 0.0..=1.0).text("coast"));
+                ui.add(egui::Slider::new(&mut s.surface_brightness, 0.0..=1.0).text("surface"))
+                    .on_hover_text("Surface-wave bands; 0 hides them");
                 ui.checkbox(&mut s.coast_wide, "Wide coastlines")
                     .on_hover_text(
                         "Wider lines stay solid; thin ones are hatched by the scanlines",
@@ -1034,10 +1051,15 @@ impl SeismoApp {
         let now = self.clock.now();
         let linger = 5.0 * self.style.trail_s as f64;
         let map_events = self.sim.map_events(now, render::MAX_MAP_EVENTS, linger);
-        // Ask for the delays of every event on the map (the selected one, then largest first),
-        // and upload any that are ready into a GPU slot.
+        // Ask for the delays of every event whose body waves are on the map (the selected one,
+        // then largest first), and upload any that are ready into a GPU slot.
         let sel = self.sel();
-        let mut order: Vec<usize> = map_events.iter().map(|m| m.index).collect();
+        // Surface waves are 1D: events with only those left need no delays.
+        let mut order: Vec<usize> = map_events
+            .iter()
+            .filter(|m| m.body)
+            .map(|m| m.index)
+            .collect();
         if let Some(i) = order.iter().position(|&i| i == sel) {
             order[..=i].rotate_right(1);
         }

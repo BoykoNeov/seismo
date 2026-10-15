@@ -22,7 +22,7 @@ use crate::geo::{EARTH_RADIUS_KM, azimuth_deg, great_circle_deg};
 use crate::mantle::{DELAY_PHASES, DelayGrid};
 use crate::raytrace::{Landing, RayPhase, RayTracer, Wave};
 use crate::station::Station;
-use crate::surface::{CENTRAL_PERIOD_S, SurfaceWaves};
+use crate::surface::{CENTRAL_PERIOD_S, SurfaceWaves, TrainCache};
 use crate::tables::{SurfaceWave, TravelTimeTable};
 
 /// Which way of shaking a seismogram records.
@@ -517,7 +517,7 @@ pub struct Seismogram {
 /// The `component` seismogram of `arrivals` from `start_s` to `end_s`: a Ricker wavelet and a
 /// decaying scattered coda per body wave, a dispersed train from `surface` per surface wave,
 /// and a faint background noise. `seed` fixes the coda and noise; the same inputs give the
-/// same trace.
+/// same trace. `trains` keeps the surface-wave trains for the next call.
 pub fn synthesize(
     arrivals: &[StationArrival],
     component: Component,
@@ -525,6 +525,7 @@ pub fn synthesize(
     end_s: f64,
     seed: u64,
     surface: &SurfaceWaves,
+    trains: &mut TrainCache,
 ) -> Seismogram {
     let dt = SAMPLE_DT_S;
     let n = (((end_s - start_s) / dt).ceil().max(0.0) as usize) + 1;
@@ -547,9 +548,10 @@ pub fn synthesize(
             if t1 + shift < start_s || t0 + shift > end_s {
                 continue;
             }
-            let train = surface.train(wave, a.path_km);
+            let train = trains.get(surface, wave, a.path_km);
+            let first = train.start_s.max(surface.onset_s(wave, a.path_km));
             let (k0, k1) = (
-                index(train.start_s + shift) as usize,
+                index(first + shift) as usize,
                 index(train.end_s() + shift) as usize,
             );
             for (k, out) in x.iter_mut().enumerate().take(k1 + 1).skip(k0) {
@@ -903,7 +905,15 @@ mod tests {
         let (rt, table, sw) = (tracer(), table(), surface());
         let sp = Spreading::build(&rt, 10.0);
         let arr = station_arrivals(&table, &sp, &event(10.0), &station_at(60.0), None, 1.0, &sw);
-        let trace = synthesize(&arr, Component::Vertical, 0.0, 4000.0, 1, &sw);
+        let trace = synthesize(
+            &arr,
+            Component::Vertical,
+            0.0,
+            4000.0,
+            1,
+            &sw,
+            &mut TrainCache::default(),
+        );
         let find = |name: &str| arr.iter().find(|a| a.phase == name).unwrap();
         let window_peak = |from: f64, to: f64| {
             (0..trace.samples.len())
@@ -931,7 +941,15 @@ mod tests {
                 let arr =
                     station_arrivals(&table, &sp, &event(10.0), &station_at(d), None, 1.0, &sw);
                 let tp = arr.iter().find(|a| a.phase == "P").unwrap().time_s;
-                let trace = synthesize(&arr, component, 0.0, 3000.0, 3, &sw);
+                let trace = synthesize(
+                    &arr,
+                    component,
+                    0.0,
+                    3000.0,
+                    3,
+                    &sw,
+                    &mut TrainCache::default(),
+                );
                 let before = (0..trace.samples.len())
                     .filter(|&k| trace.time(k) < tp - 2.0)
                     .fold(0.0f32, |m, k| m.max(trace.samples[k].abs()));
@@ -1015,7 +1033,15 @@ mod tests {
 
     #[test]
     fn quiet_before_the_first_arrival_and_deterministic() {
-        let s = synthesize(&picks(), Component::Vertical, 0.0, 600.0, 7, &surface());
+        let s = synthesize(
+            &picks(),
+            Component::Vertical,
+            0.0,
+            600.0,
+            7,
+            &surface(),
+            &mut TrainCache::default(),
+        );
         assert!(s.peak > 0.0);
         let before = s
             .samples
@@ -1034,18 +1060,50 @@ mod tests {
         assert!(s.samples[k] > 0.5);
         assert_eq!(
             s,
-            synthesize(&picks(), Component::Vertical, 0.0, 600.0, 7, &surface())
+            synthesize(
+                &picks(),
+                Component::Vertical,
+                0.0,
+                600.0,
+                7,
+                &surface(),
+                &mut TrainCache::default()
+            )
         );
         assert_ne!(
             s,
-            synthesize(&picks(), Component::Vertical, 0.0, 600.0, 8, &surface())
+            synthesize(
+                &picks(),
+                Component::Vertical,
+                0.0,
+                600.0,
+                8,
+                &surface(),
+                &mut TrainCache::default()
+            )
         );
     }
 
     #[test]
     fn components_see_different_waves() {
-        let z = synthesize(&picks(), Component::Vertical, 0.0, 600.0, 7, &surface());
-        let t = synthesize(&picks(), Component::Transverse, 0.0, 600.0, 7, &surface());
+        let z = synthesize(
+            &picks(),
+            Component::Vertical,
+            0.0,
+            600.0,
+            7,
+            &surface(),
+            &mut TrainCache::default(),
+        );
+        let t = synthesize(
+            &picks(),
+            Component::Transverse,
+            0.0,
+            600.0,
+            7,
+            &surface(),
+            &mut TrainCache::default(),
+        );
         let at =
             |s: &Seismogram, time: f64| s.samples[((time - s.start_s) / s.dt_s).round() as usize];
         // No P on the transverse; no Love on the vertical (only noise there).
@@ -1061,7 +1119,15 @@ mod tests {
 
     #[test]
     fn columns_keep_every_peak_and_stop_at_the_pen() {
-        let s = synthesize(&picks(), Component::Vertical, 0.0, 600.0, 7, &surface());
+        let s = synthesize(
+            &picks(),
+            Component::Vertical,
+            0.0,
+            600.0,
+            7,
+            &surface(),
+            &mut TrainCache::default(),
+        );
         // 600 s over 50 columns: 12 s per column, far wider than the 1 s P wavelet.
         let cols = s.columns(0.0, 600.0, 50, f64::INFINITY, s.peak);
         assert_eq!(cols.len(), 50);
