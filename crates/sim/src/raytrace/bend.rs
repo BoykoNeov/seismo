@@ -1008,7 +1008,7 @@ mod tests {
 
     #[test]
     fn bent_fans_at_real_strength_cover_the_1d_fans() {
-        // At real strength each phase's bent fan reaches the surface over nearly the same range
+        // At published strength each phase's bent fan reaches the surface over nearly the same range
         // as its 1D fan, and the bent P and S fronts run as far along the surface by each time.
         // Exception: the far end of PKP (towards 180°) comes from rays that only graze the core;
         // where the rock above their exit point is faster than above their entry, ray theory

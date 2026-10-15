@@ -70,7 +70,7 @@ no dependence on the working directory.
   pause, or run at any speed.
 - Surface arrival times come from `tables`, plus a per-event 3D-mantle delay
   computed in `sim` along the 1D rays through the 3D model (first order,
-  −∫ dlnV dt; rays not bent), scaled by a user strength (0 = 1D, 1 = real,
+  −∫ dlnV dt; rays not bent), scaled by a user strength (0 = 1D, 1 = the published model,
   default 1; above 1 the UI says EXAGGERATED). The delay is never "3D minus
   table": the tracer/table tolerance is as large as the signal. Wavefronts and ray paths
   *inside* the Earth (slice view, seismogram amplitudes) come from the ray

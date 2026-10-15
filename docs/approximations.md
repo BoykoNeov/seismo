@@ -184,21 +184,22 @@ about 1500 km) on 21 radial splines.
 - **Strength 1 is the published model, not the real Earth.** Like every global tomography
   model, SP12RTS is damped and limited to degree 12, so its fast and slow regions are smoother
   and usually weaker than the real ones; the authors also publish less- and more-damped
-  versions. "Real" in the strength control means "as published"; the true Earth's 3D delays are
-  probably somewhat larger, so settings a little above 1× are not necessarily unphysical.
+  versions. The strength control calls 1× "published model" for that reason; the true Earth's
+  3D delays are probably somewhat larger, so settings a little above 1× are not necessarily
+  unphysical (the screen still says EXAGGERATED there, as no figure says how much larger).
 
 ## Map: 3D delays along the 1D rays, not bent rays
 
 The map's fronts are the table's arrival times plus a delay from the 3D mantle, scaled by the
-strength setting (0 = 1D, 1 = real, up to 20× exaggerated; the screen says EXAGGERATED above
-1×).
+strength setting (0 = 1D, 1 = the published model, up to 20× exaggerated; the screen says
+EXAGGERATED above 1×).
 
 - **First order, unbent rays.** Each ak135 ray is laid out along an azimuth from the source and
   its delay is −∫ dlnV dt along that fixed path. Bending the ray through the structure would
   change the time only at second order (Fermat's principle), a small fraction of a second at
-  real strength. When exaggerated, the delay is simply scaled; a model really that strong would
+  published strength. When exaggerated, the delay is simply scaled; a model really that strong would
   bend rays noticeably and the true times would differ.
-- **Measured size.** For the Tōhoku event at real strength the delay varies with direction by
+- **Measured size.** For the Tōhoku event at published strength the delay varies with direction by
   about 2–3 s for P and 4–11 s for S, moving the fronts by about 0.2°–1.2°: one to six pixels on
   a full-HD map.
 - **Coarse grid.** Delays are computed every 1° of distance and every 5° of azimuth and
@@ -221,7 +222,7 @@ ray refracts by Snell's law, reflects, or is rejected by the same per-phase rule
 tracer.
 
 - **In the plane only.** Rays stay in the vertical plane of the cut; the part of the velocity
-  gradient across the plane is ignored. Real rays drift a little sideways; at real strength the
+  gradient across the plane is ignored. Real rays drift a little sideways; at published strength the
   drift is small.
 - **Checked against the 1D tracer.** With no perturbation the bent rays land within 0.05° of
   the closed-form 1D rays, and on time within 0.1 s at the same landing point, for all eleven
@@ -229,7 +230,7 @@ tracer.
   shallow P and S rays and the surface-reflected PP and SS). Knife-edge rays, where a
   1e-5 rad change of take-off angle moves the landing point by more than 0.05° (rays turning
   just above a discontinuity or reflecting off it), are left out of that check. The bent fans
-  cover at least the 1D fans' distance ranges. At real strength a bent ray's time, moved to the
+  cover at least the 1D fans' distance ranges. At published strength a bent ray's time, moved to the
   1D ray's landing point, matches the map's 1D time + delay within 0.3 s, so map and slice
   agree.
 - **Grazing the core.** Rays that only just enter the core (the far end of PKP, towards 180°)

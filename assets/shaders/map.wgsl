@@ -34,7 +34,7 @@ struct Uniforms {
     slice: vec4<f32>,
     // delay grid: dist_step_deg, dist_count, az_step_deg, az_count
     delay_axis: vec4<f32>,
-    // 3D-mantle strength (0 = 1D, 1 = real), unused, unused, unused
+    // 3D-mantle strength (0 = 1D, 1 = published model), unused, unused, unused
     mantle: vec4<f32>,
     events: array<MapEvent, MAX_EVENTS>,
 };

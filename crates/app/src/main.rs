@@ -35,7 +35,7 @@ const MIN_TRACES_WIDTH: f32 = 260.0;
 /// A click within this many points of a station marker picks the station.
 const PICK_RADIUS: f32 = 9.0;
 
-/// Largest 3D-mantle strength offered (×real).
+/// Largest 3D-mantle strength offered (× the published model).
 const MAX_MANTLE_STRENGTH: f32 = 20.0;
 
 /// Scrub range around the selected event's origin (s).
@@ -261,7 +261,7 @@ impl SeismoApp {
                 .unwrap_or(3.0);
             (std::path::PathBuf::from(p), after, false)
         });
-        //   --mantle <x>        3D-mantle strength (0 = 1D, 1 = real)
+        //   --mantle <x>        3D-mantle strength (0 = 1D, 1 = published model)
         let mut style = render::MapStyle::default();
         if let Some(x) = arg("--mantle").and_then(|s| s.parse::<f32>().ok()) {
             style.mantle_strength = x.clamp(0.0, MAX_MANTLE_STRENGTH);
@@ -758,7 +758,7 @@ impl SeismoApp {
             if ui.button("1D").clicked() {
                 *strength = 0.0;
             }
-            if ui.button("Real").clicked() {
+            if ui.button("Model").clicked() {
                 *strength = 1.0;
             }
         });
@@ -766,7 +766,7 @@ impl SeismoApp {
         if s == 0.0 {
             ui.label("1D: ak135 only");
         } else if s == 1.0 {
-            ui.label("Real strength");
+            ui.label("Published model strength");
         } else if s > 1.0 {
             ui.colored_label(
                 GREEN,
