@@ -197,6 +197,6 @@ impl SceneRenderer {
                 theme,
             );
         }
-        self.crt.draw(queue, encoder, self.size, crt, time);
+        self.crt.draw(queue, encoder, self.size, crt, theme.p_front, time);
     }
 }

@@ -248,9 +248,13 @@ place a kind name is shown. Making or editing one never moves the clock.
     live in the app (`SliceStyle::for_look`, `CrtSettings::for_look`), map and trace sliders
     are shared.
 - CRT pass is a single full-screen post-process over the scene only:
-  scanlines, bloom (half-resolution blur, threshold per look), slight barrel distortion, phosphor
-  persistence (decay buffer), subtle flicker. Every effect has a uniform so it
-  can be disabled for debugging. egui controls are drawn on top, undistorted;
+  scanlines (shallower where the beam is bright, as a fat beam fills its gaps), bloom
+  (half-resolution blur, threshold per look), slight barrel distortion, phosphor persistence
+  (decay buffer), subtle flicker, hot spots (overbright cores go pale, a saturated phosphor),
+  faint per-frame signal noise in the phosphor colour, a slow rolling hum bar, a vignette with
+  rounded glass corners, and a warm-up (the picture opens from a bright line when the app
+  starts or the look switches to CRT; overlay labels wait for it). Every effect has an enable
+  flag and a uniform so it can be disabled for debugging (`--crt off,noscan,...`). egui controls are drawn on top, undistorted;
   mouse picking on the scene undoes the barrel distortion. The modern look runs the same pass
   with only bloom on.
 - Persistence decays per real second (frame-rate independent) and is cleared on

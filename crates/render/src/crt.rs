@@ -1,5 +1,7 @@
 //! CRT post-process: phosphor persistence, bloom (half-resolution blur), barrel distortion,
-//! scanlines and flicker, over the scene only. egui draws on top, undistorted; whatever it
+//! scanlines (thinner where the beam is bright), hot spots going pale, signal noise, a rolling
+//! hum bar, vignette, rounded glass corners, flicker, and a warm-up when the tube is switched
+//! on, over the scene only. egui draws on top, undistorted; whatever it
 //! places over the scene goes through [`CrtSettings::scene_to_display`], and mouse picking
 //! through [`CrtSettings::display_to_scene`].
 
@@ -33,6 +35,33 @@ pub struct CrtSettings {
     pub flicker: bool,
     /// Largest brightness dip, [0, 1].
     pub flicker_amount: f32,
+    /// A bright beam is a fat beam: how much a fully bright pixel fills the gap between its
+    /// scanlines, [0, 1] (0 = the lines are as deep everywhere).
+    pub scanline_fill: f32,
+    /// Overbright cores go pale, as a saturated phosphor does.
+    pub hot_spots: bool,
+    /// How fast: 1 means a level of 2 is fully white.
+    pub hot_spot_amount: f32,
+    /// The tube dims towards its edges, and the glass has rounded corners.
+    pub vignette: bool,
+    /// Darkening at the far corners, [0, 1].
+    pub vignette_amount: f32,
+    /// Corner radius as a fraction of the picture's shorter side (0 = square).
+    pub corner_radius: f32,
+    /// Faint grain that changes every frame.
+    pub noise: bool,
+    /// Peak-to-peak brightness of the grain on a bright pixel.
+    pub noise_amount: f32,
+    /// A faint band of brightness rolling down the picture.
+    pub hum_bar: bool,
+    /// Brightness gain at the band's centre.
+    pub hum_bar_amount: f32,
+    /// Seconds for the band to roll once down the picture.
+    pub hum_bar_period_s: f32,
+    /// The picture opens from a bright horizontal line when the tube is switched on.
+    pub warm_up: bool,
+    /// How long the opening takes, real seconds.
+    pub warm_up_s: f32,
 }
 
 impl Default for CrtSettings {
@@ -53,6 +82,19 @@ impl Default for CrtSettings {
             barrel_amount: 0.04,
             flicker: true,
             flicker_amount: 0.03,
+            scanline_fill: 0.6,
+            hot_spots: true,
+            hot_spot_amount: 0.6,
+            vignette: true,
+            vignette_amount: 0.35,
+            corner_radius: 0.03,
+            noise: true,
+            noise_amount: 0.06,
+            hum_bar: true,
+            hum_bar_amount: 0.035,
+            hum_bar_period_s: 9.0,
+            warm_up: true,
+            warm_up_s: 0.9,
         }
     }
 }
@@ -74,6 +116,11 @@ impl CrtSettings {
             bloom_threshold: 0.45,
             barrel: false,
             flicker: false,
+            hot_spots: false,
+            vignette: false,
+            noise: false,
+            hum_bar: false,
+            warm_up: false,
             ..Self::default()
         }
     }
@@ -122,6 +169,26 @@ impl CrtSettings {
         1.0 - self.flicker_amount.clamp(0.0, 1.0) * n
     }
 
+    /// Centre of the hum bar at `time_s` real seconds, as a fraction of the picture's height
+    /// (top 0, bottom 1): it rolls down, from just above the top to just below the bottom, once
+    /// every `hum_bar_period_s`. Parked off-screen when off.
+    pub fn hum_bar_centre(&self, time_s: f32) -> f32 {
+        if !(self.enabled && self.hum_bar) || self.hum_bar_period_s <= 0.0 {
+            return -10.0;
+        }
+        let phase = (time_s.max(0.0) / self.hum_bar_period_s).fract();
+        -0.25 + 1.5 * phase
+    }
+
+    /// Warm-up progress `since_on_s` real seconds after the tube was switched on: 0 is a
+    /// collapsed line, 1 the steady picture (at once when warm-up is off).
+    pub fn warm_up_progress(&self, since_on_s: f32) -> f32 {
+        if !(self.enabled && self.warm_up) || self.warm_up_s <= 0.0 {
+            return 1.0;
+        }
+        (since_on_s.max(0.0) / self.warm_up_s).min(1.0)
+    }
+
     /// Where the displayed pixel `p` (pixels, top-left origin, of an image `size` pixels) reads
     /// the scene from, or `None` outside the curved glass. The same mapping as `barrel` in
     /// `crt.wgsl`.
@@ -166,8 +233,11 @@ impl CrtSettings {
 pub struct FrameTime {
     /// Real seconds since the previous frame.
     pub dt_s: f32,
-    /// Real seconds since start (for flicker).
+    /// Real seconds since start (for flicker and the hum bar).
     pub time_s: f32,
+    /// Real seconds since the tube was switched on: the app's start, or the switch to this
+    /// look (for the warm-up).
+    pub since_on_s: f32,
     /// Drop the afterglow this frame (set on scrub/seek).
     pub clear_persistence: bool,
 }
@@ -181,6 +251,9 @@ struct Uniforms {
     bloom: [f32; 4],
     barrel: [f32; 4],
     flicker: [f32; 4],
+    glass: [f32; 4],
+    signal: [f32; 4],
+    tint: [f32; 4],
 }
 
 fn flag(b: bool) -> f32 {
@@ -415,13 +488,15 @@ impl CrtPass {
     }
 
     /// Encode the passes. New persistence buffers start cleared, and `clear_persistence`
-    /// (on scrub/seek) drops the afterglow for this frame.
+    /// (on scrub/seek) drops the afterglow for this frame. `phosphor` is the colour the noise
+    /// is drawn in.
     pub fn draw(
         &mut self,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         size: (u32, u32),
         s: &CrtSettings,
+        phosphor: crate::Rgb,
         time: FrameTime,
     ) {
         // The master switch and the enable flags are applied here; the shader sees only
@@ -452,6 +527,24 @@ impl CrtPass {
             ],
             barrel: [s.barrel_k(), 0.0, 0.0, 0.0],
             flicker: [s.flicker_gain(time.time_s), 0.0, 0.0, 0.0],
+            glass: [
+                if on(s.vignette) { s.vignette_amount.clamp(0.0, 1.0) } else { 0.0 },
+                if on(s.vignette) {
+                    s.corner_radius.max(0.0) * size.0.min(size.1) as f32
+                } else {
+                    0.0
+                },
+                if on(s.noise) { s.noise_amount.max(0.0) } else { 0.0 },
+                if on(s.hot_spots) { s.hot_spot_amount.max(0.0) } else { 0.0 },
+            ],
+            signal: [
+                s.hum_bar_centre(time.time_s),
+                if on(s.hum_bar) { s.hum_bar_amount.max(0.0) } else { 0.0 },
+                s.warm_up_progress(time.since_on_s),
+                if on(s.scanlines) { s.scanline_fill.clamp(0.0, 1.0) } else { 0.0 },
+            ],
+            // The noise seed changes every frame; it only needs to differ frame to frame.
+            tint: [phosphor[0], phosphor[1], phosphor[2], (time.time_s * 1000.0) % 65536.0],
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 
@@ -595,7 +688,10 @@ mod tests {
     fn modern_post_is_flat_and_steady() {
         let m = CrtSettings::modern();
         assert!(!m.scanlines && !m.persistence && !m.barrel && !m.flicker);
+        assert!(!m.hot_spots && !m.vignette && !m.noise && !m.hum_bar && !m.warm_up);
         assert_eq!(m.flicker_gain(2.5), 1.0);
+        assert_eq!(m.warm_up_progress(0.0), 1.0);
+        assert!(m.hum_bar_centre(2.5) < 0.0);
         let p = [100.0, 200.0];
         assert_eq!(m.scene_to_display(SIZE, p), p);
         // Its glow starts higher up, so only bright features get one.
@@ -623,5 +719,47 @@ mod tests {
             ..s
         };
         assert_eq!(off.flicker_gain(3.7), 1.0);
+    }
+
+    #[test]
+    fn hum_bar_rolls_down_once_a_period_and_parks_when_off() {
+        let s = CrtSettings {
+            hum_bar_period_s: 4.0,
+            ..Default::default()
+        };
+        let top = s.hum_bar_centre(0.0);
+        assert!(top < 0.0, "starts above the picture: {top}");
+        let mid = s.hum_bar_centre(2.0);
+        assert!((0.0..=1.0).contains(&mid) && mid > top);
+        assert!(s.hum_bar_centre(3.99) > 1.0, "leaves at the bottom");
+        assert!((s.hum_bar_centre(4.0) - top).abs() < 1e-5, "wraps");
+        let off = CrtSettings {
+            hum_bar: false,
+            ..s
+        };
+        assert!(off.hum_bar_centre(2.0) < -1.0);
+        let master_off = CrtSettings {
+            enabled: false,
+            ..s
+        };
+        assert!(master_off.hum_bar_centre(2.0) < -1.0);
+    }
+
+    #[test]
+    fn warm_up_opens_then_holds() {
+        let s = CrtSettings {
+            warm_up_s: 0.5,
+            ..Default::default()
+        };
+        assert_eq!(s.warm_up_progress(0.0), 0.0);
+        assert!((s.warm_up_progress(0.25) - 0.5).abs() < 1e-6);
+        assert_eq!(s.warm_up_progress(0.5), 1.0);
+        assert_eq!(s.warm_up_progress(60.0), 1.0);
+        assert_eq!(s.warm_up_progress(-1.0), 0.0);
+        let off = CrtSettings {
+            warm_up: false,
+            ..s
+        };
+        assert_eq!(off.warm_up_progress(0.0), 1.0);
     }
 }

@@ -206,6 +206,9 @@ struct SeismoApp {
     look: render::Look,
     /// The look was switched since the last frame: the CRT afterglow is dropped.
     look_changed: bool,
+    /// When the current look was switched on (the CRT warms up from then): the first frame
+    /// drawn, or the switch of looks.
+    look_since: Option<Instant>,
     /// Post-process settings per [`render::Look`]: the CRT's effects, the modern look's glow.
     post: [render::CrtSettings; 2],
     style: render::MapStyle,
@@ -261,8 +264,8 @@ impl SeismoApp {
         //                       its origin (without it the clock starts at now, live)
         //   --offline           no network: events come from the saved copy only
         //   --speed <x>         initial clock speed
-        //   --crt <list>        comma-separated: off, noscan, nopersist,
-        //                       nobloom, nobarrel, noflicker
+        //   --crt <list>        comma-separated: off, noscan, nopersist, nobloom, nobarrel,
+        //                       noflicker, nohot, novignette, nonoise, nohum, nowarmup
         let arg = |name: &str| std::env::args().skip_while(|a| a != name).nth(1);
         let flag = |name: &str| std::env::args().any(|a| a == name);
         let look = match arg("--look").as_deref() {
@@ -395,6 +398,11 @@ impl SeismoApp {
                 "nobloom" => crt.bloom = false,
                 "nobarrel" => crt.barrel = false,
                 "noflicker" => crt.flicker = false,
+                "nohot" => crt.hot_spots = false,
+                "novignette" => crt.vignette = false,
+                "nonoise" => crt.noise = false,
+                "nohum" => crt.hum_bar = false,
+                "nowarmup" => crt.warm_up = false,
                 _ => {}
             }
         }
@@ -436,6 +444,7 @@ impl SeismoApp {
             texture_id,
             look,
             look_changed: false,
+            look_since: None,
             post,
             style,
             started: now,
@@ -473,6 +482,7 @@ impl SeismoApp {
         }
         self.look = look;
         self.look_changed = true;
+        self.look_since = Some(Instant::now());
         ctx.set_visuals(visuals_for(look));
     }
 
@@ -1415,6 +1425,41 @@ impl SeismoApp {
                         c.flicker,
                         egui::Slider::new(&mut c.flicker_amount, 0.0..=0.2).text("amount"),
                     );
+                    ui.checkbox(&mut c.hot_spots, "hot spots go pale").on_hover_text(
+                        "The overbright core of a line whitens, as a saturated phosphor does",
+                    );
+                    ui.add_enabled(
+                        c.hot_spots,
+                        egui::Slider::new(&mut c.hot_spot_amount, 0.0..=2.0).text("amount"),
+                    );
+                    ui.checkbox(&mut c.vignette, "vignette (dim edges, rounded corners)");
+                    ui.add_enabled(
+                        c.vignette,
+                        egui::Slider::new(&mut c.vignette_amount, 0.0..=1.0).text("darkening"),
+                    );
+                    ui.add_enabled(
+                        c.vignette,
+                        egui::Slider::new(&mut c.corner_radius, 0.0..=0.15).text("corner radius"),
+                    );
+                    ui.checkbox(&mut c.noise, "signal noise");
+                    ui.add_enabled(
+                        c.noise,
+                        egui::Slider::new(&mut c.noise_amount, 0.0..=0.3).text("amount"),
+                    );
+                    ui.checkbox(&mut c.hum_bar, "hum bar (rolling band)");
+                    ui.add_enabled(
+                        c.hum_bar,
+                        egui::Slider::new(&mut c.hum_bar_amount, 0.0..=0.2).text("amount"),
+                    );
+                    ui.add_enabled(
+                        c.hum_bar,
+                        egui::Slider::new(&mut c.hum_bar_period_s, 2.0..=30.0).text("period s"),
+                    );
+                    ui.checkbox(&mut c.warm_up, "warm-up when switched on");
+                    ui.add_enabled(
+                        c.warm_up,
+                        egui::Slider::new(&mut c.warm_up_s, 0.2..=3.0).text("seconds"),
+                    );
                 });
             });
     }
@@ -1693,12 +1738,19 @@ impl SeismoApp {
         let time = render::FrameTime {
             dt_s: real_dt as f32,
             time_s: self.started.elapsed().as_secs_f32(),
+            since_on_s: self
+                .look_since
+                .get_or_insert_with(Instant::now)
+                .elapsed()
+                .as_secs_f32(),
             clear_persistence: seek != self.last_seek_count
                 || std::mem::take(&mut self.look_changed),
         };
         self.last_seek_count = seek;
         let theme = render::Theme::for_look(self.look);
         let post = *self.post();
+        // While the CRT's picture is still opening, the labels would float over a band.
+        let warming_up = post.warm_up_progress(time.since_on_s) < 1.0;
 
         let mut encoder = rs
             .device
@@ -1741,6 +1793,9 @@ impl SeismoApp {
             egui::Image::new(egui::load::SizedTexture::new(self.texture_id, rect.size()))
                 .sense(egui::Sense::click()),
         );
+        if warming_up {
+            return;
+        }
         self.slice_labels(ui, rect, &labels);
         if let Some(vp) = trace_vp {
             self.trace_labels(ui, rect, vp, &layout, &trace_labels, &grid_times, from, to);
