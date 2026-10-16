@@ -1087,7 +1087,7 @@ mod tests {
         // reflects them back into the core, and that end of the branch is lost (see
         // docs/approximations.md). Likewise the near end of PKiKP: its rays leaving straight
         // down are tilted in the mantle, and the core magnifies the tilt, so even the steepest
-        // one lands a degree or two from the epicentre. And the far end of PS and SP: it comes
+        // one lands a degree or two from the epicentre (1.5° here). And the far end of PS and SP: it comes
         // from rays whose S leg grazes the core, and the P leg's length changes fast with the
         // ray's slant there (about 16° per s/deg near 40°), so the 3D rock near the core moves
         // that end a few degrees.
@@ -1111,7 +1111,8 @@ mod tests {
                     _ => 1.0,
                 };
                 let far_ok = b.phase == RayPhase::PKP || (bh - sh).abs() < far_tol;
-                let near_ok = b.phase == RayPhase::PKiKP || (bl - sl).abs() < 1.0;
+                let near_tol = if b.phase == RayPhase::PKiKP { 3.0 } else { 1.0 };
+                let near_ok = (bl - sl).abs() < near_tol;
                 assert!(
                     near_ok && far_ok,
                     "{:?} az {az}: bent {bl:.2}–{bh:.2}°, 1D {sl:.2}–{sh:.2}°",
