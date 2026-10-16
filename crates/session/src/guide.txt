@@ -330,6 +330,8 @@ Seismologists name each path a wave can take with letters, one for each leg of t
 - **K**: a P leg through the liquid outer core (from the German Kern, core).
 - **I**: a P leg through the inner core; **J** would be an S leg there.
 - **c**: a reflection off the core-mantle boundary; **i**: off the inner-core boundary.
+- **KK**: two crossings of the outer core, with a bounce off the underside of the core-mantle boundary in between.
+- A change of letter (P to S, or S to P) where a wave bounces is a **conversion**: PcS goes down as P and comes back up as S.
 - **p**, **s** (lower case): a short upward leg from a deep source to the surface just above it.
 - **diff**: a wave diffracted, crawling along the core-mantle boundary.
 
@@ -342,6 +344,14 @@ Seismologists name each path a wave can take with letters, one for each leg of t
 - **PKIKP** (PKPdf): straight through the inner core; it reaches the antipode after about {pkikp180_min} minutes.
 - **Pdiff, Sdiff**: diffracted around the core into [[shadow|the shadow zone]].
 - **pP, sP**: [[depth-phases|the depth phases]], echoes off the surface above a deep source.
+
+Fainter waves, on the seismograms:
+- **PcS, ScP**: reflected off the core, switching between P and S as they bounce. From a quake at the surface the two take the same time, one path run in opposite directions.
+- **PS, SP**: bounced off the surface halfway, switching between P and S there.
+- **PKiKP**: reflected off the inner core: the echo that shows its edge is sharp.
+- **PKKP, SKKS**: through the outer core twice, bouncing off the underside of the core-mantle boundary in between.
+
+@desktop In the slice these fainter waves are off until you tick them under it.
 
 === shadow | The shadow zone and the core | learn
 Seen from a quake, there is a band of the world where direct P waves do not arrive: a shadow cast by the core. In SEISMO's model direct P reaches about {p_last_deg}° from the quake; PKP waves come back to the surface from about {pkp_first_deg}°. In between, only faint diffracted and inner-core waves arrive.

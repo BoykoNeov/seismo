@@ -129,6 +129,13 @@ PcS, ScP, SKKS, PKKP, PKiKP, SP, PS. Each is cheap once named in `gen_tables.py`
 is append-only so earlier layers keep their place). They show on the traces and in the slice;
 the map stays P, S and surface bands. Check ObsPy's naming for each before assuming.
 
+**Done 2026-10-16**, all seven, ObsPy names as listed. Less cheap than it looked: the table
+part was, but the traces' amplitudes and the slice need traced rays, so both ray tracers
+(closed-form and bent) now describe each phase by its legs (wave down, wave up, where it
+bottoms out, outer-core crossings) and handle conversions at the core and at the surface, the
+inner-core reflection and the underside reflection. The new phases are off in the desktop slice
+until ticked and never drawn in the terminal slice; see `docs/approximations.md`.
+
 ### 2.5 A real crust
 
 ak135 has a flat 35 km crust everywhere. CRUST1.0 (1° grid, ~1 MB as a compact asset) would

@@ -41,8 +41,9 @@ pub enum Motion {
     Compressional,
     /// Arrives as an S wave with both SV and SH parts (S, ScS, SS, Sdiff).
     Shear,
-    /// SKS: converted to P in the liquid core, so pure SV; no SH at all.
-    CoreShear,
+    /// Arrives as an S wave with only its SV part, no SH at all: SKS and SKKS (P in the liquid
+    /// core) and PcS and PS (converted from P at a flat boundary, which gives only SV).
+    ShearSv,
     Rayleigh,
     Love,
 }
@@ -53,7 +54,7 @@ impl Motion {
     pub fn weight(self, component: Component) -> f64 {
         match (component, self) {
             (Component::Vertical, Motion::Compressional | Motion::Rayleigh) => 1.0,
-            (Component::Vertical, Motion::CoreShear) => 0.6,
+            (Component::Vertical, Motion::ShearSv) => 0.6,
             (Component::Vertical, Motion::Shear) => 0.35,
             (Component::Vertical, Motion::Love) => 0.0,
             (Component::Transverse, Motion::Shear | Motion::Love) => 1.0,
@@ -97,8 +98,10 @@ pub struct StationArrival {
 /// fixed factor standing in for the energy lost at the boundaries the ray reflects off or
 /// passes through (the tracer has no reflection or transmission coefficients). The depth phases'
 /// factors stand in for the free-surface reflection (pP) and S-to-P conversion (sP), without the
-/// angle dependence, the polarity flip or the source's radiation pattern.
-const BODY_PHASES: [(&str, Option<RayPhase>, Motion, f64); 14] = [
+/// angle dependence, the polarity flip or the source's radiation pattern; the converted phases'
+/// (PcS, ScP, PS, SP) for the share of energy a boundary converts, and PKiKP's and PKKP's for
+/// the weak reflections off the inner core and the underside of the core-mantle boundary.
+const BODY_PHASES: [(&str, Option<RayPhase>, Motion, f64); 21] = [
     ("P", Some(RayPhase::P), Motion::Compressional, 1.0),
     ("S", Some(RayPhase::S), Motion::Shear, 1.0),
     ("PcP", Some(RayPhase::PcP), Motion::Compressional, 0.2),
@@ -108,11 +111,18 @@ const BODY_PHASES: [(&str, Option<RayPhase>, Motion, f64); 14] = [
     ("PKPdf", Some(RayPhase::PKIKP), Motion::Compressional, 0.3),
     ("PP", Some(RayPhase::PP), Motion::Compressional, 0.6),
     ("SS", Some(RayPhase::SS), Motion::Shear, 0.6),
-    ("SKS", Some(RayPhase::SKS), Motion::CoreShear, 0.4),
+    ("SKS", Some(RayPhase::SKS), Motion::ShearSv, 0.4),
     ("Pdiff", None, Motion::Compressional, 1.0),
     ("Sdiff", None, Motion::Shear, 1.0),
     ("pP", Some(RayPhase::pP), Motion::Compressional, 0.7),
     ("sP", Some(RayPhase::sP), Motion::Compressional, 0.5),
+    ("PcS", Some(RayPhase::PcS), Motion::ShearSv, 0.15),
+    ("ScP", Some(RayPhase::ScP), Motion::Compressional, 0.15),
+    ("PKiKP", Some(RayPhase::PKiKP), Motion::Compressional, 0.1),
+    ("PKKP", Some(RayPhase::PKKP), Motion::Compressional, 0.1),
+    ("SKKS", Some(RayPhase::SKKS), Motion::ShearSv, 0.3),
+    ("PS", Some(RayPhase::PS), Motion::ShearSv, 0.3),
+    ("SP", Some(RayPhase::SP), Motion::Compressional, 0.3),
 ];
 
 /// Wavelet periods (s). Real body waves are shorter; these keep them visible at trace scale.
@@ -1172,5 +1182,51 @@ mod tests {
         assert_eq!(a, b);
         assert_eq!(seed_from(&["a", "bc"]), seed_from(&["a", "bc"]));
         assert_ne!(seed_from(&["ab", "c"]), seed_from(&["a", "bc"]));
+    }
+    #[test]
+    fn later_phases_reach_the_traces_fainter_than_the_direct_waves() {
+        let (rt, table) = (tracer(), table());
+        let e = event(100.0);
+        let sp = Spreading::build(&rt, e.depth_km);
+        let find = |arr: &[StationArrival], name: &str| {
+            arr.iter()
+                .find(|a| a.phase == name)
+                .copied()
+                .unwrap_or_else(|| panic!("no {name}"))
+        };
+        // (distance, phases there, the direct wave each is compared with)
+        for (d, phases) in [
+            (40.0, &["PcS", "ScP", "PKiKP", "SP"][..]),
+            (100.0, &["PKKP", "SKKS", "PS", "SP", "PKiKP"][..]),
+        ] {
+            let arr = station_arrivals(&table, &sp, &e, &station_at(d), None, 1.0, &surface());
+            let direct = arr
+                .iter()
+                .filter(|a| matches!(a.phase, "P" | "S" | "Pdiff" | "Sdiff"))
+                .map(|a| a.amplitude)
+                .fold(0.0, f64::max);
+            for &name in phases {
+                let a = find(&arr, name);
+                assert_eq!(Some(a.time_s), table.arrival(name, 100.0, d), "{name} {d}°");
+                assert!(
+                    a.amplitude > 0.0 && a.amplitude < direct,
+                    "{name} {d}°: {} vs direct {direct}",
+                    a.amplitude
+                );
+            }
+        }
+        // Converted from P to S at a flat boundary: SV only, nothing side to side.
+        for name in ["PcS", "PS", "SKKS"] {
+            let (_, _, motion, _) = BODY_PHASES.iter().find(|p| p.0 == name).unwrap();
+            assert_eq!(*motion, Motion::ShearSv);
+            assert_eq!(motion.weight(Component::Transverse), 0.0);
+            assert!(motion.weight(Component::Vertical) > 0.0);
+        }
+        // Every traced phase is on the traces, each once.
+        for phase in RayPhase::ALL {
+            let n = BODY_PHASES.iter().filter(|p| p.1 == Some(phase)).count();
+            let want = if phase == RayPhase::PKP { 2 } else { 1 };
+            assert_eq!(n, want, "{phase:?}");
+        }
     }
 }

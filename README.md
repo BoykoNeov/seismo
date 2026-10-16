@@ -113,6 +113,7 @@ Windows for every push to `main` and every pull request.
 | `--surface <x>` | Surface-wave band brightness; 0 hides them |
 | `--coast off,wide` | Coastline options |
 | `--azimuth <deg>` | Direction of the slice from the epicentre |
+| `--phases all` or `--phases P,S,PKiKP` | The phases drawn in the slice (default: all but PcS, ScP, PKiKP, PKKP, SKKS, PS, SP) |
 | `--traces off,side,shared` | Hide the traces, show the transverse component, or use one amplitude scale |
 | `--crt <list>` | Turn CRT effects off: `off`, `noscan`, `nopersist`, `nobloom`, `nobarrel`, `noflicker`, `nohot`, `novignette`, `nonoise`, `nohum`, `nowarmup` |
 | `--size <W>x<H>` | Window inner size in physical pixels |

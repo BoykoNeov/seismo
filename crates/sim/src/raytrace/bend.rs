@@ -15,7 +15,9 @@
 //! reflected, or the ray rejected, by the same per-phase rules as the closed-form tracer.
 //! The rays stay in the plane: the out-of-plane part of the gradient is ignored.
 
-use super::{Bottom, MIN_RAY_PARAM, PathPoint, Profile, Ray, RayPhase, RayTracer, Wave, decimate};
+use super::{
+    Bottom, MIN_RAY_PARAM, Marks, PathPoint, Profile, Ray, RayPhase, RayTracer, Wave, decimate,
+};
 use crate::geo::{EARTH_RADIUS_KM, destination};
 use crate::mantle::Mantle3d;
 use crate::slice::{Fan, Side};
@@ -59,6 +61,26 @@ const MAX_SEEDS: usize = 300;
 /// Probes this far (rad) beyond each edge of the 1D fan, so the bent fan's edge can be found
 /// by bisection even where it has moved.
 const EDGE_PROBE_RAD: f64 = PI / 360.0;
+
+/// `decimate` each stretch of `points` between the corners (indices, increasing), so the
+/// corners stay.
+fn decimate_between(points: Vec<PathPoint>, corners: &[usize]) -> Vec<PathPoint> {
+    let mut out: Vec<PathPoint> = Vec::with_capacity(points.len());
+    let mut start = 0;
+    for &end in corners.iter().chain([&(points.len() - 1)]) {
+        if end <= start {
+            continue;
+        }
+        let piece = decimate(points[start..=end].to_vec());
+        let skip = usize::from(!out.is_empty());
+        out.extend(piece.into_iter().skip(skip));
+        start = end;
+    }
+    if out.is_empty() {
+        out = points;
+    }
+    out
+}
 
 /// dlnVp and dlnVs on the whole great circle through the epicentre at one azimuth: angle from
 /// the epicentre along the azimuth in [0°, 360°), radius from the bottom of the 3D model to the
@@ -481,14 +503,31 @@ impl<'a> Bender<'a> {
         let source = s.point();
         let p_s_rad = (r_s * takeoff_rad.sin() / v_s).max(MIN_RAY_PARAM);
         let bottom_kind = phase.bottom();
-        // A depth phase's way up ends in a surface bounce, followed by one hop.
-        let mut hops_left = phase.hops() + usize::from(phase.is_depth_phase());
+        // Hops still to make after the current leg reaches the surface: a downgoing ray is on
+        // its first hop; an upgoing one is on its way up, after which a depth phase makes one
+        // hop of its own.
+        let mut hop = 0;
+        let mut hops_left = if upgoing {
+            usize::from(phase.is_depth_phase())
+        } else {
+            phase.hops() - 1
+        };
+        // The wave the current hop comes back up as, after its bottom (it differs from the
+        // way down only for PcS and ScP).
+        let mut up_wave = phase.hop_waves(0, false).1;
+        // Outer-core crossings left in the current hop, the current one included.
+        let mut arcs_left = phase.core_arcs();
         let mut points = vec![source];
+        // Indices of the corners (reflections and conversions): the path is thinned between
+        // them, so each stays a path point.
+        let mut corners = Vec::new();
         let mut bottom = source;
         // Whether the deepest point so far is the ray's bottom: on the first hop of a
         // downgoing ray, on the hop after the bounce of a depth phase.
         let mut tracking_bottom = !upgoing;
-        let (mut core_entry_t, mut first_surface_t, mut reflected_t) = (None, None, None);
+        let mut marks = Marks::default();
+        let (mut first_surface, mut core_entry, mut reflected, mut underside) =
+            (None, None, None, None);
         let (mut entered_core, mut entered_inner) = (false, false);
         let n_layers = self.interfaces.len() - 1;
 
@@ -577,37 +616,49 @@ impl<'a> Bender<'a> {
             }
 
             let (pr, pt) = s.radial_tangential();
-            let reflect = |s: &mut State| s.set_radial_tangential(-pr, pt);
+            // Leave the interface as `to` (up if `up`), keeping the tangential slowness (Snell);
+            // `false` if `to` cannot carry it there.
+            let leave = |s: &mut State, to: Wave, layer: usize, up: bool| -> bool {
+                let profile = self.tracer.profile(to);
+                let v = self.velocity_in_layer(profile, to, layer, s, r_if);
+                let q = 1.0 / (v * v) - pt * pt;
+                if q < 0.0 {
+                    return false;
+                }
+                s.set_radial_tangential(if up { q.sqrt() } else { -q.sqrt() }, pt);
+                true
+            };
 
             if !down && layer == 0 {
                 // At the surface.
-                if hops_left > 1 {
-                    hops_left -= 1;
-                    first_surface_t.get_or_insert(s.t);
-                    if phase.is_depth_phase() {
-                        // The bounce above the source: the hop that follows is the ray's
-                        // own, and sP continues as P (Snell: the tangential slowness is kept).
-                        tracking_bottom = true;
-                        bottom = s.point();
-                        let down = phase.arrival_wave();
-                        if down != wave {
-                            wave = down;
-                            profile = self.tracer.profile(wave);
-                            let v = self.velocity_in_layer(profile, wave, layer, &s, r_if);
-                            let q = 1.0 / (v * v) - pt * pt;
-                            if q < 0.0 {
-                                return None;
-                            }
-                            s.set_radial_tangential(-q.sqrt(), pt);
-                            continue;
-                        }
-                    } else {
-                        tracking_bottom = false;
-                    }
-                    reflect(&mut s);
-                    continue;
+                if hops_left == 0 {
+                    break;
                 }
-                break;
+                hops_left -= 1;
+                corners.push(points.len() - 1);
+                first_surface.get_or_insert(s.t);
+                // The hop that follows is the ray's own after a depth phase's way up.
+                if upgoing && hop == 0 && !tracking_bottom {
+                    tracking_bottom = true;
+                    bottom = s.point();
+                } else {
+                    hop += 1;
+                    tracking_bottom = false;
+                }
+                let (down_wave, next_up) = phase.hop_waves(hop, upgoing);
+                up_wave = next_up;
+                arcs_left = phase.core_arcs();
+                if down_wave != wave {
+                    // Converted at the bounce (sP, PS, SP).
+                    if !leave(&mut s, down_wave, layer, false) {
+                        return None;
+                    }
+                    wave = down_wave;
+                    profile = self.tracer.profile(wave);
+                } else {
+                    s.set_radial_tangential(-pr, pt);
+                }
+                continue;
             }
             let target = if down { layer + 1 } else { layer - 1 };
             if target >= n_layers {
@@ -623,21 +674,43 @@ impl<'a> Bender<'a> {
                 match bottom_kind {
                     Bottom::TurnMantle => return None,
                     Bottom::ReflectCmb => {
-                        reflected_t = Some(s.t);
+                        reflected = Some(s.t);
                         bottom = s.point();
+                        corners.push(points.len() - 1);
+                        if up_wave != wave {
+                            // Converted where it reflects (PcS, ScP).
+                            if !leave(&mut s, up_wave, layer, true) {
+                                return None;
+                            }
+                            wave = up_wave;
+                            profile = self.tracer.profile(wave);
+                            continue;
+                        }
                         Act::Reflect
                     }
-                    Bottom::TurnOuterCore | Bottom::TurnInnerCore => {
+                    Bottom::TurnOuterCore | Bottom::ReflectIcb | Bottom::TurnInnerCore => {
                         entered_core = true;
-                        core_entry_t.get_or_insert(s.t);
+                        core_entry.get_or_insert(s.t);
                         Act::Transmit
                     }
                 }
+            } else if is_cmb && arcs_left > 1 {
+                // Up through the outer core to the underside of the core-mantle boundary,
+                // with another crossing to make (PKKP, SKKS).
+                arcs_left -= 1;
+                underside.get_or_insert(s.t);
+                corners.push(points.len() - 1);
+                Act::Reflect
             } else if is_icb && down {
                 match bottom_kind {
                     Bottom::TurnInnerCore => {
                         entered_inner = true;
                         Act::Transmit
+                    }
+                    Bottom::ReflectIcb => {
+                        reflected = Some(s.t);
+                        corners.push(points.len() - 1);
+                        Act::Reflect
                     }
                     _ => return None,
                 }
@@ -645,7 +718,7 @@ impl<'a> Bender<'a> {
                 Act::Transmit
             };
             match act {
-                Act::Reflect => reflect(&mut s),
+                Act::Reflect => s.set_radial_tangential(-pr, pt),
                 Act::Transmit => {
                     let v_out = self.velocity_in_layer(profile, wave, target, &s, r_if);
                     let q = 1.0 / (v_out * v_out) - pt * pt;
@@ -658,40 +731,34 @@ impl<'a> Bender<'a> {
                         return None;
                     } else {
                         // Total reflection off the top of a velocity increase, as in 1D.
-                        reflect(&mut s);
+                        s.set_radial_tangential(-pr, pt);
                     }
                 }
             }
         }
-        if s.t >= MAX_TIME_S {
+        if s.t >= MAX_TIME_S || hops_left > 0 {
             return None;
         }
         let ok = match bottom_kind {
             Bottom::TurnMantle => !entered_core,
-            Bottom::ReflectCmb => reflected_t.is_some(),
-            Bottom::TurnOuterCore => entered_core && !entered_inner,
+            Bottom::ReflectCmb => reflected.is_some(),
+            Bottom::TurnOuterCore => entered_core && !entered_inner && arcs_left == 1,
+            Bottom::ReflectIcb => reflected.is_some() && !entered_inner,
             Bottom::TurnInnerCore => entered_inner,
         };
         if !ok {
             return None;
         }
-        let (shared_until_s, distinct_after_s) = match phase {
-            RayPhase::P | RayPhase::S => (0.0, 0.0),
-            RayPhase::PcP | RayPhase::ScS => (0.0, reflected_t.unwrap_or(0.0)),
-            RayPhase::PKP | RayPhase::PKIKP | RayPhase::SKS => {
-                let tc = core_entry_t.unwrap_or(0.0);
-                (tc, tc)
-            }
-            RayPhase::PP | RayPhase::SS | RayPhase::pP | RayPhase::sP => {
-                let ts = first_surface_t.unwrap_or(0.0);
-                (ts, ts)
-            }
-        };
+        marks.first_surface = first_surface.unwrap_or(0.0);
+        marks.core_entry = core_entry.unwrap_or(0.0);
+        marks.reflected = reflected.unwrap_or(0.0);
+        marks.underside = underside.unwrap_or(0.0);
+        let (shared_until_s, distinct_after_s) = phase.shared_and_distinct(&marks);
         Some(Ray {
             phase,
             takeoff_rad,
             p_s_rad,
-            points: decimate(points),
+            points: decimate_between(points, &corners),
             bottom: if upgoing && !phase.is_depth_phase() {
                 source
             } else {
@@ -699,6 +766,7 @@ impl<'a> Bender<'a> {
             },
             shared_until_s,
             distinct_after_s,
+            converted_at_s: phase.conversion(&marks),
         })
     }
 
@@ -902,11 +970,15 @@ mod tests {
                         (eb.r_km - bb.r_km).abs() < 2.0,
                         "{phase:?} bottom {eb:?} vs {bb:?}"
                     );
+                    // A mark at a surface bounce sits where that hop landed, which the bent
+                    // ray may miss by up to the landing error: allow its p·dθ as well.
+                    let slack = 0.1 + exact.p_s_rad * dth.abs().to_radians();
                     for (x, y) in [
                         (exact.shared_until_s, bent.shared_until_s),
                         (exact.distinct_after_s, bent.distinct_after_s),
+                        (exact.converted_at_s, bent.converted_at_s),
                     ] {
-                        assert!((x - y).abs() < 0.1, "{phase:?}: {x} vs {y}");
+                        assert!((x - y).abs() < slack, "{phase:?}: {x} vs {y}");
                     }
                 }
                 assert!(
@@ -1013,7 +1085,12 @@ mod tests {
         // Exception: the far end of PKP (towards 180°) comes from rays that only graze the core;
         // where the rock above their exit point is faster than above their entry, ray theory
         // reflects them back into the core, and that end of the branch is lost (see
-        // docs/approximations.md).
+        // docs/approximations.md). Likewise the near end of PKiKP: its rays leaving straight
+        // down are tilted in the mantle, and the core magnifies the tilt, so even the steepest
+        // one lands a degree or two from the epicentre. And the far end of PS and SP: it comes
+        // from rays whose S leg grazes the core, and the P leg's length changes fast with the
+        // ray's slant there (about 16° per s/deg near 40°), so the 3D rock near the core moves
+        // that end a few degrees.
         let m = model();
         let tracer = RayTracer::new(&m).unwrap();
         let mantle = mantle(&m);
@@ -1029,9 +1106,14 @@ mod tests {
             {
                 assert_eq!(b.phase, s.phase);
                 let ((bl, bh), (sl, sh)) = (span(&b.rays), span(&s.rays));
-                let far_ok = b.phase == RayPhase::PKP || (bh - sh).abs() < 1.0;
+                let far_tol = match b.phase {
+                    RayPhase::PS | RayPhase::SP => 5.0,
+                    _ => 1.0,
+                };
+                let far_ok = b.phase == RayPhase::PKP || (bh - sh).abs() < far_tol;
+                let near_ok = b.phase == RayPhase::PKiKP || (bl - sl).abs() < 1.0;
                 assert!(
-                    (bl - sl).abs() < 1.0 && far_ok,
+                    near_ok && far_ok,
                     "{:?} az {az}: bent {bl:.2}–{bh:.2}°, 1D {sl:.2}–{sh:.2}°",
                     b.phase
                 );

@@ -145,8 +145,14 @@ pub struct SliceFans {
 impl SliceFans {
     /// Fans through the 1D model: the back fans are the forward fans' rays.
     pub fn build(tracer: &RayTracer, depth_km: f64) -> Self {
+        Self::build_for(tracer, depth_km, |_| true)
+    }
+
+    /// [`Self::build`] for the phases `shown` accepts only, in `RayPhase::ALL` order.
+    pub fn build_for(tracer: &RayTracer, depth_km: f64, shown: impl Fn(RayPhase) -> bool) -> Self {
         let forward: Vec<Fan> = RayPhase::ALL
             .into_iter()
+            .filter(|&phase| shown(phase))
             .map(|phase| Fan {
                 phase,
                 side: Side::Forward,
@@ -163,6 +169,11 @@ impl SliceFans {
         Self::from_fans(tracer, depth_km, forward.into_iter().chain(back).collect())
     }
 
+    /// Whether there is a fan of `phase`.
+    pub fn has(&self, phase: RayPhase) -> bool {
+        self.fans.iter().any(|f| f.phase == phase)
+    }
+
     /// Fans traced elsewhere (forward fans first).
     pub fn from_fans(tracer: &RayTracer, depth_km: f64, fans: Vec<Fan>) -> Self {
         Self {
@@ -177,11 +188,16 @@ impl SliceFans {
     /// still on a path another fan draws, or is outside the slice's half, and where neighbours
     /// are far apart. Each phase is labelled once, on its forward fan if that shows it.
     pub fn fronts_at(&self, t: f64) -> SliceFronts {
+        self.fronts_where(t, |_| true)
+    }
+
+    /// [`Self::fronts_at`] for the phases `shown` accepts only; the others cost nothing.
+    pub fn fronts_where(&self, t: f64, shown: impl Fn(RayPhase) -> bool) -> SliceFronts {
         let mut out = SliceFronts::default();
         if t < 0.0 {
             return out;
         }
-        for fan in &self.fans {
+        for fan in self.fans.iter().filter(|f| shown(f.phase)) {
             let mut current: Vec<SlicePoint> = Vec::new();
             let mut current_wave = fan.phase.arrival_wave();
             let mut labelled: Vec<SlicePoint> = Vec::new();
@@ -238,11 +254,21 @@ impl SliceFans {
     /// spread evenly through it, inside the slice's half. Lines break where the wave type
     /// changes.
     pub fn ray_paths_until(&self, t: f64, per_fan: usize) -> Vec<SliceLine> {
+        self.ray_paths_where(t, per_fan, |_| true)
+    }
+
+    /// [`Self::ray_paths_until`] for the phases `shown` accepts only.
+    pub fn ray_paths_where(
+        &self,
+        t: f64,
+        per_fan: usize,
+        shown: impl Fn(RayPhase) -> bool,
+    ) -> Vec<SliceLine> {
         let mut out = Vec::new();
         if t <= 0.0 || per_fan == 0 {
             return out;
         }
-        for fan in &self.fans {
+        for fan in self.fans.iter().filter(|f| shown(f.phase)) {
             let n = fan.rays.len();
             if n == 0 {
                 continue;

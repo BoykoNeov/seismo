@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 
 use crate::event::Event;
 use crate::facts::ModelFacts;
+use crate::raytrace::RayPhase;
 use crate::raytrace::{RayTraceError, RayTracer};
 use crate::slice::{Boundary, SliceFans, named_boundaries};
 use crate::surface::SurfaceWaves;
@@ -101,10 +102,10 @@ impl Simulation {
         &self.boundaries
     }
 
-    /// Ray fans for the slice view from a source at `depth_km`. Takes a fraction of a second;
-    /// callers cache the result per depth.
-    pub fn slice_fans(&self, depth_km: f64) -> SliceFans {
-        SliceFans::build(&self.tracer, depth_km)
+    /// Ray fans for the slice view from a source at `depth_km`, for the phases `shown`
+    /// accepts. Takes a fraction of a second; callers cache the result per depth.
+    pub fn slice_fans(&self, depth_km: f64, shown: impl Fn(RayPhase) -> bool) -> SliceFans {
+        SliceFans::build_for(&self.tracer, depth_km, shown)
     }
 
     /// The state of every event at `now`.

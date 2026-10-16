@@ -59,6 +59,32 @@ surface can carry, so it has no sP; ObsPy and the tracer agree on that edge.
   of pP and sP next to P are display choices. sP takes the source's S weight (it leaves as S),
   pP the P weight.
 
+## Converted and doubly reflected phases
+
+Seven later phases, appended to the table after sP (layers 14–20), each ObsPy's first arrival
+under its own name:
+
+- **PcS, ScP**: down as one wave, reflected off the core-mantle boundary as the other. From a
+  surface source the two run the same path in opposite directions and their times are equal;
+  from depth they differ. ScP exists only for S rays leaving steeply: a slanter one has no P
+  leg that reaches the core.
+- **PS, SP**: down and up as one wave, reflected off the surface halfway and converted there,
+  then down and up as the other. From a buried source both leave downward (ObsPy's naming).
+  PS from a deep source first arrives at long range (from 600 km, near 100°).
+- **PKiKP**: through the outer core, reflected off the inner core.
+- **PKKP, SKKS**: through the outer core, reflected once off the underside of the core-mantle
+  boundary, and through the outer core again.
+
+- **Shown on the seismograms and in the slice, not on the map.** In the desktop slice they are
+  off until switched on (they are weaker and would crowd the picture); the terminal slice,
+  which has no switches, never draws them.
+- **1D times**, like the depth phases: the 3D-mantle delay is only computed along direct P and
+  S. In the slice their rays are bent through the 3D mantle like the others.
+- **Amplitudes** come from their own ray tubes with a fixed factor for the boundary they
+  reflect or convert at (see Seismograms). Waves that arrive as S after a P-to-S conversion at a
+  flat boundary (PcS, PS) carry only the SV part of S, so like SKS and SKKS they show on the
+  vertical component and not on the transverse one.
+
 ## Direct-wave cutoff (core shadow)
 
 Direct P and S stop where their rays graze the core. Beyond that, only the diffracted waves
@@ -95,21 +121,28 @@ pP and sP from 100 and 600 km sources at 40°, 60° and 80°.
 
 What the slice leaves out:
 
-- **Only eleven phases:** P, S, PcP, ScS, PKP, PKIKP, SKS, PP, SS and the depth phases pP and
-  sP, P and S including the rays that leave a buried source upward. Rays that cannot get through the velocity jump at the
+- **Only eighteen phases:** P, S, PcP, ScS, PKP, PKIKP, SKS, PP, SS, the depth phases pP and
+  sP, and PcS, ScP, PKiKP, PKKP, SKKS, PS and SP; P and S including the rays that leave a
+  buried source upward. Rays that cannot get through the velocity jump at the
   410 or 660 bounce off its top (total reflection) and stay part of P and S, as in ObsPy. There
-  are no partial reflections (a ray that gets through leaves no reflected copy), no reflections
-  off the underside of a layer, no surface reflections other than PP, SS, pP and sP, no
-  conversions other than those named (no PcS, no SKP, no S in the inner core), and no sS or
-  pS.
+  are no partial reflections other than the named ones (a ray that gets through the 410 leaves
+  no reflected copy), no reflections off the underside of a layer other than PKKP's and SKKS's
+  off the core-mantle boundary, no surface reflections other than PP, SS, PS, SP, pP and sP, no
+  conversions other than those named (no SKP, no S in the inner core), and no sS or pS.
 - **No diffraction, no head waves.** Fronts end where the rays end. There is no Pdiff or Sdiff
   creeping along the core, so beyond about 100° the slice shows only the core phases and the surface
   reflections PP and SS, and there is no Pn running along the Moho.
 - **Shared paths drawn once.** Before they reach the core, PcP, PKP and PKIKP rays follow the
   same path down. That part is drawn as one front (the PcP fan), and PKP and PKIKP start at the
   core-mantle boundary. Likewise PP and SS start where P and S reach the surface, and pP and sP
-  where the upgoing p and s rays do (sP's path is drawn as S up to there). Labels sit on
-  the leg that gives a phase its name.
+  where the upgoing p and s rays do (sP's path is drawn as S up to there). The later phases
+  start where they part from an older one: PcS and ScP at the core-mantle boundary (the PcP and
+  ScS fans draw the way down), PS and SP where P and S reach the surface, PKiKP at the inner
+  core (the PKIKP fan draws the way down; for the few rays that only just reach the inner core
+  and are totally reflected, no fan draws the way down), and PKKP and SKKS where they touch the
+  core-mantle boundary from below (the PKP and SKS fans draw the way there). A shared stretch
+  shows only while its own phase is switched on. Labels sit on the leg that gives a phase its
+  name.
 - **Fronts join neighbouring rays with straight lines.** Rays are refined until neighbours
   land and turn within 60 km of each other. A front is broken where neighbours are more than
   400 km apart. Cusps and folds at triplications and caustics are real, but are only as sharp
@@ -288,8 +321,8 @@ tracer.
   gradient across the plane is ignored. Real rays drift a little sideways; at published strength the
   drift is small.
 - **Checked against the 1D tracer.** With no perturbation the bent rays land within 0.05° of
-  the closed-form 1D rays, and on time within 0.1 s at the same landing point, for all eleven
-  phases from sources at 29 and 600 km (most within 0.02 s; the largest differences are for
+  the closed-form 1D rays, and on time within 0.1 s at the same landing point, for all
+  eighteen phases from sources at 29 and 600 km (most within 0.02 s; the largest differences are for
   shallow P and S rays and the surface-reflected PP and SS). Knife-edge rays, where a
   1e-5 rad change of take-off angle moves the landing point by more than 0.05° (rays turning
   just above a discontinuity or reflecting off it), are left out of that check. The bent fans
@@ -300,7 +333,11 @@ tracer.
   are very sensitive to the rock at the bottom of the mantle. Where it is faster above the
   exit point than above the entry, ray theory reflects them back into the core and that end of
   the branch is lost for that azimuth. Real waves diffract around such edges; the slice does
-  not model that.
+  not model that. Two more ends move: PKiKP's rays leaving straight down are tilted in the
+  mantle and the core magnifies the tilt, so its fan starts a degree or two from the epicentre
+  instead of at it (the rays that would land nearer leave the other way); and the far end of
+  PS and SP, set by rays whose S leg just grazes the core, moves by up to a few degrees, since
+  the P leg's length changes fast with the ray's slant there.
 - **Above 1× the views differ in method.** The map scales the first-order delay linearly; the
   slice traces rays through a model scaled by the same factor, so at 10× or 20× the rays bend
   much more than the linear scaling assumes and the two views no longer match exactly. The
@@ -342,7 +379,8 @@ their sizes only roughly physical. The UI says so.
   but stays finite.
 - **What the amplitudes leave out.** No radiation pattern (every source radiates the same in all
   directions), no reflection or transmission coefficients (a fixed factor per phase stands in:
-  PcP 0.2, ScS 0.5, PKPab/bc 0.4, PKPdf 0.3, PP 0.6, SS 0.6, SKS 0.4, pP 0.7, sP 0.5), no
+  PcP 0.2, ScS 0.5, PKPab/bc 0.4, PKPdf 0.3, PP 0.6, SS 0.6, SKS 0.4, pP 0.7, sP 0.5,
+  PcS 0.15, ScP 0.15, PKiKP 0.1, PKKP 0.1, SKKS 0.3, PS 0.3, SP 0.3), no
   free-surface effect,
   no body-wave attenuation, no site effects. Magnitude scales every amplitude by 10^M.
 - **Diffracted waves.** The tracer does not follow Pdiff and Sdiff. Past the direct wave's

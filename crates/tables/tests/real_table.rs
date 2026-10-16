@@ -43,6 +43,20 @@ const ANCHORS: &[(&str, f64, f64, f64, f64)] = &[
     ("pP", 600.00, 60.00, 665.607, 7.1785),
     ("sP", 600.00, 40.00, 574.196, 8.4647),
     ("sP", 600.00, 80.00, 854.439, 5.5166),
+    ("PcS", 0.00, 40.00, 811.828, 3.8957),
+    ("ScP", 0.00, 40.00, 811.828, 3.8957), // = PcS from a surface source
+    ("PcS", 600.00, 30.00, 708.460, 3.3669),
+    ("ScP", 600.00, 30.00, 650.135, 3.3079),
+    ("PKiKP", 0.00, 60.00, 1033.450, 1.2367),
+    ("PKiKP", 100.00, 120.00, 1118.844, 1.9569),
+    ("PKKP", 0.00, 100.00, 1805.645, 2.8439),
+    ("PKKP", 600.00, 80.00, 1786.878, 2.2113),
+    ("SKKS", 0.00, 90.00, 1426.695, 7.4794),
+    ("SKKS", 100.00, 140.00, 1738.469, 5.8482),
+    ("PS", 0.00, 60.00, 1112.892, 13.7225),
+    ("SP", 0.00, 60.00, 1112.892, 13.7225), // = PS from a surface source
+    ("PS", 600.00, 100.00, 1576.296, 10.0023),
+    ("SP", 600.00, 60.00, 1012.899, 13.6751),
 ];
 
 /// Direct-wave cutoffs for a 29 km source from ObsPy (0.05° scan), printed by gen_tables.py.
@@ -62,7 +76,7 @@ fn header_is_as_generated() {
         t.phases(),
         [
             "P", "S", "PcP", "ScS", "PKPab", "PKPbc", "PKPdf", "PP", "SS", "SKS", "Pdiff", "Sdiff",
-            "pP", "sP"
+            "pP", "sP", "PcS", "ScP", "PKiKP", "PKKP", "SKKS", "PS", "SP"
         ]
     );
     let (d, x) = (t.depth_axis(), t.distance_axis());
@@ -215,4 +229,29 @@ fn velocity_model_has_ak135_discontinuities() {
         .find(|p| p.depth_km > 2891.5 && p.depth_km < 3000.0)
         .unwrap();
     assert_eq!(below_cmb.vs_km_s, 0.0);
+}
+
+#[test]
+fn converted_phases_are_reciprocal_from_the_surface() {
+    // From a surface source PcS and ScP (and PS and SP) run one path in opposite directions:
+    // wherever both exist their times agree. From depth they do not.
+    let t = table();
+    let x = t.distance_axis();
+    for (a, b) in [("PcS", "ScP"), ("PS", "SP")] {
+        let mut both = 0;
+        for j in 0..x.count {
+            if let (Some(ta), Some(tb)) = (t.node_time(a, 0, j), t.node_time(b, 0, j)) {
+                both += 1;
+                assert!((ta - tb).abs() < 0.01, "{a} {ta} vs {b} {tb} at node {j}");
+            }
+        }
+        assert!(both > 100, "{a}/{b}: only {both} nodes with both");
+    }
+    let (pcs, scp) = (
+        t.arrival("PcS", 600.0, 30.0).unwrap(),
+        t.arrival("ScP", 600.0, 30.0).unwrap(),
+    );
+    assert!(pcs - scp > 30.0, "PcS {pcs} ScP {scp}");
+    // PS from a deep source needs a long path: none at 40° from 600 km.
+    assert_eq!(t.arrival("PS", 600.0, 40.0), None);
 }

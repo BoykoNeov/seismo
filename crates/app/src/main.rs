@@ -143,7 +143,7 @@ impl Default for SliceSettings {
     fn default() -> Self {
         Self {
             azimuth_deg: 90.0,
-            phases: [true; RayPhase::ALL.len()],
+            phases: RayPhase::ALL.map(RayPhase::shown_by_default),
             ray_paths: true,
             paths_per_phase: 8,
             trail_fronts: 3,
@@ -383,6 +383,11 @@ impl SeismoApp {
         let mut slice = SliceSettings::default();
         if let Some(az) = arg("--azimuth").and_then(|s| s.parse::<f64>().ok()) {
             slice.azimuth_deg = az.rem_euclid(360.0);
+        }
+        //   --phases <list>     slice phases to draw: "all", or comma-separated names (P,PKiKP,...)
+        if let Some(list) = arg("--phases") {
+            slice.phases = RayPhase::ALL
+                .map(|p| list == "all" || list.split(',').any(|name| name == p.name()));
         }
         let mut post = render::Look::ALL.map(render::CrtSettings::for_look);
         let crt = &mut post[render::Look::Crt.index()];
@@ -626,9 +631,14 @@ impl SeismoApp {
             return &self.bent.as_ref().expect("checked").1;
         }
         let depth = self.sim.events[self.sel()].depth_km;
-        if self.fans.as_ref().is_none_or(|f| f.depth_km != depth) {
+        // Only the phases switched on: ticking another one rebuilds them with it.
+        let enabled = self.slice.phases;
+        let shown = |phase: RayPhase| enabled[phase_index(phase)];
+        if self.fans.as_ref().is_none_or(|f| {
+            f.depth_km != depth || RayPhase::ALL.into_iter().any(|p| shown(p) && !f.has(p))
+        }) {
             let started = Instant::now();
-            let fans = self.sim.slice_fans(depth);
+            let fans = self.sim.slice_fans(depth, shown);
             tracing::info!(
                 depth_km = depth,
                 rays = fans.fans.iter().map(|f| f.rays.len()).sum::<usize>(),
@@ -1638,12 +1648,7 @@ impl SeismoApp {
             azimuth_deg: self.slice.azimuth_deg as f32,
         });
         let enabled = self.slice.phases;
-        let keep = |lines: Vec<SliceLine>| -> Vec<SliceLine> {
-            lines
-                .into_iter()
-                .filter(|l| enabled[phase_index(l.phase)])
-                .collect()
-        };
+        let shown = |phase: RayPhase| enabled[phase_index(phase)];
         let (trail_s, trail_strength) = (self.style.trail_s as f64, self.style.trail_strength);
         let (trail_fronts, ray_paths, per_phase) = (
             self.slice.trail_fronts,
@@ -1654,24 +1659,19 @@ impl SeismoApp {
             && self.style.mantle_strength > 0.0
             && self.mantle.cut_current();
         let fans = self.fans();
-        let fronts = fans.fronts_at(t);
-        let labels: Vec<PhaseLabel> = fronts
-            .labels
-            .iter()
-            .filter(|l| enabled[phase_index(l.phase)])
-            .copied()
-            .collect();
-        let front_lines = keep(fronts.lines);
+        let fronts = fans.fronts_where(t, shown);
+        let labels: Vec<PhaseLabel> = fronts.labels;
+        let front_lines = fronts.lines;
         let spacing = trail_s / 2.0;
         let ghosts: Vec<(f32, Vec<SliceLine>)> = (1..=trail_fronts)
             .map(|k| {
                 let dt = spacing * k as f64;
                 let gain = trail_strength * (-dt / trail_s).exp() as f32;
-                (gain, keep(fans.fronts_at(t - dt).lines))
+                (gain, fans.fronts_where(t - dt, shown).lines)
             })
             .collect();
         let paths = if ray_paths {
-            keep(fans.ray_paths_until(t, per_phase))
+            fans.ray_paths_where(t, per_phase, shown)
         } else {
             Vec::new()
         };

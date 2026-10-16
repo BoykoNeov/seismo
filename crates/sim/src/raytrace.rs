@@ -41,7 +41,9 @@ pub enum Wave {
 /// `PKPab` and `PKPbc`); `PKIKP` is the table's `PKPdf`. Direct `P` and `S` include the rays
 /// that leave a buried source upward (`p`, `s`). The depth phases `pP` and `sP` leave upward
 /// only, reflect off the surface above the source (`sP` converting from S to P there) and then
-/// travel as P.
+/// travel as P. `PcS` and `ScP` convert where they reflect off the core, `PS` and `SP` where
+/// they reflect off the surface halfway; `PKiKP` reflects off the inner core; `PKKP` and `SKKS`
+/// reflect once off the underside of the core-mantle boundary, inside the outer core.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(non_camel_case_types)] // pP and sP are the seismological names
 pub enum RayPhase {
@@ -56,6 +58,13 @@ pub enum RayPhase {
     SS,
     pP,
     sP,
+    PcS,
+    ScP,
+    PKiKP,
+    PKKP,
+    SKKS,
+    PS,
+    SP,
 }
 
 /// Where a phase's ray bottoms out.
@@ -64,11 +73,27 @@ enum Bottom {
     TurnMantle,
     ReflectCmb,
     TurnOuterCore,
+    ReflectIcb,
     TurnInnerCore,
 }
 
+/// Times (s) along a ray at the points that decide which stretch of it another phase already
+/// draws, where its own leg begins and where it converts.
+#[derive(Debug, Clone, Copy, Default)]
+struct Marks {
+    /// First time it is back at the surface (end of the first hop, or of a depth phase's way
+    /// up).
+    first_surface: f64,
+    /// First time it enters the core.
+    core_entry: f64,
+    /// Its reflection off the core-mantle boundary (PcP family) or the inner core (PKiKP).
+    reflected: f64,
+    /// Its first reflection off the underside of the core-mantle boundary (PKKP, SKKS).
+    underside: f64,
+}
+
 impl RayPhase {
-    pub const ALL: [RayPhase; 11] = [
+    pub const ALL: [RayPhase; 18] = [
         RayPhase::P,
         RayPhase::S,
         RayPhase::PcP,
@@ -80,7 +105,29 @@ impl RayPhase {
         RayPhase::SS,
         RayPhase::pP,
         RayPhase::sP,
+        RayPhase::PcS,
+        RayPhase::ScP,
+        RayPhase::PKiKP,
+        RayPhase::PKKP,
+        RayPhase::SKKS,
+        RayPhase::PS,
+        RayPhase::SP,
     ];
+
+    /// The phases drawn in the slice unless the user turns more on: all but the converted and
+    /// doubly reflected ones, which are weaker and would crowd the picture.
+    pub fn shown_by_default(self) -> bool {
+        !matches!(
+            self,
+            RayPhase::PcS
+                | RayPhase::ScP
+                | RayPhase::PKiKP
+                | RayPhase::PKKP
+                | RayPhase::SKKS
+                | RayPhase::PS
+                | RayPhase::SP
+        )
+    }
 
     pub fn name(self) -> &'static str {
         match self {
@@ -95,6 +142,13 @@ impl RayPhase {
             RayPhase::SS => "SS",
             RayPhase::pP => "pP",
             RayPhase::sP => "sP",
+            RayPhase::PcS => "PcS",
+            RayPhase::ScP => "ScP",
+            RayPhase::PKiKP => "PKiKP",
+            RayPhase::PKKP => "PKKP",
+            RayPhase::SKKS => "SKKS",
+            RayPhase::PS => "PS",
+            RayPhase::SP => "SP",
         }
     }
 
@@ -106,17 +160,36 @@ impl RayPhase {
             | RayPhase::PKP
             | RayPhase::PKIKP
             | RayPhase::PP
-            | RayPhase::pP => Wave::P,
-            RayPhase::S | RayPhase::ScS | RayPhase::SKS | RayPhase::SS | RayPhase::sP => Wave::S,
+            | RayPhase::pP
+            | RayPhase::PcS
+            | RayPhase::PKiKP
+            | RayPhase::PKKP
+            | RayPhase::PS => Wave::P,
+            RayPhase::S
+            | RayPhase::ScS
+            | RayPhase::SKS
+            | RayPhase::SS
+            | RayPhase::sP
+            | RayPhase::ScP
+            | RayPhase::SKKS
+            | RayPhase::SP => Wave::S,
         }
     }
 
-    /// Wave type the ray reaches the surface as: the source wave, except for sP.
+    /// Wave type the ray reaches the surface as: the source wave, except for the converted
+    /// phases (sP, PcS, ScP, PS, SP).
     pub fn arrival_wave(self) -> Wave {
         match self {
-            RayPhase::sP => Wave::P,
+            RayPhase::sP | RayPhase::ScP | RayPhase::SP => Wave::P,
+            RayPhase::PcS | RayPhase::PS => Wave::S,
             _ => self.source_wave(),
         }
+    }
+
+    /// Whether the ray converts where it reflects off the core-mantle boundary (PcS, ScP).
+    /// The other converted phases convert at the surface.
+    fn converts_at_bottom(self) -> bool {
+        matches!(self, RayPhase::PcS | RayPhase::ScP)
     }
 
     fn bottom(self) -> Bottom {
@@ -126,18 +199,79 @@ impl RayPhase {
             | RayPhase::PP
             | RayPhase::SS
             | RayPhase::pP
-            | RayPhase::sP => Bottom::TurnMantle,
-            RayPhase::PcP | RayPhase::ScS => Bottom::ReflectCmb,
-            RayPhase::PKP | RayPhase::SKS => Bottom::TurnOuterCore,
+            | RayPhase::sP
+            | RayPhase::PS
+            | RayPhase::SP => Bottom::TurnMantle,
+            RayPhase::PcP | RayPhase::ScS | RayPhase::PcS | RayPhase::ScP => Bottom::ReflectCmb,
+            RayPhase::PKP | RayPhase::SKS | RayPhase::PKKP | RayPhase::SKKS => {
+                Bottom::TurnOuterCore
+            }
+            RayPhase::PKiKP => Bottom::ReflectIcb,
             RayPhase::PKIKP => Bottom::TurnInnerCore,
         }
     }
 
-    /// Surface-to-surface hops: 2 for the surface reflections PP and SS.
+    /// Surface-to-surface hops: 2 for the surface reflections PP, SS, PS and SP.
     fn hops(self) -> usize {
         match self {
-            RayPhase::PP | RayPhase::SS => 2,
+            RayPhase::PP | RayPhase::SS | RayPhase::PS | RayPhase::SP => 2,
             _ => 1,
+        }
+    }
+
+    /// Arcs through the outer core per hop: 2 for PKKP and SKKS, which reflect off the
+    /// underside of the core-mantle boundary between them.
+    fn core_arcs(self) -> usize {
+        match self {
+            RayPhase::PKKP | RayPhase::SKKS => 2,
+            _ => 1,
+        }
+    }
+
+    /// Wave types of hop `hop` (0 = the first hop after the source, or after a depth phase's
+    /// way up): down to its bottom and back up.
+    fn hop_waves(self, hop: usize, after_up_leg: bool) -> (Wave, Wave) {
+        let down = if hop == 0 && !after_up_leg {
+            self.source_wave()
+        } else {
+            self.arrival_wave()
+        };
+        let up = if self.converts_at_bottom() {
+            self.arrival_wave()
+        } else {
+            down
+        };
+        (down, up)
+    }
+
+    /// Until when the ray follows the path of a ray of another phase, and from when it is on
+    /// the leg that gives it its name: see [`Ray::shared_until_s`].
+    fn shared_and_distinct(self, m: &Marks) -> (f64, f64) {
+        match self {
+            RayPhase::P | RayPhase::S => (0.0, 0.0),
+            RayPhase::PcP | RayPhase::ScS => (0.0, m.reflected),
+            // Down the way PcP or ScS goes, until the conversion.
+            RayPhase::PcS | RayPhase::ScP => (m.reflected, m.reflected),
+            RayPhase::PKP | RayPhase::PKIKP | RayPhase::SKS => (m.core_entry, m.core_entry),
+            // Down the way PKIKP goes, until PKIKP enters the inner core.
+            RayPhase::PKiKP => (m.reflected, m.reflected),
+            // The way PKP or SKS goes, until the underside of the core-mantle boundary.
+            RayPhase::PKKP | RayPhase::SKKS => (m.underside, m.underside),
+            RayPhase::PP
+            | RayPhase::SS
+            | RayPhase::PS
+            | RayPhase::SP
+            | RayPhase::pP
+            | RayPhase::sP => (m.first_surface, m.first_surface),
+        }
+    }
+
+    /// When the ray converts between P and S (0 for phases that do not).
+    fn conversion(self, m: &Marks) -> f64 {
+        match self {
+            RayPhase::PcS | RayPhase::ScP => m.reflected,
+            RayPhase::PS | RayPhase::SP | RayPhase::sP => m.first_surface,
+            _ => 0.0,
         }
     }
 
@@ -195,6 +329,10 @@ pub struct Ray {
     /// From this time the ray is on the leg that gives the phase its name (after the core
     /// reflection for PcP, after the core entry for PKP, ...).
     pub distinct_after_s: f64,
+    /// Where the ray converts between P and S (sP and PS at the surface, PcS at the core): it
+    /// is the source wave before this time and the arrival wave after. 0 for phases that keep
+    /// their wave type.
+    pub converted_at_s: f64,
 }
 
 impl Ray {
@@ -207,12 +345,12 @@ impl Ray {
     }
 
     /// Wave type where the ray is at radius `r_km` at time `t_s`, given the core-mantle
-    /// boundary radius `r_cmb_km`: P in the core; above it the source wave until a depth
-    /// phase's surface reflection, the arrival wave after it.
+    /// boundary radius `r_cmb_km`: P in the core; above it the source wave until the ray
+    /// converts, the arrival wave after.
     pub fn wave_at(&self, t_s: f64, r_km: f64, r_cmb_km: f64) -> Wave {
         if r_km <= r_cmb_km {
             Wave::P
-        } else if self.phase.is_depth_phase() && t_s < self.shared_until_s {
+        } else if t_s < self.converted_at_s {
             self.phase.source_wave()
         } else {
             self.phase.arrival_wave()
@@ -488,6 +626,89 @@ pub fn fold_rad(theta: f64) -> f64 {
     if x > PI { 2.0 * PI - x } else { x }
 }
 
+/// A ray's path assembled from one-way legs, each followed down (the way it was integrated)
+/// or up (mirrored). Each leg is thinned on its own, so the corners between legs (turning and
+/// reflection points, surface bounces) stay path points. Without `record` only the angle and
+/// time travelled are kept.
+struct PathBuilder {
+    record: bool,
+    theta: f64,
+    t: f64,
+    points: Vec<PathPoint>,
+}
+
+impl PathBuilder {
+    fn new(source: PathPoint, record: bool) -> Self {
+        Self {
+            record,
+            theta: 0.0,
+            t: 0.0,
+            points: vec![source],
+        }
+    }
+
+    /// The point where the path has got to, at radius `r_km`.
+    fn here(&self, r_km: f64) -> PathPoint {
+        PathPoint {
+            r_km,
+            theta_rad: self.theta,
+            t_s: self.t,
+        }
+    }
+
+    fn extend(&mut self, piece: Vec<PathPoint>) {
+        self.points.extend(decimate(piece).into_iter().skip(1));
+    }
+
+    /// Follow `leg` downward, from its start radius to its end.
+    fn down(&mut self, leg: &Leg) {
+        if self.record {
+            let (theta, t) = (self.theta, self.t);
+            self.extend(
+                leg.points
+                    .iter()
+                    .map(|q| PathPoint {
+                        r_km: q.r_km,
+                        theta_rad: theta + q.theta_rad,
+                        t_s: t + q.t_s,
+                    })
+                    .collect(),
+            );
+        }
+        self.theta += leg.theta;
+        self.t += leg.t;
+    }
+
+    /// Follow `leg` upward, from its end radius back to its start.
+    fn up(&mut self, leg: &Leg) {
+        let (theta, t) = (self.theta + leg.theta, self.t + leg.t);
+        if self.record {
+            self.extend(
+                leg.points
+                    .iter()
+                    .rev()
+                    .map(|q| PathPoint {
+                        r_km: q.r_km,
+                        theta_rad: theta - q.theta_rad,
+                        t_s: t - q.t_s,
+                    })
+                    .collect(),
+            );
+        }
+        self.theta = theta;
+        self.t = t;
+    }
+
+    /// The path, ending at the surface; just its two ends without `record`.
+    fn finish(self) -> Vec<PathPoint> {
+        if self.record {
+            return self.points;
+        }
+        let end = self.here(EARTH_RADIUS_KM);
+        vec![self.points[0], end]
+    }
+}
+
 /// Ray tracer over one velocity model.
 #[derive(Debug, Clone)]
 pub struct RayTracer {
@@ -622,24 +843,91 @@ impl RayTracer {
         }
     }
 
-    /// Whether a downward leg ending at `end` is the right one for `bottom`.
-    fn leg_ok(&self, bottom: Bottom, end: LegEnd) -> bool {
-        match (bottom, end) {
-            (Bottom::TurnMantle, LegEnd::Turned(r)) => r > self.r_cmb,
-            (Bottom::ReflectCmb, LegEnd::Reached(_)) => true,
+    /// One hop of a ray with ray parameter `p`, appended to `path`: from radius `r0` (the
+    /// source, or the surface) down as `down` to `bottom` and back up to the surface as `up`,
+    /// crossing the outer core `arcs` times (reflecting off the underside of the core-mantle
+    /// boundary between crossings) for a bottom in the core. Returns the hop's deepest point,
+    /// or `None` (and leaves `path` alone) if the ray does not bottom out that way. With
+    /// `must_leave`, a ray turning where it starts is no hop: after a conversion at the surface
+    /// a ray parameter past the new wave's surface slowness has no leg.
+    #[allow(clippy::too_many_arguments)]
+    fn hop(
+        &self,
+        path: &mut PathBuilder,
+        marks: &mut Marks,
+        (down, up): (Wave, Wave),
+        bottom: Bottom,
+        arcs: usize,
+        r0: f64,
+        p: f64,
+        must_leave: bool,
+    ) -> Option<PathPoint> {
+        let record = path.record;
+        let src = self.descend(down, r0, self.r_cmb, p, record);
+        let surf = self.descend(up, EARTH_RADIUS_KM, self.r_cmb, p, record);
+        if bottom == Bottom::TurnMantle {
+            let (LegEnd::Turned(r), LegEnd::Turned(r_up)) = (src.end, surf.end) else {
+                return None;
+            };
+            if r <= self.r_cmb || r != r_up || (must_leave && r >= r0) {
+                return None;
+            }
+            path.down(&src);
+            let deepest = path.here(r);
+            path.up(&surf);
+            return Some(deepest);
+        }
+        // Every other bottom is reached through the core-mantle boundary.
+        if !matches!(
+            (src.end, surf.end),
+            (LegEnd::Reached(_), LegEnd::Reached(_))
+        ) {
+            return None;
+        }
+        if bottom == Bottom::ReflectCmb {
+            path.down(&src);
+            let deepest = path.here(self.r_cmb);
+            marks.reflected = path.t;
+            path.up(&surf);
+            return Some(deepest);
+        }
+        // In the core every wave is P.
+        let stop = if bottom == Bottom::TurnInnerCore {
+            0.0
+        } else {
+            self.r_icb
+        };
+        let arc = self.descend(Wave::P, self.r_cmb, stop, p, record);
+        let ok = match (bottom, arc.end) {
             (Bottom::TurnOuterCore, LegEnd::Turned(r)) => r < self.r_cmb,
+            (Bottom::ReflectIcb, LegEnd::Reached(_)) => true,
             // Turning exactly at the ICB is total reflection off it (PKiKP), not PKIKP.
             (Bottom::TurnInnerCore, LegEnd::Turned(r)) => r < self.r_icb,
             _ => false,
+        };
+        if !ok {
+            return None;
         }
-    }
-
-    fn stop_radius(&self, bottom: Bottom) -> f64 {
-        match bottom {
-            Bottom::TurnMantle | Bottom::ReflectCmb => self.r_cmb,
-            Bottom::TurnOuterCore => self.r_icb,
-            Bottom::TurnInnerCore => 0.0,
+        path.down(&src);
+        if marks.core_entry == 0.0 {
+            marks.core_entry = path.t;
         }
+        let mut deepest = None;
+        for k in 0..arcs {
+            if k == 1 {
+                marks.underside = path.t;
+            }
+            path.down(&arc);
+            if k == 0 {
+                deepest = Some(path.here(arc.end.radius()));
+                if bottom == Bottom::ReflectIcb {
+                    marks.reflected = path.t;
+                }
+            }
+            path.up(&arc);
+        }
+        path.up(&surf);
+        deepest
     }
 
     /// Ray parameter (s/rad) of a ray of `phase` leaving a source at `depth_km` at `takeoff_rad`
@@ -683,184 +971,70 @@ impl RayTracer {
     ) -> Option<Ray> {
         let depth_km = depth_km.clamp(0.0, EARTH_RADIUS_KM - 1.0);
         let r_s = EARTH_RADIUS_KM - depth_km;
-        let wave = phase.source_wave();
         let p = self.ray_param(phase, depth_km, takeoff_rad);
         let source = PathPoint {
             r_km: r_s,
             theta_rad: 0.0,
             t_s: 0.0,
         };
+        let upgoing = takeoff_rad > FRAC_PI_2;
+        let mut path = PathBuilder::new(source, record);
+        let mut marks = Marks::default();
+        let mut bottom = source;
 
-        if takeoff_rad > FRAC_PI_2 {
+        let hops = if upgoing {
             if !phase.has_upgoing() || r_s >= EARTH_RADIUS_KM {
                 return None;
             }
-            // Upgoing: the surface-to-source leg, reversed.
-            let leg = self.descend(wave, EARTH_RADIUS_KM, r_s, p, record);
+            // The surface-to-source leg, followed up.
+            let leg = self.descend(phase.source_wave(), EARTH_RADIUS_KM, r_s, p, record);
             if !matches!(leg.end, LegEnd::Reached(_)) {
                 return None;
             }
-            let mut points: Vec<PathPoint> = leg
-                .points
-                .iter()
-                .rev()
-                .map(|q| PathPoint {
-                    r_km: q.r_km,
-                    theta_rad: leg.theta - q.theta_rad,
-                    t_s: leg.t - q.t_s,
-                })
-                .collect();
-            let (up_theta, up_t) = (leg.theta, leg.t);
-            if !phase.is_depth_phase() {
-                if !record {
-                    points = vec![
-                        source,
-                        PathPoint {
-                            r_km: EARTH_RADIUS_KM,
-                            theta_rad: up_theta,
-                            t_s: up_t,
-                        },
-                    ];
-                }
-                return Some(Ray {
-                    phase,
-                    takeoff_rad,
-                    p_s_rad: p,
-                    points: decimate(points),
-                    bottom: source,
-                    shared_until_s: 0.0,
-                    distinct_after_s: 0.0,
-                });
-            }
-            // A depth phase: reflected off the surface above the source (sP converted to P
-            // there, keeping its ray parameter), then one P hop through the mantle. A ray
-            // parameter past the surface P slowness has no P leg: it turns at once.
-            let hop = self.descend(Wave::P, EARTH_RADIUS_KM, self.r_cmb, p, record);
-            let LegEnd::Turned(r_turn) = hop.end else {
-                return None;
-            };
-            if r_turn >= EARTH_RADIUS_KM || r_turn <= self.r_cmb {
+            path.up(&leg);
+            marks.first_surface = path.t;
+            // A depth phase then reflects off the surface above the source (sP converted to P
+            // there, keeping its ray parameter) and makes one hop through the mantle.
+            usize::from(phase.is_depth_phase())
+        } else {
+            if phase.is_depth_phase() {
                 return None;
             }
-            let bottom_pt = PathPoint {
-                r_km: r_turn,
-                theta_rad: up_theta + hop.theta,
-                t_s: up_t + hop.t,
-            };
-            let (end_theta, end_t) = (up_theta + 2.0 * hop.theta, up_t + 2.0 * hop.t);
-            if record {
-                // Thinned on each side of the bounce, so the corner there stays a path point.
-                let down_up: Vec<PathPoint> = hop
-                    .points
-                    .iter()
-                    .map(|q| PathPoint {
-                        r_km: q.r_km,
-                        theta_rad: up_theta + q.theta_rad,
-                        t_s: up_t + q.t_s,
-                    })
-                    .chain(hop.points.iter().rev().skip(1).map(|q| PathPoint {
-                        r_km: q.r_km,
-                        theta_rad: end_theta - q.theta_rad,
-                        t_s: end_t - q.t_s,
-                    }))
-                    .collect();
-                points = decimate(points);
-                points.extend(decimate(down_up).into_iter().skip(1));
-            } else {
-                points = vec![
-                    source,
-                    PathPoint {
-                        r_km: EARTH_RADIUS_KM,
-                        theta_rad: end_theta,
-                        t_s: end_t,
-                    },
-                ];
-            }
-            return Some(Ray {
-                phase,
-                takeoff_rad,
-                p_s_rad: p,
-                points,
-                bottom: bottom_pt,
-                shared_until_s: up_t,
-                distinct_after_s: up_t,
-            });
-        }
-        if phase.is_depth_phase() {
-            return None;
-        }
-
-        let bottom = phase.bottom();
-        let r_stop = self.stop_radius(bottom);
-        let src = self.descend(wave, r_s, r_stop, p, record);
-        if !self.leg_ok(bottom, src.end) {
-            return None;
-        }
-        let surf = self.descend(wave, EARTH_RADIUS_KM, r_stop, p, record);
-        if !self.leg_ok(bottom, surf.end) || surf.end.radius() != src.end.radius() {
-            return None;
-        }
-
-        let mut points = src.points;
-        let (mut theta, mut t) = (src.theta, src.t);
-        let bottom_pt = PathPoint {
-            r_km: src.end.radius(),
-            theta_rad: theta,
-            t_s: t,
+            phase.hops()
         };
-        // Up from the bottom: the surface leg mirrored. Further hops: down then up again.
-        let mut first_surface_t = 0.0;
-        for hop in 0..phase.hops() {
-            if hop > 0 {
-                points.extend(surf.points.iter().skip(1).map(|q| PathPoint {
-                    r_km: q.r_km,
-                    theta_rad: theta + q.theta_rad,
-                    t_s: t + q.t_s,
-                }));
-                theta += surf.theta;
-                t += surf.t;
-            }
-            points.extend(surf.points.iter().rev().skip(1).map(|q| PathPoint {
-                r_km: q.r_km,
-                theta_rad: theta + surf.theta - q.theta_rad,
-                t_s: t + surf.t - q.t_s,
-            }));
-            theta += surf.theta;
-            t += surf.t;
+        for hop in 0..hops {
+            let waves = phase.hop_waves(hop, upgoing);
+            let from_source = hop == 0 && !upgoing;
+            let r0 = if from_source { r_s } else { EARTH_RADIUS_KM };
+            let must_leave = !from_source && (upgoing || waves.0 != phase.source_wave());
+            let deepest = self.hop(
+                &mut path,
+                &mut marks,
+                waves,
+                phase.bottom(),
+                phase.core_arcs(),
+                r0,
+                p,
+                must_leave,
+            )?;
             if hop == 0 {
-                first_surface_t = t;
+                bottom = deepest;
+                if !upgoing {
+                    marks.first_surface = path.t;
+                }
             }
-        }
-        if !record {
-            points = vec![
-                source,
-                PathPoint {
-                    r_km: EARTH_RADIUS_KM,
-                    theta_rad: theta,
-                    t_s: t,
-                },
-            ];
         }
 
-        let core_entry_t = || self.descend(wave, r_s, self.r_cmb, p, false).t;
-        let (shared_until_s, distinct_after_s) = match phase {
-            RayPhase::P | RayPhase::S => (0.0, 0.0),
-            RayPhase::PcP | RayPhase::ScS => (0.0, bottom_pt.t_s),
-            RayPhase::PKP | RayPhase::PKIKP | RayPhase::SKS => {
-                let tc = core_entry_t();
-                (tc, tc)
-            }
-            RayPhase::PP | RayPhase::SS => (first_surface_t, first_surface_t),
-            RayPhase::pP | RayPhase::sP => unreachable!("depth phases leave upward"),
-        };
+        let (shared_until_s, distinct_after_s) = phase.shared_and_distinct(&marks);
         Some(Ray {
             phase,
             takeoff_rad,
             p_s_rad: p,
-            points: decimate(points),
-            bottom: bottom_pt,
+            points: path.finish(),
+            bottom,
             shared_until_s,
             distinct_after_s,
+            converted_at_s: phase.conversion(&marks),
         })
     }
 
@@ -1167,11 +1341,150 @@ mod tests {
     #[test]
     fn fast_trace_agrees_with_recorded_trace() {
         let rt = tracer();
-        for (phase, takeoff) in [(RayPhase::PP, 0.4), (RayPhase::sP, 2.8)] {
+        for (phase, takeoff) in [
+            (RayPhase::PP, 0.4),
+            (RayPhase::sP, 2.8),
+            (RayPhase::PcS, 0.2),
+            (RayPhase::PKKP, 0.15),
+            (RayPhase::SP, 0.5),
+        ] {
             let a = rt.trace_inner(phase, 29.0, takeoff, true).unwrap();
             let b = rt.trace_inner(phase, 29.0, takeoff, false).unwrap();
             assert!((a.arrival_s() - b.arrival_s()).abs() < 1e-9);
             assert!((a.end().theta_rad - b.end().theta_rad).abs() < 1e-12);
+        }
+    }
+    #[test]
+    fn converted_phases_change_wave_where_they_convert() {
+        let rt = tracer();
+        let r_cmb = rt.cmb_radius_km();
+        // (phase, take-off, converts at the core rather than at the surface)
+        for (phase, takeoff, at_core) in [
+            (RayPhase::PcS, 0.2, true),
+            // An S ray this steep or steeper: a slanter one has no P leg reaching the core.
+            (RayPhase::ScP, 0.1, true),
+            // Slanted enough for the S leg to turn above the core.
+            (RayPhase::PS, 0.9, false),
+            (RayPhase::SP, 0.5, false),
+        ] {
+            let ray = rt
+                .trace(phase, 100.0, takeoff)
+                .unwrap_or_else(|| panic!("no {phase:?}"));
+            let tc = ray.converted_at_s;
+            let at = ray.point_at(tc).unwrap();
+            if at_core {
+                assert!((at.r_km - r_cmb).abs() < 1e-6, "{phase:?} at {at:?}");
+                assert!((tc - ray.bottom.t_s).abs() < 1e-9);
+            } else {
+                assert!(
+                    (at.r_km - EARTH_RADIUS_KM).abs() < 1e-6,
+                    "{phase:?} at {at:?}"
+                );
+            }
+            // Down the way the unconverted phase goes, then its own leg.
+            assert_eq!(ray.shared_until_s, tc);
+            let before = ray.point_at(0.5 * tc).unwrap();
+            let after = ray.point_at(0.5 * (tc + ray.arrival_s())).unwrap();
+            assert_eq!(
+                ray.wave_at(before.t_s, before.r_km, r_cmb),
+                phase.source_wave()
+            );
+            assert_eq!(
+                ray.wave_at(after.t_s, after.r_km, r_cmb),
+                phase.arrival_wave()
+            );
+            assert_ne!(phase.source_wave(), phase.arrival_wave());
+        }
+        // Phases that keep their wave never convert.
+        let pp = rt.trace(RayPhase::PP, 100.0, 0.5).unwrap();
+        assert_eq!(pp.converted_at_s, 0.0);
+    }
+
+    #[test]
+    fn converted_phases_are_reciprocal_from_a_surface_source() {
+        // From the surface, PcS and ScP run the same path in opposite directions, and so do PS
+        // and SP: their times are equal. From depth they are not.
+        let rt = tracer();
+        // (pair, distance from the surface source, from the deep one: PS from 600 km first
+        // arrives near 100°)
+        for (a, b, dist, deep_dist) in [
+            (RayPhase::PcS, RayPhase::ScP, 40.0, 30.0),
+            (RayPhase::PS, RayPhase::SP, 60.0, 100.0),
+        ] {
+            let (ta, tb) = (
+                rt.arrivals(a, 0.0, dist)[0].time_s,
+                rt.arrivals(b, 0.0, dist)[0].time_s,
+            );
+            assert!((ta - tb).abs() < 0.01, "{a:?} {ta} vs {b:?} {tb}");
+            let (da, db) = (
+                rt.arrivals(a, 600.0, deep_dist)[0].time_s,
+                rt.arrivals(b, 600.0, deep_dist)[0].time_s,
+            );
+            assert!(
+                (da - db).abs() > 10.0,
+                "{a:?} {da} vs {b:?} {db} from 600 km"
+            );
+        }
+    }
+
+    #[test]
+    fn core_reflections_bounce_where_they_should() {
+        let rt = tracer();
+        let (r_cmb, r_icb) = (rt.cmb_radius_km(), rt.icb_radius_km());
+        // PKiKP reflects off the inner core, sharing its way down with PKIKP until there.
+        let ray = rt.trace(RayPhase::PKiKP, 29.0, 0.05).unwrap();
+        assert!((ray.bottom.r_km - r_icb).abs() < 1e-6);
+        assert!((ray.shared_until_s - ray.bottom.t_s).abs() < 1e-9);
+        let pkikp = rt.trace(RayPhase::PKIKP, 29.0, 0.05).unwrap();
+        let (q, k) = (
+            ray.point_at(0.9 * ray.bottom.t_s).unwrap(),
+            pkikp.point_at(0.9 * ray.bottom.t_s).unwrap(),
+        );
+        assert!((q.r_km - k.r_km).abs() < 1e-6 && (q.theta_rad - k.theta_rad).abs() < 1e-9);
+        assert!(ray.points.iter().all(|q| q.r_km >= r_icb - 1e-6));
+        // PKKP and SKKS cross the outer core twice, touching the core-mantle boundary from
+        // below in between; until then they go the way PKP and SKS do.
+        for (phase, single) in [
+            (RayPhase::PKKP, RayPhase::PKP),
+            (RayPhase::SKKS, RayPhase::SKS),
+        ] {
+            let ray = rt.trace(phase, 29.0, 0.15).unwrap();
+            let one = rt.trace(single, 29.0, 0.15).unwrap();
+            assert!(ray.bottom.r_km < r_cmb && ray.bottom.r_km > r_icb);
+            let under = ray.point_at(ray.shared_until_s).unwrap();
+            assert!((under.r_km - r_cmb).abs() < 1e-6, "{phase:?} {under:?}");
+            assert!(ray.shared_until_s > ray.bottom.t_s);
+            // The second crossing adds one more arc through the core.
+            let arc_t = ray.shared_until_s - one.shared_until_s;
+            assert!((ray.arrival_s() - one.arrival_s() - arc_t).abs() < 1e-6);
+            let mid = ray
+                .point_at(0.5 * (ray.shared_until_s + ray.arrival_s()))
+                .unwrap();
+            assert_eq!(ray.wave_at(mid.t_s, mid.r_km, r_cmb), Wave::P);
+        }
+    }
+
+    #[test]
+    fn traced_new_phases_match_the_table() {
+        let rt = tracer();
+        let table =
+            crate::tables::TravelTimeTable::from_bytes(include_bytes!("../../../assets/ak135.tt"))
+                .unwrap();
+        // Away from triplications, where each phase has one branch.
+        let cases = [
+            (RayPhase::PcS, "PcS", 0.0, 40.0),
+            (RayPhase::ScP, "ScP", 600.0, 30.0),
+            (RayPhase::PcS, "PcS", 600.0, 30.0),
+            (RayPhase::PKiKP, "PKiKP", 100.0, 60.0),
+            (RayPhase::PKiKP, "PKiKP", 100.0, 120.0),
+            (RayPhase::PKKP, "PKKP", 0.0, 100.0),
+            (RayPhase::SKKS, "SKKS", 100.0, 90.0),
+            (RayPhase::PS, "PS", 0.0, 60.0),
+            (RayPhase::SP, "SP", 600.0, 60.0),
+            (RayPhase::PS, "PS", 600.0, 100.0),
+        ];
+        for (phase, name, depth, dist) in cases {
+            check_against_table(&rt, &table, phase, name, depth, dist, 1.0);
         }
     }
 }

@@ -48,7 +48,10 @@ DIST_START, DIST_STEP, DIST_COUNT = 0.0, 0.25, 721  # 0..180 deg
 
 # Output layers, in CLAUDE.md priority order. New phases are appended, so the earlier layers
 # keep their place in the file.
-PHASES = ["P", "S", "PcP", "ScS", "PKPab", "PKPbc", "PKPdf", "PP", "SS", "SKS", "Pdiff", "Sdiff", "pP", "sP"]
+PHASES = [
+    "P", "S", "PcP", "ScS", "PKPab", "PKPbc", "PKPdf", "PP", "SS", "SKS", "Pdiff", "Sdiff", "pP", "sP",
+    "PcS", "ScP", "PKiKP", "PKKP", "SKKS", "PS", "SP",
+]
 
 # ObsPy phase names each output layer takes its first arrival from.
 SOURCES = {
@@ -68,6 +71,18 @@ SOURCES = {
     # leaves as S and converts to P there). ObsPy gives none for a source at the surface.
     "pP": ["pP"],
     "sP": ["sP"],
+    # Converted at the core-mantle boundary: down as one wave, reflected up as the other.
+    "PcS": ["PcS"],
+    "ScP": ["ScP"],
+    # Reflected off the inner-core boundary.
+    "PKiKP": ["PKiKP"],
+    # Reflected once off the underside of the core-mantle boundary, inside the outer core.
+    "PKKP": ["PKKP"],
+    "SKKS": ["SKKS"],
+    # Reflected off the surface halfway, converted there. From a buried source ObsPy's PS and SP
+    # leave downward only.
+    "PS": ["PS"],
+    "SP": ["SP"],
 }
 OBSPY_NAMES = sorted({n for names in SOURCES.values() for n in names})
 
@@ -223,6 +238,21 @@ ANCHORS = [
     ("sP", 600.0, 40.0),
     ("sP", 600.0, 80.0),
     ("pP", 0.0, 60.0),  # surface source: no depth phase
+    ("PcS", 0.0, 40.0),
+    ("ScP", 0.0, 40.0),  # = PcS from a surface source
+    ("PcS", 600.0, 30.0),
+    ("ScP", 600.0, 30.0),
+    ("PKiKP", 0.0, 60.0),
+    ("PKiKP", 100.0, 120.0),
+    ("PKKP", 0.0, 100.0),
+    ("PKKP", 600.0, 80.0),
+    ("SKKS", 0.0, 90.0),
+    ("SKKS", 100.0, 140.0),
+    ("PS", 0.0, 60.0),
+    ("SP", 0.0, 60.0),  # = PS from a surface source
+    ("PS", 600.0, 100.0),
+    ("SP", 600.0, 60.0),
+    ("PS", 600.0, 40.0),  # PS from deep needs a longer path: none here
 ]
 
 

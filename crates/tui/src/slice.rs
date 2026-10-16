@@ -6,7 +6,7 @@
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use sim::slice::{Boundary, SliceFans, SlicePoint};
-use sim::{EARTH_RADIUS_KM, RayTracer, Wave};
+use sim::{EARTH_RADIUS_KM, RayPhase, RayTracer, Wave};
 
 use crate::canvas::Canvas;
 use crate::palette::Ink;
@@ -35,7 +35,9 @@ impl SliceWorker {
                     while let Ok(d) = rx.try_recv() {
                         depth = d;
                     }
-                    if tx.send(SliceFans::build(&tracer, depth)).is_err() {
+                    // The desktop's default phases: the terminal has no switches for others.
+                    let fans = SliceFans::build_for(&tracer, depth, RayPhase::shown_by_default);
+                    if tx.send(fans).is_err() {
                         return;
                     }
                 }
@@ -259,7 +261,7 @@ mod tests {
     fn draws_fronts_and_labels() {
         let (table, model, dispersion) = assets::earth().unwrap();
         let sim = Simulation::new(table, model, dispersion, vec![assets::tohoku()]).unwrap();
-        let fans = sim.slice_fans(29.0);
+        let fans = sim.slice_fans(29.0, RayPhase::shown_by_default);
         let mut canvas = Canvas::new(100, 26, Palette::new(Look::Crt));
         draw(
             &mut canvas,
