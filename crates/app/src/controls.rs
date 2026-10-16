@@ -264,7 +264,8 @@ impl SeismoApp {
                 // A trace still being built (rays not traced yet) is not shown: nothing plays.
                 if let Some(trace) = self.traces.shown().into_iter().find(|t| t.station == i) {
                     let (from, to) = self.traces.window();
-                    self.listen.play(i, &trace.seismogram, from, to);
+                    let event = self.selected_key();
+                    self.listen.play(event, i, &trace.seismogram, from, to);
                 }
             }
         }

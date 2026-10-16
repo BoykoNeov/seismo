@@ -6,6 +6,7 @@ use std::num::NonZero;
 
 use rodio::buffer::SamplesBuffer;
 use rodio::{DeviceSinkBuilder, MixerDeviceSink, Player};
+use session::events::EventKey;
 use session::sound::{self, DEFAULT_SPEED, SAMPLE_RATE_HZ};
 use sim::seismogram::Seismogram;
 
@@ -17,9 +18,10 @@ enum Device {
     Failed,
 }
 
-/// What is playing: whose trace, from where on its clock and how fast, on its own player
-/// (dropping the player stops the sound).
+/// What is playing: which event's trace at which station, from where on its clock and how
+/// fast, on its own player (dropping the player stops the sound).
 struct Playing {
+    event: EventKey,
     station: usize,
     from_s: f64,
     speed: f64,
@@ -50,9 +52,16 @@ impl Default for Listen {
 }
 
 impl Listen {
-    /// Play `trace` of `station` from `from_s` to `to_s` (its own clock), replacing whatever
-    /// was playing.
-    pub(crate) fn play(&mut self, station: usize, trace: &Seismogram, from_s: f64, to_s: f64) {
+    /// Play `event`'s trace at `station` from `from_s` to `to_s` (its own clock), replacing
+    /// whatever was playing.
+    pub(crate) fn play(
+        &mut self,
+        event: EventKey,
+        station: usize,
+        trace: &Seismogram,
+        from_s: f64,
+        to_s: f64,
+    ) {
         self.stop();
         if matches!(self.device, Device::Closed) {
             self.device = match DeviceSinkBuilder::open_default_sink() {
@@ -83,6 +92,7 @@ impl Listen {
             samples,
         ));
         self.playing = Some(Playing {
+            event,
             station,
             from_s,
             speed: self.speed,
@@ -102,12 +112,24 @@ impl Listen {
         self.playing.as_ref().map(|p| p.station)
     }
 
+    /// Once a frame: forget a sound that has ended, and stop one made for another event than
+    /// the one now selected (its trace is gone).
+    pub(crate) fn follow(&mut self, event: EventKey) {
+        if self.playing.as_ref().is_some_and(|p| p.event != event) {
+            self.stop();
+        }
+        self.playing();
+    }
+
     /// The station playing and where on its trace's clock (s) the sound is now.
     pub(crate) fn playhead(&self) -> Option<(usize, f64)> {
-        self.playing.as_ref().map(|p| {
-            let played = p.player.get_pos().as_secs_f64();
-            (p.station, sound::trace_time(p.from_s, p.speed, played))
-        })
+        self.playing
+            .as_ref()
+            .filter(|p| !p.player.empty())
+            .map(|p| {
+                let played = p.player.get_pos().as_secs_f64();
+                (p.station, sound::trace_time(p.from_s, p.speed, played))
+            })
     }
 }
 

@@ -287,6 +287,7 @@ impl SeismoApp {
             grid: &grid,
             px_per_pt: ppp,
         };
+        self.listen.follow(self.selected_key());
         let playhead = self.listen.playhead();
         let trace_labels: Vec<TraceLabel> = shown
             .iter()
