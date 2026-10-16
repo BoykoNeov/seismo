@@ -606,6 +606,7 @@ mod tests {
             "mantle-control",
             "looks",
             "magnitude",
+            "fault",
         ] {
             assert!(g.topic(id).is_some(), "{id}");
         }

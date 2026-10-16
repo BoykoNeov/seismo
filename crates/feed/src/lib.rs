@@ -3,11 +3,13 @@
 //! crossbeam-channel, directories.
 //!
 //! Parsing ([`usgs`]), merging ([`store`]) and the cache ([`cache`]) are plain functions and
-//! structs, tested without a network, as are the past-event searches ([`search`]); [`live`] is
-//! the thread that polls USGS and runs the searches.
+//! structs, tested without a network, as are the past-event searches ([`search`]) and the
+//! fault-orientation lookups' bookkeeping ([`mechanisms`]); [`live`] is the thread that polls
+//! USGS and runs the searches and lookups.
 
 pub mod cache;
 pub mod live;
+pub mod mechanisms;
 pub mod search;
 pub mod store;
 pub mod usgs;

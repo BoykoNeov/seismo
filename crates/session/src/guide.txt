@@ -92,6 +92,7 @@ Some quakes worth a look: the 1960 Chile earthquake (the largest ever recorded, 
 
 - **Pick on map**, then click the map to set the place; or type latitude and longitude.
 - Each type has its own depth range and its own mix of waves: an explosion makes mostly P waves, an impact strong surface waves. See [[sources]].
+- An earthquake can have a **fault orientation**: tick it and pick **thrust**, **normal** or **strike-slip**, or set the strike, dip and rake yourself. Its waves then leave stronger in some directions. See [[fault]].
 - **time** is UTC, written YYYY-MM-DD HH:MM:SS. Leave it empty to use the clock's time, so the waves start where the clock is now.
 - **Make new** adds it to the list (marked with a plus) and selects it. Making one never moves the clock: use **Replay from origin**.
 - Select one of your events to load it into the form; **Update** changes it, **Delete** (under the event) removes it. Your events are kept across restarts.
@@ -170,6 +171,7 @@ Each row is the record a seismograph at one station would make: the ground's sha
 - Each row is labelled with the station code, its distance from the quake in degrees, and its name.
 - The **pen** is "now": the trace is drawn up to it, so you watch the recording being made.
 - **Ticks** mark when each wave is due, labelled with its [[phase-names|phase name]] where there is room.
+- A quake with a known fault sends its waves out unevenly, so P can start upward at one station and downward at another. See [[fault]].
 - At nearby stations P and S come close together; far away they are minutes apart, and surface waves trail far behind. That gap is how seismologists measure distance: see [[locating]].
 @desktop - **shaking: up-down** shows vertical motion (P waves, Rayleigh waves). **side-to-side** shows motion across the path (S waves polarised sideways, Love waves).
 @desktop - **scale: each row** makes every row fill its band, so faint far stations are visible; **shared** uses one scale for all, so you can compare sizes.
@@ -189,6 +191,7 @@ The selected quake's details: its size, place, time and depth.
 - The place, the origin time in UTC, and the coordinates of the epicentre with the depth of the hypocentre. See [[earthquakes]].
 - Whether seismologists have reviewed the solution yet ("reviewed") or it is still the automatic first guess.
 @desktop - **t**: seconds since the origin (negative before it).
+- For an earthquake, its fault: what kind of slip it was and which way the fault runs, or that none is known yet. See [[fault]].
 @desktop - **P** and **S**: how far, in degrees of arc, the direct P and S fronts have reached at the surface. One degree is about {km_per_deg} km. A dash means the wave has not started yet or has gone past the edge of its [[shadow|shadow zone]].
 
 === mantle-control | The 3D mantle | screen | desktop
@@ -215,7 +218,8 @@ SEISMO is built on real Earth models and real travel times, but it simplifies in
 
 - **The Earth is a perfect sphere.** The real one is slightly flattened, which shifts arrival times by up to about a second.
 - **Wave times come from a standard Earth model** ({model}), the same in every direction, optionally nudged by a [[tomography|3D mantle model]]. Real local structure (thick crust, sediments, slabs) changes things more.
-- **Each quake is a point.** A great quake really breaks a fault hundreds of kilometres long over minutes, and sends waves out unevenly in different directions.
+- **Each quake is a point.** A great quake really breaks a fault hundreds of kilometres long over minutes.
+- **The fault's pattern is used for P and S waves only**, where it is known: the surface waves and the map's rings leave evenly in every direction, and the waves' sizes and signs are not changed where they bounce or convert. See [[fault]].
 - **The seismograms are synthetic**: plausible shapes and timings, not real recordings.
 - **Surface waves** follow the 1D model only, with a fixed source; the map shows where they are, not how strong.
 - **Only the first arrival of each wave type** is drawn where a wave could arrive along several paths.
@@ -297,6 +301,37 @@ Surface waves spread over the surface (a growing circle) instead of through the 
 
 ## Depth matters
 A deep quake makes weak surface waves, because they are trapped near the surface, far from the source. Compare a shallow quake with a deep one on the seismograms.
+
+=== fault | Which way the fault moved | learn
+An earthquake is not a bang that pushes out evenly in every direction: it is two blocks of rock slipping past each other on a fault. The slip pushes the ground in some directions and pulls it in others, so the waves leave stronger one way than another, and the very first motion at a seismograph can be up or down depending on where it stands.
+
+## Push and pull
+- Picture the rock round the fault cut into four quarters by the fault and by a second, imaginary plane at right angles to it. In two opposite quarters the slip squeezes the rock: the P wave leaves as a **push**, and a seismograph there first moves up. In the other two it stretches the rock: the P wave leaves as a **pull**, and the ground first moves down.
+- Along the two planes the P wave is silent: they are the **nodal planes**. The S waves are strongest near them instead.
+- S waves shake across their path. How much of that is up and down (SV) and how much side to side (SH) also depends on the direction, so a station's up-down and side-to-side records can look very different.
+
+## The beach ball
+Seismologists draw the pattern as a **beach ball**: the lower half of a sphere round the quake, seen from above with north up, filled where the P wave leaves as a push.
+
+- A **thrust** (one side pushed up over the other, as in subduction zones) has a filled band across the middle.
+- A **normal** fault (the crust pulling apart, as at mid-ocean ridges) has an empty band across the middle.
+- A **strike-slip** fault (the sides sliding past each other, like the San Andreas) looks like a ball cut into four quarters, filled and empty in turn.
+
+## How it is found
+- From **first motions**: which stations first moved up and which down. On the sphere the ups and downs fall into quarters, and the lines between them are the nodal planes. Perry Byerly worked this out in the 1920s and 1930s; the result is called a **focal mechanism**.
+- From whole waveforms: fitting the long waves recorded around the world gives the **moment tensor**, which also measures the quake's size (its Mw, see [[magnitude]]).
+- Either way there are two possible fault planes, the real one and the imaginary one. The waves cannot tell them apart; aftershocks, geology or the shape of the plate boundary usually can.
+- A fault is described by its **strike** (the direction it runs, clockwise from north), its **dip** (how steep it is, from flat to vertical) and its **rake** (which way the rock above it slid: up for a thrust, down for a normal fault, sideways for strike-slip).
+
+## In SEISMO
+- USGS publishes a fault orientation for most larger quakes, usually within an hour or two, and for many small ones where local networks are dense. SEISMO looks it up in the background and keeps it for offline use.
+@desktop - The event panel shows it as a beach ball, with its type, strike, dip and rake. The P and S waves on the seismograms follow its pattern: compare stations in different directions, and look for P starting upward at some and downward at others.
+@terminal - The details under SELECTED show its type, strike, dip and rake. The P and S waves on the seismograms follow its pattern.
+- Without one, the waves leave evenly in every direction and every P wave starts upward.
+@desktop - Your own quakes can have one: tick **fault orientation** under [[make|Make your own event]].
+- The surface waves and the rings on the map still leave evenly in every direction. See [[simplified]].
+
+@desktop Try it: make a magnitude 7 quake with the **strike-slip** button, add stations all around it, and watch the first wiggle of P: up in two opposite quarters, down in the other two. The built-in Tōhoku quake is a thrust under Japan on a fault so nearly flat that its band is pushed far to one side: its ball looks almost like two halves.
 
 === interior | Inside the Earth | learn
 The Earth is layered like an onion: a thin rocky crust, a thick solid mantle, a liquid iron outer core and a solid iron inner core. Almost everything we know about these layers comes from seismic waves.
@@ -462,10 +497,13 @@ Short definitions of the words used in this guide.
 - **Discontinuity**: a depth where wave speed jumps, such as the Moho.
 - **Dispersion**: waves of different lengths travelling at different speeds. See [[surface-waves]].
 - **Epicentre**: the point on the surface above where a quake starts. **Hypocentre**: the starting point itself, underground.
+- **Beach ball**: the drawing of a fault's pattern of pushes and pulls. See [[fault]].
 - **Fault**: a fracture in the rock along which the two sides move.
+- **Focal mechanism**: which way a quake's fault runs and slipped, found from its waves. See [[fault]].
 - **Great circle**: the shortest path between two points on a sphere.
 - **Magnitude**: a quake's size on a logarithmic scale. See [[magnitude]].
 - **Moho**: the base of the crust.
+- **Nodal plane**: a direction in which a quake's P wave is silent; one of the two is the fault.
 - **Origin time**: when the fault started to slip.
 - **Phase**: one path a wave takes, named by its legs. See [[phase-names]].
 - **Ray**: the path a bit of wave energy follows. See [[rays]].
@@ -490,6 +528,7 @@ The numbers about the Earth in this guide are read from the model SEISMO simulat
 - Mohorovičić (1910), his study of the 1909 Kupa Valley earthquake: the Moho.
 - Reid (1910), in the State Earthquake Investigation Commission's report on the 1906 California earthquake: elastic rebound.
 - Lehmann (1936), P′: the inner core.
+- Byerly (1926 onwards), first-motion studies of Californian earthquakes: fault-plane solutions. Aki and Richards (2002), Quantitative Seismology: the radiation patterns SEISMO uses.
 - Richter (1935), An instrumental earthquake magnitude scale; Hanks and Kanamori (1979), A moment magnitude scale.
 - Jeffreys and Bullen (1940), Seismological Tables; Kennett and Engdahl (1991), iasp91.
 

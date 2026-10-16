@@ -2,6 +2,7 @@
 //! `app`: the eframe/egui shell. Owns the sim clock and wires sim, render and feed together.
 //! Allowed dependencies: everything in the workspace.
 
+mod beachball;
 mod bench;
 mod guide;
 mod mantle;
@@ -19,6 +20,7 @@ use sim::slice::{PhaseLabel, SliceFans, SliceLine};
 use sim::tables::{Dispersion, EarthModel, TravelTimeTable};
 use sim::{EARTH_RADIUS_KM, Event, EventKind, RayPhase, Simulation, Wave, azimuth_deg};
 
+use beachball::BeachBall;
 use guide::GuideUi;
 use mantle::{BendKey, CutKey, MantleWorker, Ready};
 use session::clock::{MAX_SPEED, MIN_SPEED, SimClock, secs};
@@ -219,6 +221,8 @@ struct SeismoApp {
     bench: Option<bench::Bench>,
     /// The guide window, the `?` glyphs and the welcome card.
     guide: GuideUi,
+    /// The selected earthquake's fault pattern, drawn in the event panel.
+    beach_ball: BeachBall,
 }
 
 impl SeismoApp {
@@ -501,6 +505,7 @@ impl SeismoApp {
             map_cap,
             bench,
             guide,
+            beach_ball: BeachBall::default(),
         })
     }
 
@@ -987,6 +992,59 @@ impl SeismoApp {
                 .step_by(0.1)
                 .text("magnitude"),
         );
+        if f.kind == EventKind::Earthquake {
+            ui.checkbox(&mut f.fault, "fault orientation")
+                .on_hover_text(
+                    "Give the quake a fault: its waves then leave stronger in some directions \
+                 than others, and start with a push or a pull. Unticked, they leave evenly.",
+                );
+            if f.fault {
+                ui.horizontal(|ui| {
+                    for (name, dip, rake) in [
+                        ("thrust", 30.0, 90.0),
+                        ("normal", 60.0, -90.0),
+                        ("strike-slip", 90.0, 0.0),
+                    ] {
+                        if ui
+                            .small_button(name)
+                            .on_hover_text(format!("dip {dip:.0}°, rake {rake:.0}°"))
+                            .clicked()
+                        {
+                            (f.dip_deg, f.rake_deg) = (dip, rake);
+                        }
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("strike");
+                    ui.add(
+                        egui::DragValue::new(&mut f.strike_deg)
+                            .range(0.0..=360.0)
+                            .max_decimals(0)
+                            .suffix("°"),
+                    )
+                    .on_hover_text("The fault's direction, clockwise from north");
+                    ui.label("dip");
+                    ui.add(
+                        egui::DragValue::new(&mut f.dip_deg)
+                            .range(0.0..=90.0)
+                            .max_decimals(0)
+                            .suffix("°"),
+                    )
+                    .on_hover_text("How steep the fault is: 0 flat, 90 vertical");
+                    ui.label("rake");
+                    ui.add(
+                        egui::DragValue::new(&mut f.rake_deg)
+                            .range(-180.0..=180.0)
+                            .max_decimals(0)
+                            .suffix("°"),
+                    )
+                    .on_hover_text(
+                        "Which way the rock above the fault slid: 90 up (thrust), -90 down \
+                         (normal), 0 or 180 sideways (strike-slip)",
+                    );
+                });
+            }
+        }
         ui.horizontal(|ui| {
             ui.label("time");
             ui.add(
@@ -1323,6 +1381,47 @@ impl SeismoApp {
             event.lat, event.lon, event.depth_km
         ));
         ui.colored_label(pal.dim, format!("{}  {}", event.id, listed.status));
+        if event.kind == EventKind::Earthquake {
+            match event.fault() {
+                Some(&fault) => {
+                    ui.horizontal(|ui| {
+                        self.beach_ball
+                            .show(ui, fault, 56.0, pal.text)
+                            .on_hover_text(
+                                "The fault's beach ball: the lower half of a sphere round the \
+                                 quake, seen from above with north up. Filled: the P wave \
+                                 leaves that way as a push (the ground first moves up); empty: \
+                                 as a pull (first moves down). The P and S waves on the \
+                                 seismograms follow this pattern.",
+                            );
+                        ui.vertical(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(format!("{} fault", fault.style().name()));
+                                self.guide.glyph(ui, "fault");
+                            });
+                            ui.label(format!(
+                                "strike {:.0}° dip {:.0}° rake {:.0}°",
+                                fault.strike_deg, fault.dip_deg, fault.rake_deg
+                            ));
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(fault.style().describe()).color(pal.dim),
+                                )
+                                .wrap(),
+                            );
+                        });
+                    });
+                }
+                None => {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.colored_label(pal.dim, "No fault orientation known: waves leave");
+                        ui.colored_label(pal.dim, "evenly in every direction.");
+                        self.guide.glyph(ui, "fault");
+                    });
+                }
+            }
+            self.guide.note(ui, "fault");
+        }
         if listed.gone {
             ui.colored_label(
                 pal.text,

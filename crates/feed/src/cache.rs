@@ -25,6 +25,7 @@ pub struct CacheMeta {
 }
 
 const SAVED: &str = "saved.geojson";
+const MECHANISMS: &str = "mechanisms.json";
 
 #[derive(Debug, Clone)]
 pub struct Cache {
@@ -74,6 +75,17 @@ impl Cache {
         write_atomic(&self.dir.join(SAVED), body)
     }
 
+    /// The remembered fault-orientation lookups, if there are any.
+    pub fn load_mechanisms(&self) -> Option<Vec<u8>> {
+        std::fs::read(self.dir.join(MECHANISMS)).ok()
+    }
+
+    /// Replace the remembered fault-orientation lookups.
+    pub fn store_mechanisms(&self, body: &[u8]) -> io::Result<()> {
+        std::fs::create_dir_all(&self.dir)?;
+        write_atomic(&self.dir.join(MECHANISMS), body)
+    }
+
     /// Save a download. The body is written before the meta file, each through a temporary
     /// file and a rename, so a crash never leaves a meta file describing a half-written body.
     pub fn store(&self, feed: FeedKind, body: &[u8], meta: &CacheMeta) -> io::Result<()> {
@@ -117,6 +129,9 @@ mod tests {
         assert_eq!(cache.load_saved(), None);
         cache.store_saved(b"{}").unwrap();
         assert_eq!(cache.load_saved().unwrap(), b"{}");
+        assert_eq!(cache.load_mechanisms(), None);
+        cache.store_mechanisms(b"{\"by_id\": {}}").unwrap();
+        assert_eq!(cache.load_mechanisms().unwrap(), b"{\"by_id\": {}}");
         // A body without its meta file is not a complete download.
         std::fs::remove_file(dir.join("all_day.meta.json")).unwrap();
         assert_eq!(cache.load(FeedKind::AllDay), None);

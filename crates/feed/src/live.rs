@@ -1,8 +1,11 @@
 //! The feed thread: a tokio runtime of its own that loads the cache, then polls the USGS
-//! summary feeds and sends the merged event list to the app over a channel. Between polls it
-//! answers the app's commands: searches for past events, and keeping or forgetting one. The
-//! app only ever polls its channel, so the UI thread never waits on the network.
+//! summary feeds and sends the merged event list to the app over a channel. After each poll it
+//! looks up the fault orientation of the listed earthquakes USGS has one for (see
+//! [`crate::mechanisms`]). Between polls it answers the app's commands: searches for past
+//! events, and keeping or forgetting one. The app only ever polls its channel, so the UI
+//! thread never waits on the network.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -11,6 +14,7 @@ use crossbeam_channel::{Receiver, Sender};
 use tokio::sync::mpsc;
 
 use crate::cache::{Cache, CacheMeta};
+use crate::mechanisms::{self, Checked, Mechanisms};
 use crate::search::Search;
 use crate::store::{EventStore, StoredEvent};
 use crate::usgs::{FeedKind, parse, to_collection};
@@ -150,6 +154,10 @@ struct Feed {
     status: FeedStatus,
     /// `None` when offline.
     client: Option<reqwest::Client>,
+    /// Fault-orientation lookups, remembered on disk.
+    mechanisms: Mechanisms,
+    /// When this session last looked up each event's fault orientation, by handle.
+    last_tried: HashMap<u64, DateTime<Utc>>,
 }
 
 impl Feed {
@@ -173,8 +181,65 @@ impl Feed {
                 }
                 self.tx.send(FeedMsg::Found(reply)).is_ok()
             }
-            FeedCmd::Keep(handle) => self.set_saved(handle, true),
+            FeedCmd::Keep(handle) => {
+                // A kept search result is listed from now on: look up its fault at once.
+                self.set_saved(handle, true)
+                    && (!self.look_up_mechanisms().await || self.send_events())
+            }
             FeedCmd::Forget(handle) => self.set_saved(handle, false),
+        }
+    }
+
+    /// Look up the fault orientations [`mechanisms::wanted`] picks, one request each, and
+    /// remember the answers. Returns whether the listed events changed.
+    async fn look_up_mechanisms(&mut self) -> bool {
+        let Some(client) = self.client.clone() else {
+            return false;
+        };
+        let now = Utc::now();
+        let wanted = mechanisms::wanted(&self.store, &self.mechanisms, &self.last_tried, now);
+        let (mut changed, mut learned) = (false, false);
+        for r in wanted {
+            self.last_tried.insert(r.handle, now);
+            let id = &r.feed.event.id;
+            let Ok(url) = Search::Id(id.clone()).url() else {
+                continue;
+            };
+            let body = match fetch(&client, &url, None).await {
+                Ok(Fetched::Body { body, .. }) => body,
+                Ok(Fetched::NotModified) => continue,
+                Err(e) => {
+                    tracing::debug!(id, "fault lookup failed: {e}");
+                    continue;
+                }
+            };
+            let Some(found) = parse(&body).ok().and_then(|v| v.into_iter().next()) else {
+                continue;
+            };
+            let mechanism = found.event.mechanism;
+            self.mechanisms.record(
+                id,
+                Checked {
+                    updated: r.feed.updated.max(found.updated),
+                    mechanism,
+                },
+            );
+            learned = true;
+            if let Some(m) = mechanism {
+                changed |= self.store.set_mechanism(r.handle, m);
+            }
+        }
+        if learned {
+            self.save_mechanisms();
+        }
+        changed
+    }
+
+    fn save_mechanisms(&self) {
+        if let Some(c) = &self.cache
+            && let Err(e) = c.store_mechanisms(&self.mechanisms.to_bytes())
+        {
+            tracing::warn!("saving fault orientations: {e}");
         }
     }
 
@@ -194,7 +259,35 @@ impl Feed {
             Err(e) => return Err(format!("USGS search failed: {e}")),
         };
         let found = parse(&body).map_err(|e| format!("unreadable reply: {e}"))?;
-        Ok(self.store.apply_search(found))
+        // A lookup by code brings the fault orientation along: remember it.
+        let mut learned = false;
+        for f in found.iter().filter(|f| f.mechanism_listed) {
+            if let Some(m) = f.event.mechanism {
+                let checked = Checked {
+                    updated: f.updated,
+                    mechanism: Some(m),
+                };
+                self.mechanisms.record(&f.event.id, checked);
+                learned = true;
+            }
+        }
+        if learned {
+            self.save_mechanisms();
+        }
+        let (found, mut changed) = self.store.apply_search(found);
+        changed |= self.mechanisms.attach(&mut self.store);
+        // The results as they are now, remembered faults included.
+        let found = found
+            .iter()
+            .filter_map(|f| {
+                self.store
+                    .events()
+                    .iter()
+                    .find(|r| r.handle == f.handle)
+                    .cloned()
+            })
+            .collect();
+        Ok((found, changed))
     }
 
     /// Keep or forget an event, and save the kept ones. `false` once the app has gone.
@@ -222,6 +315,8 @@ async fn run(config: FeedConfig, tx: Sender<FeedMsg>, mut cmds: mpsc::UnboundedR
             ..Default::default()
         },
         client: None,
+        mechanisms: Mechanisms::default(),
+        last_tried: HashMap::new(),
     };
     // `If-Modified-Since` per feed: only once that feed's cached body is in the store, or a
     // "not modified" answer would leave it out.
@@ -249,6 +344,13 @@ async fn run(config: FeedConfig, tx: Sender<FeedMsg>, mut cmds: mpsc::UnboundedR
             Err(e) => tracing::warn!(feed = kind.name(), "cached feed unreadable: {e}"),
         }
     }
+    if let Some(body) = feed.cache.as_ref().and_then(Cache::load_mechanisms) {
+        match Mechanisms::from_bytes(&body) {
+            Ok(m) => feed.mechanisms = m,
+            Err(e) => tracing::warn!("remembered fault orientations unreadable: {e}"),
+        }
+    }
+    feed.mechanisms.attach(&mut feed.store);
     tracing::info!(events = feed.store.events().len(), "feed cache loaded");
     if !feed.send_events() || feed.tx.send(FeedMsg::Status(feed.status.clone())).is_err() {
         return;
@@ -316,11 +418,15 @@ async fn run(config: FeedConfig, tx: Sender<FeedMsg>, mut cmds: mpsc::UnboundedR
                 }
             }
         }
+        changed |= feed.mechanisms.attach(&mut feed.store);
         if changed {
             tracing::info!(events = feed.store.events().len(), "feed updated");
             if !feed.send_events() {
                 return;
             }
+        }
+        if feed.look_up_mechanisms().await && !feed.send_events() {
+            return;
         }
         if feed.tx.send(FeedMsg::Status(feed.status.clone())).is_err() {
             return;

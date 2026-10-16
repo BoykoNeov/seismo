@@ -54,10 +54,11 @@ surface can carry, so it has no sP; ObsPy and the tracer agree on that edge.
   take a different path, so their times stay 1D (in the slice, their rays are bent through the
   3D mantle like the others).
 - **Amplitudes** come from their own ray tubes (see Seismograms), with a fixed factor for the
-  surface bounce (pP 0.7, sP 0.5). The real factors depend on the angle, flip pP's polarity,
-  and are dwarfed by the source's radiation pattern, which SEISMO does not model; so the sizes
-  of pP and sP next to P are display choices. sP takes the source's S weight (it leaves as S),
-  pP the P weight.
+  surface bounce (pP 0.7, sP 0.5). The real factors depend on the angle and flip pP's
+  polarity, which SEISMO does not model; so the sizes of pP and sP next to P are display
+  choices. sP takes the source's S weight (it leaves as S), pP the P weight. When the fault is
+  known, its radiation pattern is applied at their upward take-off angles (see Radiation
+  pattern below), which matters more than the bounce.
 
 ## Converted and doubly reflected phases
 
@@ -377,8 +378,9 @@ their sizes only roughly physical. The UI says so.
   epicentre and antipode (sin Δ → 0) and at grazing incidence the formula diverges. SEISMO caps
   |dΔ/di| at 0.1 or more, sin Δ at sin 1° or more and cos i₀ at 0.1 or more, so focusing is shown
   but stays finite.
-- **What the amplitudes leave out.** No radiation pattern (every source radiates the same in all
-  directions), no reflection or transmission coefficients (a fixed factor per phase stands in:
+- **What the amplitudes leave out.** The radiation pattern only where a fault is known (see
+  Radiation pattern below; otherwise every direction gets the same), no reflection or
+  transmission coefficients (a fixed factor per phase stands in:
   PcP 0.2, ScS 0.5, PKPab/bc 0.4, PKPdf 0.3, PP 0.6, SS 0.6, SKS 0.4, pP 0.7, sP 0.5,
   PcS 0.15, ScP 0.15, PKiKP 0.1, PKKP 0.1, SKKS 0.3, PS 0.3, SP 0.3), no
   free-surface effect,
@@ -395,7 +397,8 @@ their sizes only roughly physical. The UI says so.
   landslide 0.2 : 0.6 : 2; impact 0.5 : 0.5 : 3). Display choices, not source physics.
 - **Components.** Each trace shows one way of shaking. Vertical: P-type arrivals and Rayleigh
   at full weight, SKS at 0.6, other S at 0.35, no Love. Transverse: S (SH) and Love at full
-  weight, nothing from P, SKS or Rayleigh. Fixed weights, not a polarisation calculation.
+  weight, nothing from P, SKS or Rayleigh. Fixed weights, not a polarisation calculation; with
+  a known fault they multiply its signed P, SV or SH coefficient.
 - **Wavelets.** Body waves are Ricker wavelets of 1 s (P-type) or 2 s (S-type) period, each
   followed by a scattered coda: seeded pseudo-random wiggles, 0.4× the arrival, dying away over
   20 s (P) or 40 s (S). Surface waves are the dispersed trains above, computed every 1 s and
@@ -411,6 +414,50 @@ their sizes only roughly physical. The UI says so.
   (largest first), and none more than 2 magnitude units smaller than the selected event (their
   waves would be under 1% of its size). An event's waves join a trace once its ray tubes are
   built, a moment after it appears.
+
+## Radiation pattern (earthquakes with a known fault)
+
+Added 2026-10-16 (roadmap 2.1). A slipping fault sends its body waves out unevenly; where the
+fault is known, SEISMO scales each body-wave arrival by the coefficient of the ray leaving the
+source towards the station (`sim::radiation`, Aki & Richards 2002, box 4.4 and eq. 4.29).
+
+- **Double couple only.** A fault is one nodal plane (strike, dip, rake). From USGS it is the
+  first nodal plane of the `moment-tensor` product with the highest preferred weight, else of
+  the `focal-mechanism` product. The non-double-couple part of a published moment tensor
+  (isotropic, CLVD) is ignored, as are its centroid position, depth and source duration: the
+  waves still leave the catalogue hypocentre. A test checks the tensor built from Tōhoku's
+  nodal plane against USGS's own tensor for it (0.999 alike).
+- **Earthquakes only.** Other kinds (explosions, landslides, ...) keep their even weights even
+  if USGS publishes a tensor for them.
+- **Same size on average.** P is divided by its root-mean-square over all directions, √(4/15),
+  and SV and SH each by √(1/5), so averaged over every direction a fault sends as much as the
+  even source it replaces, and the kind's P : S : surface weights keep their meaning. For one
+  fault the S energy can split unevenly between SV and SH; their sum is exact.
+- **Which part of the pattern a phase carries.** Phases that leave as P (P, PcP, PKP, PP, pP,
+  PcS, PS, Pdiff) take the P coefficient. Phases that leave as S and stay S (S, ScS, SS, Sdiff)
+  take SV on the vertical and SH on the transverse. Phases that leave as S but cross the liquid
+  core or turn into P (SKS, SKKS, sP, SP, ScP) take only SV. The take-off angle is that of the
+  traced branch used for the amplitude (the shadow edge's for Pdiff and Sdiff); the azimuth is
+  the station's from the epicentre.
+- **Signs kept, but only the source's.** A push (positive P) starts the vertical trace upward,
+  positive SV (towards a larger take-off angle) is drawn upward too, positive SH (clockwise
+  seen from above) is positive transverse. Sign changes on the way (pP's reflection, PP's
+  surface bounce, conversions, the free surface turning SV into vertical motion) are not
+  modelled, so direct P's first motion is the one to trust.
+- **Surface waves, the map and the slice stay even.** Rayleigh and Love excitation depends on
+  depth through mode shapes the dispersion asset does not hold; the map's rings and the slice's
+  fronts are not weighted by direction.
+- **How faults are fetched.** A summary feed only lists that USGS holds a fault product; the
+  feed thread looks each such listed earthquake up by id (FDSN `eventid=`), at most 10 per
+  poll, largest first, and again at most hourly while USGS keeps updating the event. Answers
+  (found or not) are kept in `mechanisms.json` beside the feed cache, and kept past events
+  carry theirs in `saved.geojson`, so both work offline. Until an answer arrives the waves
+  leave evenly.
+- **The built-in Tōhoku event** carries USGS's preferred fault (192/8/78, the Mww moment
+  tensor), so the offline default shows the pattern.
+- **Your own events** can be given a fault in the form (earthquakes only); the presets are a
+  30° thrust, a 60° normal fault and a vertical strike-slip fault, each keeping the typed
+  strike.
 
 ## Events you make
 

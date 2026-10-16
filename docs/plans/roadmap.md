@@ -107,6 +107,15 @@ station. Work: parse the `focal-mechanism` / `moment-tensor` product in `feed`, 
 event, apply the standard double-couple pattern (Aki & Richards) in `sim::seismogram` for P,
 SV and SH; fall back to the current isotropic weights when absent. Medium effort.
 
+**Done 2026-10-16.** `sim::radiation` gives signed P, SV and SH coefficients from strike, dip
+and rake (checked against Aki & Richards' closed forms and USGS's Tōhoku tensor), normalised so
+a fault only redistributes energy. The feed looks up each listed earthquake's preferred moment
+tensor (else focal mechanism) and keeps it offline; the built-in Tōhoku has its fault; made
+earthquakes can have one. The event panel draws a beach ball; the terminal shows the fault in
+words. Surface waves, the map and the slice stay even: a surface-wave pattern (shallow-source
+limit: Love ∝ SH at horizontal take-off, Rayleigh ∝ γ·M·γ − (1 − 2β²/α²)·M_zz) is the natural
+next step, as is weighting the map's rings by direction.
+
 ### 2.2 Ellipticity correction
 
 The Earth is flattened; ignoring it shifts teleseismic times by up to about ±1 s. The standard

@@ -337,6 +337,21 @@ fn detail_lines(app: &App, pal: &Palette) -> Vec<Line<'static>> {
             ),
             dim,
         ));
+        if e.kind == sim::EventKind::Earthquake {
+            out.push(match e.fault() {
+                Some(m) => Line::styled(
+                    format!(
+                        " fault: {}, strike {:.0}° dip {:.0}° rake {:.0}°",
+                        m.style().name(),
+                        m.strike_deg,
+                        m.dip_deg,
+                        m.rake_deg
+                    ),
+                    text,
+                ),
+                None => Line::styled(" no fault orientation known: waves leave evenly", dim),
+            });
+        }
     }
     let stations = app.traces.chosen.len();
     out.push(Line::styled(

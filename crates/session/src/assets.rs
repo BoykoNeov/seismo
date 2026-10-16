@@ -3,7 +3,7 @@
 
 use chrono::{TimeZone, Utc};
 use sim::tables::{Dispersion, EarthModel, TableError, TravelTimeTable};
-use sim::{Event, EventKind};
+use sim::{Event, EventKind, FocalMechanism};
 
 pub static TABLE: &[u8] = include_bytes!("../../../assets/ak135.tt");
 pub static MODEL: &[u8] = include_bytes!("../../../assets/ak135_model.csv");
@@ -20,7 +20,10 @@ pub fn earth() -> Result<(TravelTimeTable, EarthModel, Dispersion), TableError> 
     ))
 }
 
-/// The built-in example event, there with or without the feed: 2011 Tōhoku.
+/// The built-in example event, there with or without the feed: 2011 Tōhoku, with the fault
+/// USGS prefers for it (W-phase moment tensor, Duputel; first nodal plane of the
+/// `moment-tensor` product of event usp000hvnu, read 2026-10-16): a thrust on the shallow plate
+/// boundary dipping west under Japan.
 pub fn tohoku() -> Event {
     let origin = Utc.with_ymd_and_hms(2011, 3, 11, 5, 46, 24).unwrap();
     Event::new(
@@ -32,6 +35,7 @@ pub fn tohoku() -> Event {
         29.0,
         9.1,
     )
+    .with_mechanism(Some(FocalMechanism::new(192.0, 8.0, 78.0)))
 }
 
 /// Where the built-in example happened, for the event list.

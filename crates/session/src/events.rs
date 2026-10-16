@@ -598,6 +598,7 @@ mod tests {
                 usgs_type: "earthquake".into(),
                 place: String::new(),
                 updated: origin,
+                mechanism_listed: false,
                 status: "automatic".into(),
             },
             live: true,

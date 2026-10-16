@@ -14,12 +14,18 @@
 //! with i₀ the angle of incidence at the station. dΔ/di is taken between neighbouring traced
 //! rays (one difference along the fan), never by differencing the table twice. Surface waves
 //! are dispersed trains (see [`crate::surface`]).
+//!
+//! An earthquake whose fault is known radiates its body waves unevenly: each arrival is scaled
+//! by the signed P, SV or SH coefficient of the ray that leaves the source towards the station
+//! (see [`crate::radiation`]), so its first motion can be up or down and its size changes with
+//! the direction. Without a fault every direction gets the same weight, as before.
 
 use std::f64::consts::{FRAC_PI_2, PI};
 
 use crate::event::Event;
 use crate::geo::{EARTH_RADIUS_KM, azimuth_deg, great_circle_deg};
 use crate::mantle::{DELAY_PHASES, DelayGrid};
+use crate::radiation::Radiation;
 use crate::raytrace::{Landing, RayPhase, RayTracer, Wave};
 use crate::station::Station;
 use crate::surface::{CENTRAL_PERIOD_S, SurfaceWaves, TrainCache};
@@ -32,6 +38,17 @@ pub enum Component {
     Vertical,
     /// Side to side, across the path from the source: SH waves and Love waves.
     Transverse,
+}
+
+impl Component {
+    pub const ALL: [Component; 2] = [Component::Vertical, Component::Transverse];
+
+    fn index(self) -> usize {
+        match self {
+            Component::Vertical => 0,
+            Component::Transverse => 1,
+        }
+    }
 }
 
 /// The kind of motion an arrival carries, which decides what each component sees of it.
@@ -48,6 +65,13 @@ pub enum Motion {
     Love,
 }
 
+impl StationArrival {
+    /// Signed amplitude of this arrival on `component`.
+    pub fn on(&self, component: Component) -> f64 {
+        self.amplitude * self.components[component.index()]
+    }
+}
+
 impl Motion {
     /// Relative amplitude of this motion on `component`. Display weights, not a polarisation
     /// calculation.
@@ -60,6 +84,12 @@ impl Motion {
             (Component::Transverse, Motion::Shear | Motion::Love) => 1.0,
             (Component::Transverse, _) => 0.0,
         }
+    }
+
+    /// [`Motion::weight`] on each component, in [`Component::ALL`] order: what an even source
+    /// gives.
+    pub fn weights(self) -> [f64; 2] {
+        Component::ALL.map(|c| self.weight(c))
     }
 
     /// The surface wave this motion is, if it is one.
@@ -83,9 +113,13 @@ pub struct StationArrival {
     /// wave, when the energy of its central period arrives; its train starts earlier and ends
     /// later.
     pub time_s: f64,
-    /// Relative amplitude, comparable between arrivals and between events. For a surface wave,
-    /// the peak its train would have had it not dispersed.
+    /// Relative amplitude, comparable between arrivals and between events, as an even source
+    /// would send it. For a surface wave, the peak its train would have had it not dispersed.
     pub amplitude: f64,
+    /// The signed share of `amplitude` each component records, in [`Component::ALL`] order:
+    /// the motion's weight on it times the fault's radiation coefficient towards the station
+    /// (negative: the first motion is down, or to the left). Without a fault, the weights.
+    pub components: [f64; 2],
     /// Dominant period (s) of the wavelet.
     pub period_s: f64,
     /// Surface waves: the length (km) of the path, the short or the long way round. 0 for
@@ -98,7 +132,8 @@ pub struct StationArrival {
 /// fixed factor standing in for the energy lost at the boundaries the ray reflects off or
 /// passes through (the tracer has no reflection or transmission coefficients). The depth phases'
 /// factors stand in for the free-surface reflection (pP) and S-to-P conversion (sP), without the
-/// angle dependence, the polarity flip or the source's radiation pattern; the converted phases'
+/// angle dependence or the polarity flip (the fault's radiation pattern, when known, is applied
+/// to every phase, upgoing rays included); the converted phases'
 /// (PcS, ScP, PS, SP) for the share of energy a boundary converts, and PKiKP's and PKKP's for
 /// the weak reflections off the inner core and the underside of the core-mantle boundary.
 const BODY_PHASES: [(&str, Option<RayPhase>, Motion, f64); 21] = [
@@ -167,6 +202,8 @@ const MAX_BRACKET_DEG: f64 = 2.0;
 pub struct TubeArrival {
     pub time_s: f64,
     pub amplitude: f64,
+    /// Take-off angle (rad from straight down) of the ray leaving the source.
+    pub takeoff_rad: f64,
 }
 
 /// Where every traced phase lands, for one source depth: the ray tubes the amplitudes come
@@ -254,28 +291,30 @@ impl Spreading {
     ) -> TubeArrival {
         let lerp = |x: f64, y: f64| x + (y - x) * f;
         let slope = (b.dist_deg - a.dist_deg).to_radians() / (b.takeoff_rad - a.takeoff_rad);
+        let takeoff_rad = lerp(a.takeoff_rad, b.takeoff_rad);
         TubeArrival {
             time_s: lerp(a.time_s, b.time_s),
             amplitude: self.tube(
                 phase,
-                lerp(a.takeoff_rad, b.takeoff_rad),
+                takeoff_rad,
                 lerp(a.p_s_rad, b.p_s_rad),
                 slope,
                 dist_deg,
             ),
+            takeoff_rad,
         }
     }
 
-    /// Amplitude of the branch of `phase` at `dist_deg` arriving closest to `time_s`. When no
-    /// branch crosses that distance (the table and the fan disagree slightly at a fan's edge),
-    /// the nearest landing pair within `MAX_BRACKET_DEG` stands in.
-    fn amplitude_near(&self, phase: RayPhase, dist_deg: f64, time_s: f64) -> Option<f64> {
+    /// The branch of `phase` at `dist_deg` arriving closest to `time_s`. When no branch
+    /// crosses that distance (the table and the fan disagree slightly at a fan's edge), the
+    /// nearest landing pair within `MAX_BRACKET_DEG` stands in.
+    fn branch_near(&self, phase: RayPhase, dist_deg: f64, time_s: f64) -> Option<TubeArrival> {
         if let Some(best) = self.arrivals(phase, dist_deg).into_iter().min_by(|x, y| {
             (x.time_s - time_s)
                 .abs()
                 .total_cmp(&(y.time_s - time_s).abs())
         }) {
-            return Some(best.amplitude);
+            return Some(best);
         }
         self.pairs(phase)
             .map(|(a, b)| {
@@ -284,7 +323,7 @@ impl Spreading {
             })
             .filter(|(gap, ..)| *gap <= MAX_BRACKET_DEG)
             .min_by(|x, y| x.0.total_cmp(&y.0))
-            .map(|(_, a, b, f)| self.between(phase, a, b, f, dist_deg).amplitude)
+            .map(|(_, a, b, f)| self.between(phase, a, b, f, dist_deg))
     }
 
     /// Farthest distance (deg) the downgoing rays of a direct phase reach: the shadow edge, past
@@ -298,10 +337,11 @@ impl Spreading {
             .reduce(f64::max)
     }
 
-    /// Amplitude of a diffracted wave (Pdiff from `RayPhase::P`, Sdiff from `RayPhase::S`) at
-    /// `dist_deg`: the direct wave's amplitude just inside the shadow edge, fading
-    /// exponentially past it. A stand-in; the tracer does not follow diffraction.
-    fn diffracted(&self, phase: RayPhase, dist_deg: f64) -> Option<f64> {
+    /// A diffracted wave (Pdiff from `RayPhase::P`, Sdiff from `RayPhase::S`) at `dist_deg`:
+    /// the direct wave's amplitude and take-off angle just inside the shadow edge, the
+    /// amplitude fading exponentially past it. A stand-in; the tracer does not follow
+    /// diffraction.
+    fn diffracted(&self, phase: RayPhase, dist_deg: f64) -> Option<(f64, f64)> {
         let edge = self.shadow_edge_deg(phase)?;
         if dist_deg <= edge {
             return None;
@@ -311,8 +351,11 @@ impl Spreading {
             Wave::S => SDIFF_DECAY_DEG,
         };
         let inside = edge - 0.5;
-        let a = self.amplitude_near(phase, inside, f64::INFINITY)?;
-        Some(a * (-(dist_deg - edge) / decay).exp())
+        let a = self.branch_near(phase, inside, f64::INFINITY)?;
+        Some((
+            a.amplitude * (-(dist_deg - edge) / decay).exp(),
+            a.takeoff_rad,
+        ))
     }
 }
 
@@ -374,7 +417,9 @@ fn landing_fan(tracer: &RayTracer, phase: RayPhase, depth_km: f64) -> Vec<Vec<La
 
 /// Every wave from `event` reaching `station`, in time order. Times are seconds since the
 /// event's origin. `spreading` must be built for the event's depth. `delays` are the event's
-/// 3D-mantle delays (P and S only), scaled by `strength`; `None` gives the 1D times.
+/// 3D-mantle delays (P and S only), scaled by `strength`; `None` gives the 1D times. An
+/// earthquake with a fault ([`Event::fault`]) radiates its body waves by its pattern; surface
+/// waves leave evenly.
 #[allow(clippy::too_many_arguments)]
 pub fn station_arrivals(
     table: &TravelTimeTable,
@@ -389,6 +434,7 @@ pub fn station_arrivals(
     let az = azimuth_deg(event.lat, event.lon, station.lat, station.lon);
     let depth = event.depth_km;
     let profile = event.kind.profile();
+    let fault = event.fault();
     let size = 10f64.powf(event.magnitude - 5.0);
     let mut out = Vec::new();
 
@@ -396,12 +442,14 @@ pub fn station_arrivals(
         let Some(mut time_s) = table.arrival(name, depth, dist) else {
             continue;
         };
-        let geometric = match (traced, name) {
-            (Some(phase), _) => spreading.amplitude_near(phase, dist, time_s),
+        let branch = match (traced, name) {
+            (Some(phase), _) => spreading
+                .branch_near(phase, dist, time_s)
+                .map(|b| (b.amplitude, b.takeoff_rad)),
             (None, "Pdiff") => spreading.diffracted(RayPhase::P, dist),
             (None, _) => spreading.diffracted(RayPhase::S, dist),
         };
-        let Some(geometric) = geometric else {
+        let Some((geometric, takeoff_rad)) = branch else {
             continue;
         };
         if let Some(grid) = delays
@@ -419,6 +467,16 @@ pub fn station_arrivals(
             t.source_wave() == Wave::P
         });
         let weight = if leaves_as_p { profile.p } else { profile.s };
+        // What the fault sends along this ray. A wave that left as S keeps both parts only if
+        // it stays S all the way; one that crossed the liquid core or turned into P (SKS, sP,
+        // ScP) carries only its SV part.
+        let r = fault.map_or(Radiation::EVEN, |f| f.radiation(takeoff_rad, az));
+        let (vertical, transverse) = match (leaves_as_p, motion) {
+            (true, _) => (r.p, r.p),
+            (false, Motion::Shear) => (r.sv, r.sh),
+            (false, _) => (r.sv, r.sv),
+        };
+        let [wv, wt] = motion.weights();
         let period_s = if motion == Motion::Compressional {
             P_PERIOD_S
         } else {
@@ -429,6 +487,7 @@ pub fn station_arrivals(
             motion,
             time_s,
             amplitude: size * weight * boundaries * geometric,
+            components: [wv * vertical, wt * transverse],
             period_s,
             path_km: 0.0,
         });
@@ -450,6 +509,7 @@ pub fn station_arrivals(
             motion,
             time_s: surface.arrival_s(wave, path_km),
             amplitude: surface_amp,
+            components: motion.weights(),
             period_s: CENTRAL_PERIOD_S,
             path_km,
         });
@@ -544,7 +604,7 @@ pub fn synthesize(
     let index = |t: f64| ((t - start_s) / dt).clamp(0.0, n as f64 - 1.0);
 
     for a in arrivals {
-        let w = a.amplitude * a.motion.weight(component);
+        let w = a.on(component);
         // Draw the generator's numbers for every arrival, used or not, so switching component
         // keeps each arrival's coda the same.
         let wobble = Wobble::new(1.0 / a.period_s, &mut state);
@@ -1018,11 +1078,12 @@ mod tests {
     }
 
     fn picks() -> Vec<StationArrival> {
-        let mk = |phase, motion, time_s, amplitude, period_s, path_km| StationArrival {
+        let mk = |phase, motion: Motion, time_s, amplitude, period_s, path_km| StationArrival {
             phase,
             motion,
             time_s,
             amplitude,
+            components: motion.weights(),
             period_s,
             path_km,
         };
@@ -1183,6 +1244,111 @@ mod tests {
         assert_eq!(seed_from(&["a", "bc"]), seed_from(&["a", "bc"]));
         assert_ne!(seed_from(&["ab", "c"]), seed_from(&["a", "bc"]));
     }
+    /// A station `dist_deg` from (0, 0) towards `azimuth_deg`.
+    fn station_towards(azimuth_deg: f64, dist_deg: f64) -> Station {
+        let (lat, lon) = crate::geo::destination(0.0, 0.0, azimuth_deg, dist_deg);
+        Station::user("X", lat, lon)
+    }
+
+    fn find(arr: &[StationArrival], name: &str) -> StationArrival {
+        arr.iter()
+            .find(|a| a.phase == name)
+            .copied()
+            .unwrap_or_else(|| panic!("no {name}"))
+    }
+
+    #[test]
+    fn without_a_fault_every_direction_gets_the_motion_weights() {
+        let (rt, table, sw) = (tracer(), table(), surface());
+        let sp = Spreading::build(&rt, 29.0);
+        // An explosion's mechanism (as a feed might carry) is not a fault: ignored.
+        let blast = event(29.0)
+            .with_mechanism(Some(crate::FocalMechanism::new(0.0, 90.0, 0.0)))
+            .with_kind(EventKind::NuclearTest);
+        for e in [event(29.0), blast] {
+            for az in [0.0, 45.0, 200.0] {
+                let arr =
+                    station_arrivals(&table, &sp, &e, &station_towards(az, 60.0), None, 1.0, &sw);
+                for a in &arr {
+                    assert_eq!(a.components, a.motion.weights(), "{} {az}", a.phase);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_fault_flips_the_first_motion_between_quadrants() {
+        let (rt, table, sw) = (tracer(), table(), surface());
+        let sp = Spreading::build(&rt, 29.0);
+        // Vertical strike-slip along north: P = sin²i · sin 2φ, pushes to the north-east and
+        // south-west, pulls to the north-west and south-east, nothing along the fault or across it.
+        let e = event(29.0).with_mechanism(Some(crate::FocalMechanism::new(0.0, 90.0, 0.0)));
+        let p_at = |az: f64| {
+            let arr = station_arrivals(&table, &sp, &e, &station_towards(az, 60.0), None, 1.0, &sw);
+            (find(&arr, "P"), arr)
+        };
+        let (ne, _) = p_at(45.0);
+        let (se, _) = p_at(135.0);
+        let (sw_, _) = p_at(225.0);
+        let (n, along) = p_at(0.0);
+        assert!(ne.on(Component::Vertical) > 0.0 && sw_.on(Component::Vertical) > 0.0);
+        assert!(se.on(Component::Vertical) < 0.0);
+        assert!((ne.on(Component::Vertical) + se.on(Component::Vertical)).abs() < 1e-9);
+        assert!(n.on(Component::Vertical).abs() < 1e-9 * ne.amplitude);
+        // SH = sin i · cos 2φ: strong along the fault, where P is silent (but still listed, so
+        // its mark stays), and nothing on the diagonals.
+        let s = find(&along, "S");
+        assert!(s.on(Component::Transverse).abs() > 0.5 * s.amplitude);
+        let (_, diagonal) = p_at(45.0);
+        let s45 = find(&diagonal, "S");
+        assert!(s45.on(Component::Transverse).abs() < 1e-9 * s45.amplitude);
+        // The trace itself starts up in one quadrant and down in the next.
+        let first_motion = |az: f64| {
+            let (p, arr) = p_at(az);
+            let trace = synthesize(
+                &arr,
+                Component::Vertical,
+                p.time_s - 5.0,
+                p.time_s + 5.0,
+                1,
+                &sw,
+                &mut TrainCache::default(),
+            );
+            trace.samples[((p.time_s - trace.start_s) / trace.dt_s).round() as usize]
+        };
+        assert!(first_motion(45.0) > 0.0 && first_motion(135.0) < 0.0);
+    }
+
+    #[test]
+    fn phases_that_cross_the_core_or_turn_into_p_carry_only_sv() {
+        let (rt, table, sw) = (tracer(), table(), surface());
+        let e = event(100.0).with_mechanism(Some(crate::FocalMechanism::new(30.0, 60.0, 45.0)));
+        let sp = Spreading::build(&rt, e.depth_km);
+        let arr = station_arrivals(
+            &table,
+            &sp,
+            &e,
+            &station_towards(70.0, 100.0),
+            None,
+            1.0,
+            &sw,
+        );
+        for name in ["SKS", "SKKS", "SP", "PS"] {
+            let a = find(&arr, name);
+            assert_eq!(a.components[1], 0.0, "{name} on the transverse");
+            assert_ne!(a.components[0], 0.0, "{name} on the vertical");
+        }
+        // S that stays S keeps SV on the vertical and SH on the transverse, both scaled.
+        let s = *arr
+            .iter()
+            .find(|a| a.motion == Motion::Shear)
+            .expect("an S wave at 100°");
+        let weights = s.motion.weights();
+        assert!(s.components[0] != weights[0] && s.components[1] != weights[1]);
+        // Surface waves leave evenly.
+        assert_eq!(find(&arr, "R1").components, Motion::Rayleigh.weights());
+    }
+
     #[test]
     fn later_phases_reach_the_traces_fainter_than_the_direct_waves() {
         let (rt, table) = (tracer(), table());

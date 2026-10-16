@@ -3,6 +3,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::radiation::FocalMechanism;
+
 /// What produced the waves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EventKind {
@@ -83,6 +85,11 @@ pub struct Event {
     pub magnitude: f64,
     /// Magnitude type as given by the source, e.g. "Mw", "mb".
     pub mag_type: String,
+    /// How the fault slipped, when published (or set by the user); `None` radiates evenly.
+    /// Used for earthquakes only (see [`Event::fault`]). Absent from files written before it
+    /// existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mechanism: Option<FocalMechanism>,
 }
 
 impl Event {
@@ -110,12 +117,32 @@ impl Event {
             depth_km: depth_km.max(0.0),
             magnitude,
             mag_type: "Mw".to_owned(),
+            mechanism: None,
         }
     }
 
     pub fn with_mag_type(mut self, mag_type: impl Into<String>) -> Self {
         self.mag_type = mag_type.into();
         self
+    }
+
+    pub fn with_kind(mut self, kind: EventKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    pub fn with_mechanism(mut self, mechanism: Option<FocalMechanism>) -> Self {
+        self.mechanism = mechanism;
+        self
+    }
+
+    /// The fault the waves radiate from: the mechanism of an earthquake; `None` for an
+    /// earthquake without one and for every other kind (an explosion or a landslide is not a
+    /// slipping fault).
+    pub fn fault(&self) -> Option<&FocalMechanism> {
+        self.mechanism
+            .as_ref()
+            .filter(|_| self.kind == EventKind::Earthquake)
     }
 
     /// Replace the id list; the preferred id is added if missing.

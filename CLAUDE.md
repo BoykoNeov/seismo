@@ -195,7 +195,12 @@ vertical/transverse component switch and a per-trace or shared amplitude scale.
 
 Seismogram synthesis: each arrival is a wavelet (Ricker) scaled by magnitude,
 geometric spreading, and depth; traces are display-plausible, not
-waveform-accurate. Say so in the UI. Geometric spreading comes from the ray
+waveform-accurate. Say so in the UI. Radiation pattern (decided 2026-10-16): an earthquake
+with a known fault (`Event::mechanism`, a double couple: strike/dip/rake; earthquakes only)
+scales each body-wave arrival by the signed P, SV or SH coefficient of its ray
+(`sim::radiation`, Aki & Richards), each normalised to its RMS over all directions so the
+kind's weights stay the average; without one, every direction is the same. Surface waves,
+map rings and the slice stay even. Geometric spreading comes from the ray
 tracer (ray-tube width), not from double-differencing the table, which is too
 noisy.
 
@@ -213,7 +218,9 @@ the clock's time). Made events are listed whatever the minimum magnitude (mark `
 picked or followed by the app, editable (a new revision, same handle) and deletable, and kept
 in `made.json` in the app's data folder (beside the `usgs` cache folder), loaded at start.
 They have no USGS type, so the UI shows a plain kind label ("nuclear test") for them: the one
-place a kind name is shown. Making or editing one never moves the clock.
+place a kind name is shown. Making or editing one never moves the clock. An earthquake can be
+given a fault (strike, dip, rake; unticked by default), kept in `made.json` (an optional field:
+older files load).
 
 ## Feed
 
@@ -242,6 +249,12 @@ place a kind name is shown. Making or editing one never moves the clock.
   past events never count for the app's own pick or the M6+ follow. A result that is a
   built-in example selects the built-in instead. Searches run on the feed thread between
   polls; offline they fail at once with a message.
+- Fault orientations (decided 2026-10-16, `feed::mechanisms`): summary feeds only list that
+  USGS holds a `moment-tensor`/`focal-mechanism` product; the feed thread looks each listed
+  earthquake up by id between polls (at most 10 a poll, largest first, again at most hourly
+  while USGS updates it), takes nodal plane 1 of the preferred moment tensor (else focal
+  mechanism), and keeps answers in `mechanisms.json` beside the feed cache. A newer summary
+  version never drops a known fault; the fault is part of the event's revision.
 - Default minimum magnitude shown: 2.5, user-adjustable. Events are identified in the app by
   a stable handle (kept through new versions and merges) plus a revision that changes with
   the physics; caches key on both, never on list position.

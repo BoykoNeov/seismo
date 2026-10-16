@@ -24,12 +24,15 @@ Two looks are available: a green-phosphor CRT (the default) and a modern dark on
   ray fans and wavefronts for each phase, bent through the 3D mantle when that is on. The
   mantle can be shaded fast or slow.
 - **Seismograms.** Synthetic vertical or transverse traces at bundled Global Seismographic
-  Network stations, or at any point clicked on the map. Arrivals are marked by phase.
+  Network stations, or at any point clicked on the map. Arrivals are marked by phase. Where
+  the earthquake's fault is known (from USGS, or set by you), P and S waves follow its
+  radiation pattern: stronger in some directions, starting with a push or a pull, shown as a
+  beach ball in the event panel.
 - **Events.**
   - The live USGS feeds are polled every minute and work offline from a saved copy.
   - Past events can be searched by date and magnitude or by USGS id.
   - You can make your own event of any kind: earthquake, nuclear test, volcanic tremor,
-    landslide or impact.
+    landslide or impact. An earthquake can be given a fault orientation.
 - **Clock.** The clock is absolute UTC and can be paused, scrubbed, replayed from origin, or
   run at 0.1 to 1000 times real speed.
 - **Guide.** A built-in guide explains how to use the program and what each picture shows. It

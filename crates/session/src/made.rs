@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Timelike, Utc};
 use serde::{Deserialize, Serialize};
-use sim::{Event, EventKind};
+use sim::{Event, EventKind, FocalMechanism};
 
 /// One made event: the source, and the name the user gave it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -22,7 +22,8 @@ impl MadeEvent {
     fn normalised(self) -> Self {
         let e = self.event;
         let depth = e.kind.profile().clamp_depth(e.depth_km);
-        let event = Event::new(e.id, e.kind, e.origin, e.lat, e.lon, depth, e.magnitude);
+        let event = Event::new(e.id, e.kind, e.origin, e.lat, e.lon, depth, e.magnitude)
+            .with_mechanism(e.mechanism);
         Self {
             event,
             place: self.place,
@@ -103,6 +104,11 @@ pub struct MakeForm {
     pub magnitude: f64,
     /// UTC origin as typed; empty means the clock's time when the event is made.
     pub time: String,
+    /// An earthquake gets the fault below; otherwise its waves leave evenly in every direction.
+    pub fault: bool,
+    pub strike_deg: f64,
+    pub dip_deg: f64,
+    pub rake_deg: f64,
     /// The next click on the map sets the place.
     pub picking: bool,
     /// The made event the form was filled from, which Update changes.
@@ -121,6 +127,11 @@ impl Default for MakeForm {
             depth_km: 10.0,
             magnitude: 6.0,
             time: String::new(),
+            fault: false,
+            // A thrust on a fault striking north, dipping east at 45°.
+            strike_deg: 0.0,
+            dip_deg: 45.0,
+            rake_deg: 90.0,
             picking: false,
             editing: None,
             message: None,
@@ -146,6 +157,17 @@ impl MakeForm {
         self.depth_km = event.kind.profile().clamp_depth(event.depth_km);
         self.magnitude = event.magnitude;
         self.time = event.origin.format(TIME_FORMAT).to_string();
+        // No fault: keep the angles typed last, unticked.
+        self.fault = event.mechanism.is_some();
+        if let Some(m) = event.mechanism {
+            (self.strike_deg, self.dip_deg, self.rake_deg) = (m.strike_deg, m.dip_deg, m.rake_deg);
+        }
+    }
+
+    /// The fault the form describes: only for an earthquake, and only when ticked.
+    pub fn mechanism(&self) -> Option<FocalMechanism> {
+        (self.fault && self.kind == EventKind::Earthquake)
+            .then(|| FocalMechanism::new(self.strike_deg, self.dip_deg, self.rake_deg))
     }
 
     /// The event the form describes, with origin `clock_now` if no time is typed. The id is
@@ -165,7 +187,8 @@ impl MakeForm {
             self.lon,
             depth,
             self.magnitude,
-        );
+        )
+        .with_mechanism(self.mechanism());
         let place = match self.name.trim() {
             "" => auto_place(&event),
             name => name.to_owned(),
@@ -327,11 +350,63 @@ mod tests {
         assert_eq!(parse(&to_bytes(&events)), Ok(events.clone()));
         assert!(parse(b"not json").is_err());
         assert!(parse(br#"{"version":99,"events":[]}"#).is_err());
+        // An event with a fault keeps it; one without writes no field for it.
+        assert!(
+            !String::from_utf8(to_bytes(&events))
+                .unwrap()
+                .contains("mechanism")
+        );
+        let mut faulted = events.clone();
+        faulted[0].event.kind = EventKind::Earthquake;
+        faulted[0].event.mechanism = Some(FocalMechanism::new(10.0, 60.0, -90.0));
+        assert_eq!(parse(&to_bytes(&faulted)), Ok(faulted));
         // A hand-edited depth outside the kind's range is brought back into it.
         let text = String::from_utf8(to_bytes(&events))
             .unwrap()
             .replace("\"depth_km\": 0.0", "\"depth_km\": 40.0");
         assert_eq!(parse(text.as_bytes()).unwrap()[0].event.depth_km, 0.0);
+    }
+
+    /// A `made.json` written before events had a fault (2026-10-15 shape) still loads.
+    #[test]
+    fn reads_files_from_before_faults() {
+        let old = br#"{
+          "version": 1,
+          "events": [{"event": {"id": "made-1", "ids": ["made-1"], "kind": "Earthquake",
+            "origin": "2020-01-01T00:00:00Z", "lat": 1.0, "lon": 2.0, "depth_km": 3.0,
+            "magnitude": 4.0, "mag_type": "Mw"}, "place": "x"}]
+        }"#;
+        let got = parse(old).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].event.mechanism, None);
+        assert_eq!(got[0].event.magnitude, 4.0);
+    }
+
+    #[test]
+    fn the_fault_is_for_earthquakes_and_only_when_ticked() {
+        let now = t(2026, 10, 16, 12, 0, 0);
+        let mut f = MakeForm::default();
+        assert_eq!(f.build(now).unwrap().event.mechanism, None);
+        f.fault = true;
+        f.rake_deg = -90.0;
+        let m = f.build(now).unwrap();
+        assert_eq!(
+            m.event.mechanism,
+            Some(FocalMechanism::new(0.0, 45.0, -90.0))
+        );
+        // Filled back, the form shows the same fault; edited to a blast, it has none.
+        let mut g = MakeForm::default();
+        g.fill(&m.event, &m.place);
+        assert!(g.fault && g.rake_deg == -90.0);
+        assert_eq!(g.build(now), Ok(m));
+        g.kind = EventKind::NuclearTest;
+        assert_eq!(g.build(now).unwrap().event.mechanism, None);
+        // Filling from an event without one unticks it but keeps the angles.
+        g.fill(
+            &Event::new("x", EventKind::Earthquake, now, 0.0, 0.0, 10.0, 5.0),
+            "y",
+        );
+        assert!(!g.fault && g.rake_deg == -90.0);
     }
 
     #[test]

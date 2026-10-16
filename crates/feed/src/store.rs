@@ -6,6 +6,7 @@
 use std::collections::HashSet;
 
 use chrono::{DateTime, Duration, Utc};
+use sim::FocalMechanism;
 
 use crate::usgs::{FeedEvent, FeedKind};
 
@@ -20,8 +21,8 @@ pub struct StoredEvent {
     /// Stable for the life of the store: kept through new versions and merges (the merged
     /// event keeps the smallest handle). Starts at 1.
     pub handle: u64,
-    /// Changes whenever the event's physics does (origin, position, depth, magnitude, kind),
-    /// so anything computed from it can tell it is stale.
+    /// Changes whenever the event's physics does (origin, position, depth, magnitude, kind,
+    /// fault orientation), so anything computed from it can tell it is stale.
     pub revision: u64,
     pub feed: FeedEvent,
     /// A live summary feed has listed it (this session).
@@ -165,6 +166,20 @@ impl EventStore {
         }
     }
 
+    /// Give the event with `handle` the fault orientation a lookup of it found. Returns whether
+    /// that changed anything (the revision changes with it). Later versions of the event keep
+    /// it: a summary feed never carries one.
+    pub fn set_mechanism(&mut self, handle: u64, mechanism: FocalMechanism) -> bool {
+        match self.records.iter_mut().find(|r| r.handle == handle) {
+            Some(r) if r.feed.event.mechanism != Some(mechanism) => {
+                r.feed.event.mechanism = Some(mechanism);
+                r.revision = revision(&r.feed);
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn record_mut(&mut self, handle: u64) -> &mut StoredEvent {
         self.records
             .iter_mut()
@@ -174,7 +189,8 @@ impl EventStore {
 
     /// Merge one incoming version with every record sharing any of its ids. The newest
     /// `updated` wins (on a tie the stored version stays, so re-applying changes nothing); the
-    /// survivor keeps the smallest handle and the union of everyone's ids.
+    /// survivor keeps the smallest handle and the union of everyone's ids. A winner without a
+    /// fault orientation (a summary feed's version) takes the newest one another version has.
     fn merge(&mut self, incoming: FeedEvent) -> (u64, bool) {
         let shares = |r: &StoredEvent| {
             r.feed
@@ -219,6 +235,14 @@ impl EventStore {
             .reduce(|best, c| if c.updated > best.updated { c } else { best })
             .expect("not empty");
         let mut merged = winner.clone();
+        if merged.event.mechanism.is_none() {
+            merged.event.mechanism = candidates
+                .iter()
+                .filter(|c| c.event.mechanism.is_some())
+                .max_by_key(|c| c.updated)
+                .and_then(|c| c.event.mechanism);
+        }
+        merged.mechanism_listed |= merged.event.mechanism.is_some();
         for c in &candidates {
             for id in &c.event.ids {
                 if !merged.event.ids.contains(id) {
@@ -259,6 +283,9 @@ fn revision(e: &FeedEvent) -> u64 {
         ev.depth_km.to_bits(),
         ev.magnitude.to_bits(),
         ev.kind as u64,
+        ev.mechanism.map_or(u64::MAX, |m| m.strike_deg.to_bits()),
+        ev.mechanism.map_or(0, |m| m.dip_deg.to_bits()),
+        ev.mechanism.map_or(0, |m| m.rake_deg.to_bits()),
     ];
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for w in words {
@@ -290,6 +317,7 @@ mod tests {
             place: "somewhere".into(),
             updated: origin + Duration::minutes(updated_min),
             status: "automatic".into(),
+            mechanism_listed: false,
         }
     }
 
@@ -496,5 +524,39 @@ mod tests {
         // Then it is deleted.
         assert!(s.apply(FeedKind::AllDay, vec![], now()));
         assert!(s.events().is_empty());
+    }
+
+    #[test]
+    fn a_fault_orientation_survives_newer_summary_versions() {
+        let fault = FocalMechanism::new(192.0, 8.0, 78.0);
+        let mut s = EventStore::new();
+        s.apply(FeedKind::AllDay, vec![ev(&["us1"], 30, 1, 7.0)], now());
+        let before = s.events()[0].revision;
+        assert!(s.set_mechanism(1, fault));
+        assert!(!s.set_mechanism(1, fault), "the same again changes nothing");
+        assert!(!s.set_mechanism(99, fault), "no such event");
+        let with = s.events()[0].revision;
+        assert_ne!(with, before, "the traces must be rebuilt");
+        // The next poll's version is newer and has no products: the fault stays.
+        s.apply(FeedKind::AllDay, vec![ev(&["us1"], 30, 5, 7.0)], now());
+        assert_eq!(s.events()[0].feed.event.mechanism, Some(fault));
+        assert!(s.events()[0].feed.mechanism_listed);
+        // A newer lookup with a revised fault replaces it.
+        let mut revised = ev(&["us1"], 30, 9, 7.0);
+        revised.event.mechanism = Some(FocalMechanism::new(190.0, 10.0, 80.0));
+        s.apply_search(vec![revised.clone()]);
+        assert_eq!(s.events()[0].feed.event.mechanism, revised.event.mechanism);
+        // Two records merging: the one with a fault gives it to the newer one without.
+        let mut s = EventStore::new();
+        let mut a = ev(&["ak1"], 30, 1, 7.0);
+        a.event.mechanism = Some(fault);
+        s.apply(FeedKind::AllDay, vec![a, ev(&["us2"], 30, 1, 7.0)], now());
+        s.apply(
+            FeedKind::AllDay,
+            vec![ev(&["us2", "ak1"], 30, 3, 7.1)],
+            now(),
+        );
+        assert_eq!(s.events().len(), 1);
+        assert_eq!(s.events()[0].feed.event.mechanism, Some(fault));
     }
 }

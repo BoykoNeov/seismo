@@ -1,10 +1,16 @@
 //! USGS GeoJSON: the summary feeds, parsing their bytes into events, writing events back in the
 //! same shape (the remembered past events), and how USGS event types map to source kinds.
+//!
+//! A summary feed only says which products USGS holds for an event (`types`); the products
+//! themselves, among them the fault's orientation, come with a lookup of the one event
+//! (`eventid=`), which [`parse`] reads the same way.
+
+use std::collections::HashMap;
 
 use chrono::{DateTime, TimeZone, Utc};
 use serde::Deserialize;
 use serde_json::json;
-use sim::{Event, EventKind};
+use sim::{Event, EventKind, FocalMechanism};
 
 /// The USGS summary feeds the app polls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -52,7 +58,13 @@ pub struct FeedEvent {
     pub updated: DateTime<Utc>,
     /// "automatic" or "reviewed".
     pub status: String,
+    /// USGS holds a fault orientation for it (a `moment-tensor` or `focal-mechanism` product),
+    /// which a lookup of the event brings.
+    pub mechanism_listed: bool,
 }
+
+/// The USGS products that carry a fault orientation, in order of preference.
+const MECHANISM_PRODUCTS: [&str; 2] = ["moment-tensor", "focal-mechanism"];
 
 #[derive(Debug, thiserror::Error)]
 pub enum ParseError {
@@ -88,7 +100,7 @@ pub fn kind_for(usgs_type: &str) -> EventKind {
 #[serde(tag = "type")]
 enum Document {
     FeatureCollection { features: Vec<Feature> },
-    Feature(Feature),
+    Feature(Box<Feature>),
 }
 
 #[derive(Deserialize)]
@@ -112,6 +124,57 @@ struct Properties {
     #[serde(rename = "type")]
     kind: Option<String>,
     status: Option<String>,
+    /// Comma-wrapped list of the products USGS holds: ",dyfi,moment-tensor,origin,".
+    types: Option<String>,
+    /// Only in a lookup of one event: the products themselves, by type.
+    products: Option<HashMap<String, Vec<Product>>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Product {
+    /// The highest weight is the product USGS prefers.
+    preferred_weight: Option<f64>,
+    /// Everything is a string here, numbers included.
+    #[serde(default)]
+    properties: HashMap<String, serde_json::Value>,
+}
+
+impl Product {
+    fn number(&self, key: &str) -> Option<f64> {
+        match self.properties.get(key)? {
+            serde_json::Value::String(s) => s.trim().parse().ok(),
+            serde_json::Value::Number(n) => n.as_f64(),
+            _ => None,
+        }
+        .filter(|v: &f64| v.is_finite())
+    }
+
+    /// The first nodal plane (the rake is called slip in some older products).
+    fn mechanism(&self) -> Option<FocalMechanism> {
+        let rake = self
+            .number("nodal-plane-1-rake")
+            .or_else(|| self.number("nodal-plane-1-slip"))?;
+        Some(FocalMechanism::new(
+            self.number("nodal-plane-1-strike")?,
+            self.number("nodal-plane-1-dip")?,
+            rake,
+        ))
+    }
+}
+
+/// USGS's preferred fault orientation among `products`: the moment tensor with the highest
+/// preferred weight that has a nodal plane, else such a focal mechanism.
+fn preferred_mechanism(products: &HashMap<String, Vec<Product>>) -> Option<FocalMechanism> {
+    MECHANISM_PRODUCTS.iter().find_map(|kind| {
+        let mut candidates: Vec<&Product> = products.get(*kind)?.iter().collect();
+        // Stable: on equal weights the first listed stays first.
+        candidates.sort_by(|a, b| {
+            let w = |p: &Product| p.preferred_weight.unwrap_or(0.0);
+            w(b).total_cmp(&w(a))
+        });
+        candidates.into_iter().find_map(Product::mechanism)
+    })
 }
 
 #[derive(Deserialize)]
@@ -126,18 +189,34 @@ struct Geometry {
 pub fn parse(bytes: &[u8]) -> Result<Vec<FeedEvent>, ParseError> {
     let features = match serde_json::from_slice(bytes)? {
         Document::FeatureCollection { features } => features,
-        Document::Feature(f) => vec![f],
+        Document::Feature(f) => vec![*f],
     };
     Ok(features.into_iter().filter_map(feature_event).collect())
 }
 
 /// `events` as a USGS-shaped FeatureCollection that [`parse`] reads back to the same events.
-/// Only the fields [`parse`] uses are written.
+/// Only the fields [`parse`] uses are written; a fault orientation as a one-product
+/// `moment-tensor` list.
 pub fn to_collection<'a>(events: impl IntoIterator<Item = &'a FeedEvent>) -> Vec<u8> {
     let features: Vec<serde_json::Value> = events
         .into_iter()
         .map(|f| {
             let e = &f.event;
+            let types = if f.mechanism_listed {
+                ",moment-tensor,"
+            } else {
+                ""
+            };
+            let products = e.mechanism.map(|m| {
+                json!({"moment-tensor": [{
+                    "preferredWeight": 1,
+                    "properties": {
+                        "nodal-plane-1-strike": m.strike_deg.to_string(),
+                        "nodal-plane-1-dip": m.dip_deg.to_string(),
+                        "nodal-plane-1-rake": m.rake_deg.to_string(),
+                    },
+                }]})
+            });
             json!({
                 "type": "Feature",
                 "id": e.id,
@@ -150,6 +229,8 @@ pub fn to_collection<'a>(events: impl IntoIterator<Item = &'a FeedEvent>) -> Vec
                     "ids": format!(",{},", e.ids.join(",")),
                     "type": f.usgs_type,
                     "status": f.status,
+                    "types": types,
+                    "products": products,
                 },
                 "geometry": {"type": "Point", "coordinates": [e.lon, e.lat, e.depth_km]},
             })
@@ -178,6 +259,11 @@ fn feature_event(f: Feature) -> Option<FeedEvent> {
         .map(str::to_owned)
         .collect();
     ids.dedup();
+    let mechanism_listed = p.types.as_deref().is_some_and(|t| {
+        t.split(',')
+            .any(|product| MECHANISM_PRODUCTS.contains(&product.trim()))
+    });
+    let mechanism = p.products.as_ref().and_then(preferred_mechanism);
     let event = Event::new(
         f.id,
         kind_for(&usgs_type),
@@ -188,13 +274,15 @@ fn feature_event(f: Feature) -> Option<FeedEvent> {
         magnitude,
     )
     .with_mag_type(p.mag_type.unwrap_or_else(|| "?".to_owned()))
-    .with_ids(ids);
+    .with_ids(ids)
+    .with_mechanism(mechanism);
     Some(FeedEvent {
         updated: p.updated.and_then(millis).unwrap_or(origin),
         event,
         usgs_type,
         place: p.place.unwrap_or_default(),
         status: p.status.unwrap_or_default(),
+        mechanism_listed: mechanism_listed || mechanism.is_some(),
     })
 }
 
@@ -215,6 +303,7 @@ mod tests {
          "properties": {"mag": 1.8, "place": "44 km SSE of Glacier View, Alaska",
            "time": 1791997629209, "updated": 1791997730156, "status": "automatic",
            "ids": ",aka2026ujondh,", "magType": "ml", "type": "earthquake",
+           "types": ",focal-mechanism,origin,phase-data,",
            "title": "M 1.8 - 44 km SSE of Glacier View, Alaska"},
          "geometry": {"type": "Point", "coordinates": [-147.462, 61.416, 19.1]},
          "id": "aka2026ujondh"},
@@ -311,10 +400,67 @@ mod tests {
         assert!(parse(EMPTY.as_bytes()).unwrap().is_empty());
     }
 
+    /// Trimmed from a real FDSN `eventid=usp000hvnu` answer (2026-10-16): the fault products,
+    /// listed lower weight first here (USGS lists the preferred first) so the order is not what
+    /// decides, plus a heavier moment tensor without a nodal plane, which is passed over.
+    const WITH_PRODUCTS: &str = r#"{"type":"Feature","properties":{"mag":9.1,
+      "place":"2011 Great Tohoku Earthquake, Japan","time":1299822384120,"updated":1790377722510,
+      "status":"reviewed","ids":",usc0001xgp,official20110311054624120_30,usp000hvnu,",
+      "magType":"mww","type":"earthquake",
+      "types":",dyfi,finite-fault,focal-mechanism,moment-tensor,origin,",
+      "products":{
+        "moment-tensor":[
+          {"source":"us","preferredWeight":68,"properties":{"beachball-source":"US",
+            "nodal-plane-1-dip":"14","nodal-plane-1-rake":"81","nodal-plane-1-strike":"193"}},
+          {"source":"us","preferredWeight":163,"properties":{"beachball-source":"duputel",
+            "derived-magnitude-type":"Mww","nodal-plane-1-dip":"8","nodal-plane-1-rake":"78",
+            "nodal-plane-1-strike":"192"}},
+          {"source":"xx","preferredWeight":500,"properties":{"scalar-moment":"1e22"}}],
+        "focal-mechanism":[
+          {"source":"us","preferredWeight":3,"properties":{"beachball-source":"us",
+            "nodal-plane-1-dip":"80","nodal-plane-1-rake":"90","nodal-plane-1-strike":"25"}}]}},
+      "geometry":{"type":"Point","coordinates":[142.373,38.297,29]},
+      "id":"official20110311054624120_30"}"#;
+
+    #[test]
+    fn reads_the_preferred_fault_orientation() {
+        let e = &parse(WITH_PRODUCTS.as_bytes()).unwrap()[0];
+        assert!(e.mechanism_listed);
+        assert_eq!(
+            e.event.mechanism,
+            Some(FocalMechanism::new(192.0, 8.0, 78.0))
+        );
+        // Only a focal mechanism: that one. Strings with spaces, and the old "slip" name.
+        let only_fm = WITH_PRODUCTS.replace("\"moment-tensor\"", "\"other\"");
+        let e = &parse(only_fm.as_bytes()).unwrap()[0];
+        assert_eq!(
+            e.event.mechanism,
+            Some(FocalMechanism::new(25.0, 80.0, 90.0))
+        );
+        let slip = only_fm.replace(
+            "\"nodal-plane-1-rake\":\"90\"",
+            "\"nodal-plane-1-slip\":\" 90 \"",
+        );
+        let e = &parse(slip.as_bytes()).unwrap()[0];
+        assert_eq!(
+            e.event.mechanism,
+            Some(FocalMechanism::new(25.0, 80.0, 90.0))
+        );
+        // A summary feature only lists them; a bare lookup without them has none.
+        let events = parse(SAMPLE.as_bytes()).unwrap();
+        assert!(events[0].mechanism_listed && events[0].event.mechanism.is_none());
+        assert!(!events[1].mechanism_listed);
+        let lookup = &parse(LOOKUP.as_bytes()).unwrap()[0];
+        assert!(!lookup.mechanism_listed && lookup.event.mechanism.is_none());
+    }
+
     #[test]
     fn written_collection_reads_back_the_same() {
         let mut events = parse(SAMPLE.as_bytes()).unwrap();
         events.extend(parse(LOOKUP.as_bytes()).unwrap());
+        events.extend(parse(WITH_PRODUCTS.as_bytes()).unwrap());
+        // An odd angle survives the trip through a string.
+        events.last_mut().unwrap().event.mechanism = Some(FocalMechanism::new(0.1, 33.3, -0.7));
         let back = parse(&to_collection(&events)).unwrap();
         assert_eq!(back, events);
         assert!(parse(&to_collection([])).unwrap().is_empty());
