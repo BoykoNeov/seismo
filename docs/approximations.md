@@ -439,11 +439,17 @@ source towards the station (`sim::radiation`, Aki & Richards 2002, box 4.4 and e
   core or turn into P (SKS, SKKS, sP, SP, ScP) take only SV. The take-off angle is that of the
   traced branch used for the amplitude (the shadow edge's for Pdiff and Sdiff); the azimuth is
   the station's from the epicentre.
-- **Signs kept, but only the source's.** A push (positive P) starts the vertical trace upward,
+- **Signs kept, but only the source's.** A push (positive P) makes the vertical trace's P pulse
+  swing upward,
   positive SV (towards a larger take-off angle) is drawn upward too, positive SH (clockwise
   seen from above) is positive transverse. Sign changes on the way (pP's reflection, PP's
   surface bounce, conversions, the free surface turning SV into vertical motion) are not
-  modelled, so direct P's first motion is the one to trust.
+  modelled, so direct P's sign is the one to trust.
+- **The pulse is symmetric.** Each body wave is a zero-phase Ricker wavelet: its main swing
+  carries the sign, flanked by two smaller swings of the other sign (about 45% of the peak,
+  0.4 s either side for P). So the drawn trace's very first wiggle is the opposite of the first
+  motion a real seismograph would record; read the main swing. A one-sided (causal) pulse would
+  fix this but would change the calibrated trace shapes.
 - **Surface waves, the map and the slice stay even.** Rayleigh and Love excitation depends on
   depth through mode shapes the dispersion asset does not hold; the map's rings and the slice's
   fronts are not weighted by direction.

@@ -171,7 +171,7 @@ Each row is the record a seismograph at one station would make: the ground's sha
 - Each row is labelled with the station code, its distance from the quake in degrees, and its name.
 - The **pen** is "now": the trace is drawn up to it, so you watch the recording being made.
 - **Ticks** mark when each wave is due, labelled with its [[phase-names|phase name]] where there is room.
-- A quake with a known fault sends its waves out unevenly, so P can start upward at one station and downward at another. See [[fault]].
+- A quake with a known fault sends its waves out unevenly, so the P pulse can swing up at one station and down at another. See [[fault]].
 - At nearby stations P and S come close together; far away they are minutes apart, and surface waves trail far behind. That gap is how seismologists measure distance: see [[locating]].
 @desktop - **shaking: up-down** shows vertical motion (P waves, Rayleigh waves). **side-to-side** shows motion across the path (S waves polarised sideways, Love waves).
 @desktop - **scale: each row** makes every row fill its band, so faint far stations are visible; **shared** uses one scale for all, so you can compare sizes.
@@ -325,13 +325,14 @@ Seismologists draw the pattern as a **beach ball**: the lower half of a sphere r
 
 ## In SEISMO
 - USGS publishes a fault orientation for most larger quakes, usually within an hour or two, and for many small ones where local networks are dense. SEISMO looks it up in the background and keeps it for offline use.
-@desktop - The event panel shows it as a beach ball, with its type, strike, dip and rake. The P and S waves on the seismograms follow its pattern: compare stations in different directions, and look for P starting upward at some and downward at others.
+@desktop - The event panel shows it as a beach ball, with its type, strike, dip and rake. The P and S waves on the seismograms follow its pattern: compare stations in different directions, and look for P pulses whose big swing is up at some and down at others.
 @terminal - The details under SELECTED show its type, strike, dip and rake. The P and S waves on the seismograms follow its pattern.
-- Without one, the waves leave evenly in every direction and every P wave starts upward.
+- Without one, the waves leave evenly in every direction and every P pulse swings up.
+- SEISMO draws each wave as a short symmetric pulse with a small dip on either side, so read its big swing, not its very first wiggle. A real seismograph starts with the true first motion.
 @desktop - Your own quakes can have one: tick **fault orientation** under [[make|Make your own event]].
 - The surface waves and the rings on the map still leave evenly in every direction. See [[simplified]].
 
-@desktop Try it: make a magnitude 7 quake with the **strike-slip** button, add stations all around it, and watch the first wiggle of P: up in two opposite quarters, down in the other two. The built-in Tōhoku quake is a thrust under Japan on a fault so nearly flat that its band is pushed far to one side: its ball looks almost like two halves.
+@desktop Try it: make a magnitude 7 quake with the **strike-slip** button, add stations all around it, and watch the big swing of P: up in two opposite quarters, down in the other two. The built-in Tōhoku quake is a thrust under Japan on a fault so nearly flat that its band is pushed far to one side: its ball looks almost like two halves.
 
 === interior | Inside the Earth | learn
 The Earth is layered like an onion: a thin rocky crust, a thick solid mantle, a liquid iron outer core and a solid iron inner core. Almost everything we know about these layers comes from seismic waves.

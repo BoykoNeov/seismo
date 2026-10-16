@@ -77,9 +77,10 @@ impl Mechanisms {
 }
 
 /// The listed earthquakes to look up now, largest first, at most [`MAX_LOOKUPS_PER_POLL`]:
-/// USGS lists a fault orientation for them, the remembered answer (if any) is for an older
-/// version, and `last_tried` (handle → when this session last asked) is not within
-/// [`RECHECK_MINUTES`].
+/// USGS lists a fault orientation for them (or they are kept: kept events saved before the
+/// listing was recorded do not say, so each is asked about once), the remembered answer (if
+/// any) is for an older version, and `last_tried` (handle → when this session last asked) is
+/// not within [`RECHECK_MINUTES`].
 pub fn wanted(
     store: &EventStore,
     known: &Mechanisms,
@@ -89,7 +90,7 @@ pub fn wanted(
     let mut out: Vec<StoredEvent> = store
         .events()
         .iter()
-        .filter(|r| r.listed() && r.feed.mechanism_listed)
+        .filter(|r| r.listed() && (r.feed.mechanism_listed || r.saved))
         .filter(|r| r.feed.event.kind == EventKind::Earthquake)
         .filter(|r| !known.up_to_date(r))
         .filter(|r| {
@@ -207,6 +208,23 @@ mod tests {
         assert!(wanted(&s, &known, &recently, now()).is_empty());
         let long_ago = HashMap::from([(handle_b, now() - Duration::minutes(RECHECK_MINUTES))]);
         assert_eq!(ids(&wanted(&s, &known, &long_ago, now())), ["b"]);
+    }
+
+    /// Kept events saved before faults were looked up carry no product list: asked once.
+    #[test]
+    fn kept_events_without_a_product_list_are_asked_once() {
+        let mut s = EventStore::new();
+        s.apply_saved(vec![ev("kept", 8.3, false, EventKind::Earthquake)]);
+        let mut known = Mechanisms::default();
+        assert_eq!(ids(&wanted(&s, &known, &HashMap::new(), now())), ["kept"]);
+        known.record(
+            "kept",
+            Checked {
+                updated: s.events()[0].feed.updated,
+                mechanism: None,
+            },
+        );
+        assert!(wanted(&s, &known, &HashMap::new(), now()).is_empty());
     }
 
     #[test]

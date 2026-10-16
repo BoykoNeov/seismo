@@ -17,7 +17,7 @@
 //!
 //! An earthquake whose fault is known radiates its body waves unevenly: each arrival is scaled
 //! by the signed P, SV or SH coefficient of the ray that leaves the source towards the station
-//! (see [`crate::radiation`]), so its first motion can be up or down and its size changes with
+//! (see [`crate::radiation`]), so its main swing can be up or down and its size changes with
 //! the direction. Without a fault every direction gets the same weight, as before.
 
 use std::f64::consts::{FRAC_PI_2, PI};
@@ -118,7 +118,7 @@ pub struct StationArrival {
     pub amplitude: f64,
     /// The signed share of `amplitude` each component records, in [`Component::ALL`] order:
     /// the motion's weight on it times the fault's radiation coefficient towards the station
-    /// (negative: the first motion is down, or to the left). Without a fault, the weights.
+    /// (negative: the main swing is down, or to the left). Without a fault, the weights.
     pub components: [f64; 2],
     /// Dominant period (s) of the wavelet.
     pub period_s: f64,

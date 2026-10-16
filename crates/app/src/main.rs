@@ -1390,9 +1390,10 @@ impl SeismoApp {
                             .on_hover_text(
                                 "The fault's beach ball: the lower half of a sphere round the \
                                  quake, seen from above with north up. Filled: the P wave \
-                                 leaves that way as a push (the ground first moves up); empty: \
-                                 as a pull (first moves down). The P and S waves on the \
-                                 seismograms follow this pattern.",
+                                 leaves that way as a push (the ground moves up); empty: as \
+                                 a pull (it moves down). The P and S waves on the seismograms \
+                                 follow this pattern: the big swing of each P pulse is up or \
+                                 down to match.",
                             );
                         ui.vertical(|ui| {
                             ui.horizontal(|ui| {
