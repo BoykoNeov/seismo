@@ -15,7 +15,7 @@ use anyhow::{Context as _, anyhow};
 use chrono::{DateTime, NaiveDate, Utc};
 use eframe::{egui, wgpu};
 use sim::mantle::DelayGrid;
-use sim::seismogram::Component;
+use sim::seismogram::{Component, StationArrival};
 use sim::slice::{PhaseLabel, SliceFans, SliceLine};
 use sim::tables::{Dispersion, EarthModel, TravelTimeTable};
 use sim::{EARTH_RADIUS_KM, Event, EventKind, RayPhase, Simulation, Wave, azimuth_deg};
@@ -38,6 +38,8 @@ use session::assets::{
 const MIN_TRACES_WIDTH: f32 = 260.0;
 /// A click within this many points of a station marker picks the station.
 const PICK_RADIUS: f32 = 9.0;
+/// Shortest and longest trace window offered (minutes).
+const TRACE_WINDOW_MIN: (f64, f64) = (5.0, 120.0);
 
 /// Largest 3D-mantle strength offered (× the published model).
 const MAX_MANTLE_STRENGTH: f32 = 20.0;
@@ -411,13 +413,19 @@ impl SeismoApp {
                 _ => {}
             }
         }
-        //   --traces <list>     comma-separated: off, side (transverse), shared (one scale)
+        //   --traces <list>     comma-separated: off, side (transverse), shared (one scale),
+        //                       <n>min (the window's length in minutes, as the slider allows)
         for flag in arg("--traces").unwrap_or_default().split(',') {
             match flag {
                 "off" => traces.show = false,
                 "side" => traces.component = Component::Transverse,
                 "shared" => traces.shared_scale = true,
-                _ => {}
+                _ => {
+                    if let Some(min) = flag.strip_suffix("min").and_then(|n| n.parse::<f64>().ok())
+                    {
+                        traces.window_min = min.clamp(TRACE_WINDOW_MIN.0, TRACE_WINDOW_MIN.1);
+                    }
+                }
             }
         }
         //   --size <W>x<H>      the window's inner size in physical pixels (the controls panel
@@ -776,7 +784,7 @@ impl SeismoApp {
                 .max_decimals(2),
         );
         ui.add(
-            egui::Slider::new(&mut tr.window_min, 5.0..=120.0)
+            egui::Slider::new(&mut tr.window_min, TRACE_WINDOW_MIN.0..=TRACE_WINDOW_MIN.1)
                 .text("window min")
                 .max_decimals(0),
         );
@@ -1832,20 +1840,30 @@ impl SeismoApp {
             })
             .collect();
         // Arrivals this component shows, inside the window: ticks, and labels for the overlay.
-        let picks: Vec<Vec<(f32, &'static str)>> = shown
+        // A phase's later branches get a tick but no label of their own.
+        let in_window: Vec<Vec<(f32, &StationArrival)>> = shown
             .iter()
             .map(|tr| {
                 tr.arrivals
                     .iter()
                     .filter(|a| a.motion.weight(component) > 0.0)
-                    .map(|a| (frac(a.time_s), a.phase))
+                    .map(|a| (frac(a.time_s), a))
                     .filter(|(f, _)| (0.0..=1.0).contains(f))
                     .collect()
             })
             .collect();
-        let ticks: Vec<Vec<f32>> = picks
+        let ticks: Vec<Vec<f32>> = in_window
             .iter()
-            .map(|p| p.iter().map(|(f, _)| *f).collect())
+            .map(|v| v.iter().map(|(f, _)| *f).collect())
+            .collect();
+        let picks: Vec<Vec<(f32, &'static str)>> = in_window
+            .iter()
+            .map(|v| {
+                v.iter()
+                    .filter(|(_, a)| a.branch == 0)
+                    .map(|(f, a)| (*f, a.phase))
+                    .collect()
+            })
             .collect();
         let rows: Vec<render::TraceRow> = columns
             .iter()

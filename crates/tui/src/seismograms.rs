@@ -120,7 +120,12 @@ pub fn draw(canvas: &mut Canvas, scene: &TraceScene) {
             // Arrival marks on the band's top row, where the trace leaves room.
             let mut last_end = 0usize;
             for a in &trace.arrivals {
-                if !MARKED.contains(&a.phase) || a.time_s < scene.from_s || a.time_s > scene.to_s {
+                // Only each phase's first arrival is named, not its later branches.
+                if !MARKED.contains(&a.phase)
+                    || a.branch != 0
+                    || a.time_s < scene.from_s
+                    || a.time_s > scene.to_s
+                {
                     continue;
                 }
                 // A wave this component does not record is not marked on it.

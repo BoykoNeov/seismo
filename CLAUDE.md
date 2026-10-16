@@ -160,8 +160,13 @@ Shadow zones: direct P absent ~103°–142°; direct S absent beyond ~103° (cor
 is liquid). The exact cutoff depends on source depth and is whatever the
 generated table says; tests never hardcode 103°.
 
-Branches: each table cell holds the FIRST arrival of its named phase (so the
-P/S triplications at ~15–30° from the 410/660 show only the earliest branch).
+Branches: each table grid cell holds the FIRST arrival of its named phase; the map and every
+first-arrival lookup use only these. The phase's other arrivals at that cell (the P/S
+triplications at ~10–30° from the 210/410/660, PP's and SS's own, pP/sP/PS/SP; decided
+2026-10-16) sit in a sparse section after the grids: the short way round only, none within
+0.5 s of an earlier one. `TravelTimeTable::arrivals` follows each branch between nodes by its
+ray parameter; the traces draw every branch (amplitude from the traced branch with that ray
+parameter; crust-trapped ones left out), label only the first.
 PKP is the exception and is stored as three separate branches; `gen_tables.py`
 splits them by turning region (ab/bc in the outer core, df in the inner core) —
 verify how ObsPy names them rather than assuming.
@@ -178,7 +183,10 @@ Table file format (`ak135.tt`), all little-endian:
 UTF-8 JSON header (model name, ObsPy version, depth axis start/step/count,
 distance axis start/step/count, phase names in order), then per phase in
 header order: the time grid then the ray-parameter grid, each `f32`
-row-major `[depth][distance]`. Python writes it with numpy, Rust reads it with
+row-major `[depth][distance]`. Format version 2 (the header gains `later`: `merge_s` and
+per-phase `counts`) then has, per phase in header order, its later arrivals as 12-byte entries
+(`u16` depth index, `u16` distance index, `f32` time, `f32` ray parameter); the reader still
+takes version 1. Python writes it with numpy, Rust reads it with
 `bytemuck`. Not bincode.
 
 Sanity anchors (surface focus, approximate and NOT yet verified — the

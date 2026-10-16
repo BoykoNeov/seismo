@@ -719,6 +719,8 @@ pub struct RayTracer {
     s_profile: Profile,
     r_cmb: f64,
     r_icb: f64,
+    /// Radius (km) of the Moho, the base of the crust, if the model has one.
+    r_moho: Option<f64>,
 }
 
 impl RayTracer {
@@ -741,7 +743,26 @@ impl RayTracer {
             }),
             r_cmb: EARTH_RADIUS_KM - cmb_depth,
             r_icb: EARTH_RADIUS_KM - icb_depth,
+            r_moho: crate::slice::named_boundaries(model)
+                .iter()
+                .find(|b| b.name == "Moho")
+                .map(|b| EARTH_RADIUS_KM - b.depth_km),
         })
+    }
+
+    /// Smallest ray parameter (s/rad) of a ray of `phase` that stays in the crust on one of its
+    /// hops: above the slowness radius η just below the Moho of a wave it makes a hop as, it
+    /// turns or reflects inside the crust without reaching the mantle. `None` without a Moho.
+    pub fn crust_ray_param(&self, phase: RayPhase) -> Option<f64> {
+        let r = self.r_moho?;
+        let after_up_leg = phase.is_depth_phase();
+        (0..phase.hops())
+            .flat_map(|hop| {
+                let (down, up) = phase.hop_waves(hop, after_up_leg);
+                [down, up]
+            })
+            .map(|w| r / self.profile(w).velocity_at(r))
+            .reduce(f64::min)
     }
 
     /// Radius (km) of the core-mantle boundary.

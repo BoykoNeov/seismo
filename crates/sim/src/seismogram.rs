@@ -3,7 +3,9 @@
 //! `docs/approximations.md`).
 //!
 //! Arrival times of body waves come from the travel-time table (plus the 3D-mantle delay for P
-//! and S, the same one the map uses). Their amplitudes come from the ray tracer's ray tubes:
+//! and S, the same one the map uses), every branch of each phase: where a phase arrives along
+//! several paths (the triplications from the upper-mantle discontinuities, PP's and SS's own),
+//! each is its own pulse. Their amplitudes come from the ray tracer's ray tubes:
 //! for a source radiating evenly, the energy leaving between take-off angles i and i + di
 //! spreads over the surface band between Δ and Δ + dΔ, so on a sphere
 //!
@@ -12,7 +14,9 @@
 //! ```
 //!
 //! with i₀ the angle of incidence at the station. dΔ/di is taken between neighbouring traced
-//! rays (one difference along the fan), never by differencing the table twice. Surface waves
+//! rays (one difference along the fan), never by differencing the table twice. A later branch
+//! takes the tube of the traced branch with its ray parameter; one the tracer does not find
+//! (the waves trapped in the crust) is left out. Surface waves
 //! are dispersed trains (see [`crate::surface`]).
 //!
 //! An earthquake whose fault is known radiates its body waves unevenly: each arrival is scaled
@@ -108,6 +112,9 @@ pub struct StationArrival {
     /// Table phase name ("P", "PKPab", "Sdiff"), or "R1", "R2", "L1", "L2" for the surface
     /// waves going the short and the long way round.
     pub phase: &'static str,
+    /// 0 for the first arrival of its phase; 1, 2, ... for the phase's later branches, in time
+    /// order. Always 0 for surface waves.
+    pub branch: usize,
     pub motion: Motion,
     /// Seconds since the event's origin (callers may shift it to another clock). For a surface
     /// wave, when the energy of its central period arrives; its train starts earlier and ends
@@ -196,6 +203,9 @@ const MAX_LEVEL: u32 = 8;
 const EDGE_LEVEL: u32 = 12;
 /// Neighbouring rays landing farther apart than this (deg) bound a gap, not a branch.
 const MAX_BRACKET_DEG: f64 = 2.0;
+/// A later table branch takes the traced branch whose ray parameter is nearest to its own, if
+/// within this (s/deg).
+const MATCH_RAY_PARAM: f64 = 0.3;
 
 /// One branch of a phase crossing a distance.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -204,6 +214,8 @@ pub struct TubeArrival {
     pub amplitude: f64,
     /// Take-off angle (rad from straight down) of the ray leaving the source.
     pub takeoff_rad: f64,
+    /// Ray parameter (s/deg), the table's unit.
+    pub ray_param: f64,
 }
 
 /// Where every traced phase lands, for one source depth: the ray tubes the amplitudes come
@@ -214,6 +226,9 @@ pub struct Spreading {
     /// Per phase in `RayPhase::ALL` order: runs of neighbouring rays (a missing ray between
     /// two valid ones splits the fan), each ordered by take-off angle.
     fans: Vec<Vec<Vec<Landing>>>,
+    /// Per phase in `RayPhase::ALL` order: the smallest ray parameter (s/rad) of its rays that
+    /// stay in the crust (see [`RayTracer::crust_ray_param`]).
+    crust: Vec<Option<f64>>,
     eta_p: f64,
     eta_s: f64,
 }
@@ -226,17 +241,17 @@ impl Spreading {
                 .iter()
                 .map(|&phase| landing_fan(tracer, phase, depth_km))
                 .collect(),
+            crust: RayPhase::ALL
+                .iter()
+                .map(|&phase| tracer.crust_ray_param(phase))
+                .collect(),
             eta_p: tracer.surface_eta(Wave::P),
             eta_s: tracer.surface_eta(Wave::S),
         }
     }
 
     fn fan(&self, phase: RayPhase) -> &[Vec<Landing>] {
-        let i = RayPhase::ALL
-            .iter()
-            .position(|&p| p == phase)
-            .expect("every phase is in ALL");
-        &self.fans[i]
+        &self.fans[phase_slot(phase)]
     }
 
     /// Neighbouring landings of `phase` that bound one stretch of a branch: no missing ray
@@ -292,17 +307,38 @@ impl Spreading {
         let lerp = |x: f64, y: f64| x + (y - x) * f;
         let slope = (b.dist_deg - a.dist_deg).to_radians() / (b.takeoff_rad - a.takeoff_rad);
         let takeoff_rad = lerp(a.takeoff_rad, b.takeoff_rad);
+        let p_s_rad = lerp(a.p_s_rad, b.p_s_rad);
         TubeArrival {
             time_s: lerp(a.time_s, b.time_s),
-            amplitude: self.tube(
-                phase,
-                takeoff_rad,
-                lerp(a.p_s_rad, b.p_s_rad),
-                slope,
-                dist_deg,
-            ),
+            amplitude: self.tube(phase, takeoff_rad, p_s_rad, slope, dist_deg),
             takeoff_rad,
+            // Seconds per radian of arc to seconds per degree.
+            ray_param: p_s_rad * PI / 180.0,
         }
+    }
+
+    /// The branch of `phase` at `dist_deg` with the ray parameter (s/deg) nearest to
+    /// `ray_param`, if within `MATCH_RAY_PARAM`: how a later table branch finds its ray tube.
+    /// `None` for a ray parameter of rays that stay in the crust: those bounce along the
+    /// crust's flat layers, where a ray tube says little about their size.
+    pub fn branch_with(
+        &self,
+        phase: RayPhase,
+        dist_deg: f64,
+        ray_param: f64,
+    ) -> Option<TubeArrival> {
+        // Seconds per degree of arc to seconds per radian.
+        if self.crust[phase_slot(phase)].is_some_and(|c| ray_param * 180.0 / PI > c) {
+            return None;
+        }
+        self.arrivals(phase, dist_deg)
+            .into_iter()
+            .filter(|b| (b.ray_param - ray_param).abs() <= MATCH_RAY_PARAM)
+            .min_by(|x, y| {
+                (x.ray_param - ray_param)
+                    .abs()
+                    .total_cmp(&(y.ray_param - ray_param).abs())
+            })
     }
 
     /// The branch of `phase` at `dist_deg` arriving closest to `time_s`. When no branch
@@ -357,6 +393,14 @@ impl Spreading {
             a.takeoff_rad,
         ))
     }
+}
+
+/// Index of `phase` in `RayPhase::ALL`.
+fn phase_slot(phase: RayPhase) -> usize {
+    RayPhase::ALL
+        .iter()
+        .position(|&p| p == phase)
+        .expect("every phase is in ALL")
 }
 
 /// The landings of a fan of `phase` rays, ordered by take-off angle, refined where neighbours
@@ -439,58 +483,62 @@ pub fn station_arrivals(
     let mut out = Vec::new();
 
     for (name, traced, motion, boundaries) in BODY_PHASES {
-        let Some(mut time_s) = table.arrival(name, depth, dist) else {
-            continue;
+        // The 3D-mantle delay of direct P and S, computed along the first arrival's ray, moves
+        // their later branches too, so the branches keep the table's order and spacing.
+        let delay = match (delays, traced) {
+            (Some(grid), Some(t)) if matches!(name, "P" | "S") => DELAY_PHASES
+                .iter()
+                .position(|&d| d == t)
+                .map_or(0.0, |layer| strength * grid.sample(layer, dist, az)),
+            _ => 0.0,
         };
-        let branch = match (traced, name) {
-            (Some(phase), _) => spreading
-                .branch_near(phase, dist, time_s)
-                .map(|b| (b.amplitude, b.takeoff_rad)),
-            (None, "Pdiff") => spreading.diffracted(RayPhase::P, dist),
-            (None, _) => spreading.diffracted(RayPhase::S, dist),
-        };
-        let Some((geometric, takeoff_rad)) = branch else {
-            continue;
-        };
-        if let Some(grid) = delays
-            && let Some(layer) = traced.and_then(|t| {
-                DELAY_PHASES
-                    .iter()
-                    .position(|&d| d == t && matches!(name, "P" | "S"))
-            })
-        {
-            time_s += strength * grid.sample(layer, dist, az);
-        }
         // The source excites the wave it radiates: sP leaves as S, so it takes the S weight
         // (an explosion makes little of it) though it arrives as P.
         let leaves_as_p = traced.map_or(motion == Motion::Compressional, |t| {
             t.source_wave() == Wave::P
         });
         let weight = if leaves_as_p { profile.p } else { profile.s };
-        // What the fault sends along this ray. A wave that left as S keeps both parts only if
-        // it stays S all the way; one that crossed the liquid core or turned into P (SKS, sP,
-        // ScP) carries only its SV part.
-        let r = fault.map_or(Radiation::EVEN, |f| f.radiation(takeoff_rad, az));
-        let (vertical, transverse) = match (leaves_as_p, motion) {
-            (true, _) => (r.p, r.p),
-            (false, Motion::Shear) => (r.sv, r.sh),
-            (false, _) => (r.sv, r.sv),
-        };
-        let [wv, wt] = motion.weights();
-        let period_s = if motion == Motion::Compressional {
-            P_PERIOD_S
-        } else {
-            S_PERIOD_S
-        };
-        out.push(StationArrival {
-            phase: name,
-            motion,
-            time_s,
-            amplitude: size * weight * boundaries * geometric,
-            components: [wv * vertical, wt * transverse],
-            period_s,
-            path_km: 0.0,
-        });
+        for (branch, arrival) in table.arrivals(name, depth, dist).into_iter().enumerate() {
+            let tube = match (traced, name, branch) {
+                (Some(phase), _, 0) => spreading
+                    .branch_near(phase, dist, arrival.time_s)
+                    .map(|b| (b.amplitude, b.takeoff_rad)),
+                (Some(phase), ..) => spreading
+                    .branch_with(phase, dist, arrival.ray_param)
+                    .map(|b| (b.amplitude, b.takeoff_rad)),
+                (None, "Pdiff", 0) => spreading.diffracted(RayPhase::P, dist),
+                (None, _, 0) => spreading.diffracted(RayPhase::S, dist),
+                (None, ..) => None,
+            };
+            let Some((geometric, takeoff_rad)) = tube else {
+                continue;
+            };
+            // What the fault sends along this ray. A wave that left as S keeps both parts only
+            // if it stays S all the way; one that crossed the liquid core or turned into P
+            // (SKS, sP, ScP) carries only its SV part.
+            let r = fault.map_or(Radiation::EVEN, |f| f.radiation(takeoff_rad, az));
+            let (vertical, transverse) = match (leaves_as_p, motion) {
+                (true, _) => (r.p, r.p),
+                (false, Motion::Shear) => (r.sv, r.sh),
+                (false, _) => (r.sv, r.sv),
+            };
+            let [wv, wt] = motion.weights();
+            let period_s = if motion == Motion::Compressional {
+                P_PERIOD_S
+            } else {
+                S_PERIOD_S
+            };
+            out.push(StationArrival {
+                phase: name,
+                branch,
+                motion,
+                time_s: arrival.time_s + delay,
+                amplitude: size * weight * boundaries * geometric,
+                components: [wv * vertical, wt * transverse],
+                period_s,
+                path_km: 0.0,
+            });
+        }
     }
 
     // Spreading over the sphere; attenuation is part of the train (it depends on period).
@@ -506,6 +554,7 @@ pub fn station_arrivals(
         let wave = motion.surface_wave().expect("a surface wave");
         out.push(StationArrival {
             phase: name,
+            branch: 0,
             motion,
             time_s: surface.arrival_s(wave, path_km),
             amplitude: surface_amp,
@@ -830,7 +879,7 @@ mod tests {
             let got = station_arrivals(&table, &sp, &e, &station_at(d), None, 1.0, &surface());
             for (name, ..) in BODY_PHASES {
                 let want = table.arrival(name, 29.0, d);
-                let have = got.iter().find(|a| a.phase == name);
+                let have = got.iter().find(|a| a.phase == name && a.branch == 0);
                 match (want, have) {
                     (Some(t), Some(a)) => assert!((a.time_s - t).abs() < 1e-9, "{name} {d}°"),
                     // Diffracted waves only past the fan's edge; a traced phase may lack a ray.
@@ -851,6 +900,124 @@ mod tests {
                 "S at {d}°"
             );
         }
+    }
+
+    #[test]
+    fn later_branches_take_the_table_times_and_their_own_tubes() {
+        let (rt, table) = (tracer(), table());
+        let sp = Spreading::build(&rt, 35.0);
+        let e = event(35.0);
+        for (name, d) in [
+            ("P", 20.0),
+            ("P", 23.0),
+            ("S", 20.0),
+            ("PP", 40.0),
+            ("SS", 45.0),
+        ] {
+            let got: Vec<StationArrival> =
+                station_arrivals(&table, &sp, &e, &station_at(d), None, 1.0, &surface())
+                    .into_iter()
+                    .filter(|a| a.phase == name)
+                    .collect();
+            let want = table.arrivals(name, 35.0, d);
+            assert!(got.len() > 1, "{name} at {d}°: {got:?}");
+            // Each pulse is one of the table's branches, numbered in time order, no two the same.
+            for (k, a) in got.iter().enumerate() {
+                assert!(k == 0 || a.branch > got[k - 1].branch, "{name} at {d}°");
+                let t = want[a.branch].time_s;
+                assert!(
+                    (a.time_s - t).abs() < 1e-9,
+                    "{name} at {d}° branch {}",
+                    a.branch
+                );
+                assert!(a.amplitude.is_finite() && a.amplitude > 0.0);
+            }
+            assert_eq!(got[0].branch, 0);
+            assert!(
+                got.iter().any(|a| a.amplitude != got[0].amplitude),
+                "{name} at {d}°: every branch the same size"
+            );
+        }
+    }
+
+    /// The tracer finds the same folds as ObsPy: in the upper-mantle triplications and PP's and
+    /// SS's own, every table branch has a traced branch with its ray parameter at its time,
+    /// and every traced branch outside the crust has a table branch near it. Compared at grid
+    /// nodes, where the table holds every branch, even one ending there.
+    #[test]
+    fn traced_and_tabled_branches_agree_in_the_folds() {
+        let (rt, table) = (tracer(), table());
+        let (z, x) = (table.depth_axis(), table.distance_axis());
+        for depth in [0.0, 35.0, 100.0, 600.0] {
+            let sp = Spreading::build(&rt, depth);
+            let i = ((depth - z.start) / z.step).round() as usize;
+            for (phase, name, d) in [
+                (RayPhase::P, "P", 15.0),
+                (RayPhase::P, "P", 20.0),
+                (RayPhase::P, "P", 23.0),
+                (RayPhase::S, "S", 17.0),
+                (RayPhase::S, "S", 20.0),
+                (RayPhase::PP, "PP", 40.0),
+                (RayPhase::SS, "SS", 45.0),
+            ] {
+                let tabled =
+                    table.node_arrivals(name, i, ((d - x.start) / x.step).round() as usize);
+                let traced: Vec<TubeArrival> = sp
+                    .arrivals(phase, d)
+                    .into_iter()
+                    .filter(|b| sp.branch_with(phase, d, b.ray_param).is_some())
+                    .collect();
+                for a in &tabled {
+                    let b = sp.branch_with(phase, d, a.ray_param);
+                    assert!(
+                        b.is_some_and(|b| (b.time_s - a.time_s).abs() < 1.0),
+                        "{name} {depth} km {d}°: table {a:?}, traced {traced:?}"
+                    );
+                }
+                for b in &traced {
+                    assert!(
+                        tabled
+                            .iter()
+                            .any(|a| (a.time_s - b.time_s).abs() < table.merge_s() + 1.0),
+                        "{name} {depth} km {d}°: traced {b:?}, table {tabled:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn waves_trapped_in_the_crust_are_left_out() {
+        // From a source in the crust the table has more P waves at 5° after P through the
+        // mantle: the ones that stay in the crust, far slower. The tracer finds them too, but
+        // they are not drawn.
+        let (rt, table) = (tracer(), table());
+        let sp = Spreading::build(&rt, 10.0);
+        let tabled = table.arrivals("P", 10.0, 5.0);
+        assert!(tabled.len() > 1, "{tabled:?}");
+        for crustal in &tabled[1..] {
+            assert!(crustal.time_s > tabled[0].time_s + 5.0, "{tabled:?}");
+            assert!(
+                sp.branch_with(RayPhase::P, 5.0, crustal.ray_param)
+                    .is_none()
+            );
+            assert!(
+                sp.arrivals(RayPhase::P, 5.0)
+                    .iter()
+                    .any(|b| (b.time_s - crustal.time_s).abs() < 1.0),
+                "the tracer has the crustal wave {crustal:?}"
+            );
+        }
+        let got = station_arrivals(
+            &table,
+            &sp,
+            &event(10.0),
+            &station_at(5.0),
+            None,
+            1.0,
+            &surface(),
+        );
+        assert_eq!(got.iter().filter(|a| a.phase == "P").count(), 1);
     }
 
     #[test]
@@ -1051,6 +1218,23 @@ mod tests {
         assert!((t(&three_d, "S") - t(&one_d, "S") + 6.0).abs() < 1e-6);
         assert_eq!(t(&three_d, "PcP"), t(&one_d, "PcP"));
         assert_eq!(t(&three_d, "R1"), t(&one_d, "R1"));
+        // In the upper-mantle triplication every branch of P and S moves with the first.
+        let st = station_at(20.0);
+        let one_d = station_arrivals(&table, &sp, &event(29.0), &st, None, 1.0, &surface());
+        let three_d =
+            station_arrivals(&table, &sp, &event(29.0), &st, Some(&grid), 2.0, &surface());
+        for (name, shift) in [("P", 4.0), ("S", -6.0)] {
+            let times = |v: &[StationArrival]| -> Vec<f64> {
+                v.iter()
+                    .filter(|a| a.phase == name)
+                    .map(|a| a.time_s)
+                    .collect()
+            };
+            let (a, b) = (times(&one_d), times(&three_d));
+            assert!(a.len() > 1, "{name}: {a:?}");
+            assert_eq!(a.len(), b.len());
+            assert!(a.iter().zip(&b).all(|(x, y)| (y - x - shift).abs() < 1e-6));
+        }
     }
 
     #[test]
@@ -1080,6 +1264,7 @@ mod tests {
     fn picks() -> Vec<StationArrival> {
         let mk = |phase, motion: Motion, time_s, amplitude, period_s, path_km| StationArrival {
             phase,
+            branch: 0,
             motion,
             time_s,
             amplitude,

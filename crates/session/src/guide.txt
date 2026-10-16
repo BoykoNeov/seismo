@@ -171,6 +171,7 @@ Each row is the record a seismograph at one station would make: the ground's sha
 - Each row is labelled with the station code, its distance from the quake in degrees, and its name.
 - The **pen** is "now": the trace is drawn up to it, so you watch the recording being made.
 - **Ticks** mark when each wave is due, labelled with its [[phase-names|phase name]] where there is room.
+- A wave can reach a station along several paths a few seconds apart, most often at stations where its rays bottom out near the transition zone. Each arrival gets a tick; only the first is named. See [[folds]].
 - A quake with a known fault sends its waves out unevenly, so the P pulse can swing up at one station and down at another. See [[fault]].
 - At nearby stations P and S come close together; far away they are minutes apart, and surface waves trail far behind. That gap is how seismologists measure distance: see [[locating]].
 @desktop - **shaking: up-down** shows vertical motion (P waves, Rayleigh waves). **side-to-side** shows motion across the path (S waves polarised sideways, Love waves).
@@ -222,7 +223,7 @@ SEISMO is built on real Earth models and real travel times, but it simplifies in
 - **The fault's pattern is used for P and S waves only**, where it is known: the surface waves and the map's rings leave evenly in every direction, and the waves' sizes and signs are not changed where they bounce or convert. See [[fault]].
 - **The seismograms are synthetic**: plausible shapes and timings, not real recordings.
 - **Surface waves** follow the 1D model only, with a fixed source; the map shows where they are, not how strong.
-- **Only the first arrival of each wave type** is drawn where a wave could arrive along several paths.
+- **Waves trapped in the crust are left out.** Near a quake, real seismograms are often dominated by waves that run along inside the crust; SEISMO's crust is flat and the same everywhere, so it does not draw them. Where a wave arrives along several paths through the mantle, each arrival is drawn ([[folds]]), but ones only a moment apart show as one.
 - **No tsunami.** Impacts and quakes can carry a tsunami flag, but no ocean waves are modelled.
 @terminal - **The terminal version is 1D only**: no 3D mantle.
 
@@ -358,6 +359,22 @@ Seismic waves bend as they travel, because their speed changes with depth. The r
 - At the core, P slows down sharply, so rays bend steeply inward. This bending opens a gap in the waves reaching the surface: [[shadow|the shadow zone]].
 
 A **wave front** joins the points reached by a wave at the same moment. In the slice, SEISMO traces many rays and draws the fronts through them: the fronts are always at right angles to the rays.
+
+=== folds | One wave, several arrivals | learn
+A wave can reach a station along more than one path. The seismogram then shows the same wave, P say, two or three times within a few seconds, and SEISMO gives each arrival its own tick.
+
+## Why it happens
+Wave speed jumps at the {d410_km} and {d660_km} km boundaries of the [[interior|transition zone]]. A ray that turns just above a boundary lands at one distance; one that just crosses it meets the faster rock below and is flung farther out; ones that dip a little deeper curve back in. Over a band of distances, rays that turned above the boundary, rays that grazed it and rays that turned below it all arrive: three arrivals where one would be expected. Seismologists call this a **triplication**. On a plot of travel time against distance its branches make a small Z-shaped fold.
+
+- In [[slice|the slice]], watch the P and S fronts where they cross the transition zone near the top of the mantle: there each splits into a few overlapping strands, small at the slice's scale. Each strand reaches the surface as a separate arrival.
+@desktop - On the [[seismograms|seismograms]] the arrivals are seconds apart, so they show as separate wiggles only with a short record (set **window min** to a few minutes).
+- **PP** and **SS** fold the same way at about twice the distance, since each of their two legs dips into the transition zone; so do the depth echoes pP and sP.
+- Farther out, the rays dive far below the transition zone and only one path is left.
+
+## What it tells us
+The times of the branches and the gaps between them depend on how deep the boundaries are and how big the jumps in speed are. Matching them in records from many stations is one of the main ways seismologists pin down the transition zone.
+
+The crust makes folds of its own, with waves that run along inside it. SEISMO's crust is a flat, featureless layer, so it leaves those out: see [[simplified]].
 
 === phase-names | Reading phase names | learn
 Seismologists name each path a wave can take with letters, one for each leg of the journey. Once you know the code, a name like SKS or PKIKP reads like a route.
@@ -512,6 +529,7 @@ Short definitions of the words used in this guide.
 - **Shadow zone**: where direct waves do not reach because of the core. See [[shadow]].
 - **Surface waves**: waves trapped near the surface, Rayleigh and Love.
 - **Tomography**: mapping the inside of the Earth from wave arrival times. See [[tomography]].
+- **Triplication**: one wave reaching a station along three paths, a few seconds apart. See [[folds]].
 - **UTC**: Coordinated Universal Time, the world's reference clock, used everywhere in SEISMO.
 - **Wave front**: the line joining the points a wave has reached at the same moment.
 

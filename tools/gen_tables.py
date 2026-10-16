@@ -19,6 +19,13 @@ Phase naming (verified against ObsPy 1.5.1, see docs/approximations.md):
     parameter turn deeper, down to grazing the inner core (bc branch).
   * PKPdf is ObsPy's "PKIKP".
 
+Later arrivals (format version 2): besides the first arrival in each layer, every other arrival
+of the layer's phase at a cell is kept in a sparse section after the grids: the P and S
+triplications from the upper-mantle discontinuities, PP's and SS's own, the crustal waves. Only
+arrivals that went the short way round (ObsPy's purist_distance equal to the cell's distance)
+are kept, and an arrival within MERGE_S of an earlier kept one is dropped: those are numerical
+splits at cusps, or folds too tight to show on a trace.
+
 Usage (from a virtualenv OUTSIDE the repo with tools/requirements.txt installed):
   python tools/gen_tables.py                # full run, minutes
   python tools/gen_tables.py --probe 100    # time a single depth row and exit
@@ -40,7 +47,7 @@ REPO = Path(__file__).resolve().parent.parent
 ASSETS = REPO / "assets"
 
 MAGIC = b"SEISMOTT"
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 MODEL = "ak135"
 
 DEPTH_START, DEPTH_STEP, DEPTH_COUNT = 0.0, 5.0, 141  # 0..700 km
@@ -86,6 +93,10 @@ SOURCES = {
 }
 OBSPY_NAMES = sorted({n for names in SOURCES.values() for n in names})
 
+# Later arrivals closer than this (s) to an earlier kept one of the same layer are dropped: half
+# the shortest wavelet period the traces draw (P, 1 s).
+MERGE_S = 0.5
+
 
 def depth_axis():
     return [DEPTH_START + i * DEPTH_STEP for i in range(DEPTH_COUNT)]
@@ -121,7 +132,12 @@ def pkp_caustic_ray_param(phase):
 
 
 def compute_row(depth_km):
-    """Return (depth_km, times[phase][dist], ray_params[phase][dist]) as float32 arrays."""
+    """Return (depth_km, times[phase][dist], ray_params[phase][dist], later).
+
+    times and ray_params are float32 arrays of first arrivals; later[phase] is a list of
+    (dist_index, time_s, ray_param_s_deg) for every later arrival kept (see MERGE_S), in time
+    order within a cell.
+    """
     from obspy.taup.helper_classes import TauModelError
     from obspy.taup.seismic_phase import SeismicPhase
 
@@ -140,6 +156,7 @@ def compute_row(depth_km):
 
     times = np.full((len(PHASES), DIST_COUNT), np.nan, dtype=np.float64)
     rps = np.full((len(PHASES), DIST_COUNT), np.nan, dtype=np.float64)
+    later = [[] for _ in PHASES]
 
     for j, deg in enumerate(dist_axis()):
         arrivals = {}
@@ -156,7 +173,27 @@ def compute_row(depth_km):
             first = min(cands, key=lambda a: a.time)
             times[k, j] = first.time
             rps[k, j] = first.ray_param_sec_degree
-    return depth_km, times.astype(np.float32), rps.astype(np.float32)
+            kept = first.time
+            for a in sorted(cands, key=lambda a: a.time):
+                if not same_arc(a, deg) or a.time - kept <= MERGE_S:
+                    continue
+                kept = a.time
+                later[k].append((j, float(a.time), float(a.ray_param_sec_degree)))
+    return depth_km, times.astype(np.float32), rps.astype(np.float32), later
+
+
+def same_arc(arrival, deg):
+    """True if the arrival went the short way round (not 360 - deg, nor once more round)."""
+    return abs(arrival.purist_distance - deg) < 1e-3
+
+
+def most_per_cell(entries):
+    """Largest number of later arrivals in one cell (entries keyed by their leading indices)."""
+    counts = {}
+    for e in entries:
+        key = e[:-2]
+        counts[key] = counts.get(key, 0) + 1
+    return max(counts.values(), default=0)
 
 
 # ---------------------------------------------------------------------------
@@ -164,14 +201,16 @@ def compute_row(depth_km):
 # ---------------------------------------------------------------------------
 
 
-def write_table(path, times, rps, obspy_version):
-    """times, rps: float32 arrays shaped [phase][depth][distance]."""
+def write_table(path, times, rps, later, obspy_version):
+    """times, rps: float32 arrays shaped [phase][depth][distance]; later[phase]: a sorted list
+    of (depth_index, dist_index, time_s, ray_param_s_deg)."""
     header = {
         "model": MODEL,
         "obspy_version": obspy_version,
         "depth": {"start": DEPTH_START, "step": DEPTH_STEP, "count": DEPTH_COUNT},
         "distance": {"start": DIST_START, "step": DIST_STEP, "count": DIST_COUNT},
         "phases": PHASES,
+        "later": {"merge_s": MERGE_S, "counts": [len(entries) for entries in later]},
     }
     hjson = json.dumps(header, indent=1).encode("utf-8")
     # Pad with spaces (valid JSON whitespace) so the float data is 4-byte aligned in the file.
@@ -183,6 +222,11 @@ def write_table(path, times, rps, obspy_version):
         for k in range(len(PHASES)):
             f.write(np.ascontiguousarray(times[k], dtype="<f4").tobytes())
             f.write(np.ascontiguousarray(rps[k], dtype="<f4").tobytes())
+        # Later arrivals, per phase in header order: u16 depth index, u16 distance index,
+        # f32 time, f32 ray parameter; 12 bytes each.
+        for entries in later:
+            for i, j, t, p in entries:
+                f.write(struct.pack("<HHff", i, j, t, p))
 
 
 def write_model_csv(path):
@@ -273,6 +317,36 @@ def anchor_value(model, phase, depth, dist):
     return first.time, first.ray_param_sec_degree
 
 
+# (phase, depth_km, distance_deg) on grid nodes, inside triplications and PP's and SS's own
+# folds, and one crustal wave; every arrival there is printed, the same arc only, merged by
+# MERGE_S like the table.
+LATER_ANCHORS = [
+    ("P", 0.0, 9.0),  # P through the mantle, then the crustal P
+    ("P", 0.0, 20.0),
+    ("P", 0.0, 23.0),
+    ("S", 0.0, 20.0),
+    ("S", 100.0, 17.0),
+    ("P", 100.0, 17.0),
+    ("PP", 0.0, 40.0),
+    ("SS", 0.0, 45.0),
+    ("pP", 100.0, 24.5),
+    ("P", 600.0, 15.0),
+]
+
+
+def later_anchor_values(model, phase, depth, dist):
+    names = SOURCES[phase]
+    arrs = model.get_travel_times(source_depth_in_km=depth, distance_in_degree=dist, phase_list=names)
+    arrs = sorted((a for a in arrs if a.name in names), key=lambda a: a.time)
+    if not arrs:
+        return []
+    kept = [arrs[0]]
+    for a in arrs[1:]:
+        if same_arc(a, dist) and a.time - kept[-1].time > MERGE_S:
+            kept.append(a)
+    return [(a.time, a.ray_param_sec_degree) for a in kept]
+
+
 def direct_cutoff(model, phase, depth):
     """Largest distance (0.05 deg scan from 90 deg) with a direct P/S arrival."""
     last = None
@@ -297,6 +371,12 @@ def print_anchors():
             print(f"// {phase} {depth} {dist}: no arrival")
             continue
         print(f'    ("{phase}", {depth:.2f}, {dist:.2f}, {v[0]:.3f}, {v[1]:.4f}),')
+    print("// ---- every arrival, first included (paste as LATER_ANCHORS) ----")
+    print("// (phase, depth_km, distance_deg, &[(time_s, ray_param_s_per_deg)])")
+    for phase, depth, dist in LATER_ANCHORS:
+        vs = later_anchor_values(model, phase, depth, dist)
+        arrivals = ", ".join(f"({t:.3f}, {p:.4f})" for t, p in vs)
+        print(f'    ("{phase}", {depth:.2f}, {dist:.2f}, &[{arrivals}]),')
     for phase in ("P", "S"):
         c = direct_cutoff(model, phase, 29.0)
         print(f"// direct {phase} cutoff for a 29 km source (ObsPy, 0.05 deg scan): {c}")
@@ -315,11 +395,14 @@ def main():
 
     if args.probe is not None:
         t0 = time.time()
-        d, t, r = compute_row(args.probe)
+        d, t, r, later = compute_row(args.probe)
         print(f"depth {d} km: {time.time() - t0:.1f} s")
         for k, name in enumerate(PHASES):
             j150 = int(round((150.0 - DIST_START) / DIST_STEP))
-            print(f"  {name:6s} valid={np.isfinite(t[k]).sum():4d}  t(150deg)={t[k, j150]:.2f}")
+            print(
+                f"  {name:6s} valid={np.isfinite(t[k]).sum():4d}  t(150deg)={t[k, j150]:.2f}"
+                f"  later={len(later[k]):4d}  most in a cell={most_per_cell(later[k])}"
+            )
         return
 
     ASSETS.mkdir(exist_ok=True)
@@ -327,21 +410,28 @@ def main():
     depths = depth_axis()
     times = np.full((len(PHASES), DEPTH_COUNT, DIST_COUNT), np.nan, dtype=np.float32)
     rps = np.full_like(times, np.nan)
+    later = [[] for _ in PHASES]
     with mp.Pool(args.workers) as pool:
-        for n, (d, t, r) in enumerate(pool.imap_unordered(compute_row, depths), 1):
+        for n, (d, t, r, row_later) in enumerate(pool.imap_unordered(compute_row, depths), 1):
             i = depths.index(d)
             times[:, i, :] = t
             rps[:, i, :] = r
+            for k, entries in enumerate(row_later):
+                later[k].extend((i, j, tt, p) for j, tt, p in entries)
             print(f"\r{n}/{len(depths)} depth rows ({time.time() - t0:.0f} s)", end="", file=sys.stderr, flush=True)
     print(file=sys.stderr)
 
     table_path = ASSETS / "ak135.tt"
-    write_table(table_path, times, rps, obspy.__version__)
+    later = [sorted(entries) for entries in later]
+    write_table(table_path, times, rps, later, obspy.__version__)
     n_rows = write_model_csv(ASSETS / "ak135_model.csv")
     print(f"wrote {table_path} ({table_path.stat().st_size} bytes), ak135_model.csv ({n_rows} rows)")
     print(f"ObsPy {obspy.__version__}, {time.time() - t0:.0f} s")
     for k, name in enumerate(PHASES):
-        print(f"  {name:6s} cells with an arrival: {int(np.isfinite(times[k]).sum())}")
+        print(
+            f"  {name:6s} cells with an arrival: {int(np.isfinite(times[k]).sum())}"
+            f"  later arrivals: {len(later[k])}  most in a cell: {most_per_cell(later[k])}"
+        )
 
     print_anchors()
 

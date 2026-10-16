@@ -59,6 +59,93 @@ const ANCHORS: &[(&str, f64, f64, f64, f64)] = &[
     ("SP", 600.00, 60.00, 1012.899, 13.6751),
 ];
 
+/// (phase, depth_km, distance_deg, every arrival as (time_s, ray_param_s_per_deg)).
+type LaterAnchor = (&'static str, f64, f64, &'static [(f64, f64)]);
+
+/// Every arrival (first included) at grid nodes inside the folds, pasted from gen_tables.py.
+/// The short way round only, merged like the table (an arrival within `merge_s` of an earlier
+/// kept one dropped).
+const LATER_ANCHORS: &[LaterAnchor] = &[
+    ("P", 0.00, 9.00, &[(131.190, 13.7114), (172.366, 19.1114)]), // then the crustal P
+    (
+        "P",
+        0.00,
+        20.00,
+        &[(274.094, 10.9002), (275.754, 11.8538), (279.541, 9.2258)],
+    ),
+    (
+        "P",
+        0.00,
+        23.00,
+        &[(306.336, 10.5688), (307.147, 9.1690), (308.622, 9.6723)],
+    ),
+    (
+        "S",
+        0.00,
+        20.00,
+        &[
+            (499.767, 19.9953),
+            (501.225, 24.0999),
+            (502.074, 23.6438),
+            (503.426, 21.2883),
+            (508.344, 16.6457),
+            (509.343, 17.3099),
+        ],
+    ),
+    (
+        "S",
+        100.00,
+        17.00,
+        &[
+            (420.337, 24.0696),
+            (423.777, 20.2890),
+            (425.530, 21.1605),
+            (439.550, 16.7207),
+        ],
+    ),
+    (
+        "P",
+        100.00,
+        17.00,
+        &[(231.487, 12.2172), (232.685, 11.4581), (240.918, 9.2434)],
+    ),
+    (
+        "PP",
+        0.00,
+        40.00,
+        &[
+            (548.188, 10.9002),
+            (551.509, 11.8538),
+            (559.081, 9.2258),
+            (559.711, 9.4840),
+        ],
+    ),
+    (
+        "SS",
+        0.00,
+        45.00,
+        &[
+            (1098.008, 19.3522),
+            (1099.392, 16.4021),
+            (1106.022, 17.5957),
+            (1113.467, 21.5230),
+            (1122.576, 23.9466),
+        ],
+    ),
+    (
+        "pP",
+        100.00,
+        24.50,
+        &[(331.859, 9.1453), (333.729, 9.7007), (347.072, 13.6002)],
+    ),
+    (
+        "P",
+        600.00,
+        15.00,
+        &[(188.055, 9.1903), (188.826, 10.0346), (189.480, 9.7062)],
+    ),
+];
+
 /// Direct-wave cutoffs for a 29 km source from ObsPy (0.05° scan), printed by gen_tables.py.
 const P_CUTOFF_29KM: f64 = 99.55;
 const S_CUTOFF_29KM: f64 = 99.95;
@@ -254,4 +341,94 @@ fn converted_phases_are_reciprocal_from_the_surface() {
     assert!(pcs - scp > 30.0, "PcS {pcs} ScP {scp}");
     // PS from a deep source needs a long path: none at 40° from 600 km.
     assert_eq!(t.arrival("PS", 600.0, 40.0), None);
+}
+
+#[test]
+fn later_arrivals_match_obspy_at_nodes() {
+    let t = table();
+    let mut failures = Vec::new();
+    for &(phase, depth, dist, want) in LATER_ANCHORS {
+        let x = t.distance_axis();
+        let (i, j) = (
+            (depth / 5.0) as usize,
+            ((dist - x.start) / x.step).round() as usize,
+        );
+        let node = t.node_arrivals(phase, i, j);
+        let agree = node.len() == want.len()
+            && node.iter().zip(want).all(|(g, &(time, ray))| {
+                (g.time_s - time).abs() <= TIME_TOL_S && (g.ray_param - ray).abs() <= RAY_TOL
+            });
+        if !agree {
+            failures.push(format!(
+                "{phase} {depth} km {dist}°: table {node:?}, ObsPy {want:?}"
+            ));
+        }
+        // On a node the lookup gives the node's own arrivals, less any branch that ends within
+        // a cell of it (it needs the branch at all four corners, like the first arrival).
+        let lookup = t.arrivals(phase, depth, dist);
+        if lookup.first() != node.first() || !lookup.iter().all(|a| node.contains(a)) {
+            failures.push(format!(
+                "{phase} {depth} km {dist}°: lookup {lookup:?}, node {node:?}"
+            ));
+        }
+    }
+    // Inside the folds, away from where branches end, the lookup finds every branch.
+    for (phase, depth, dist, n) in [
+        ("P", 0.0, 20.0, 3),
+        ("P", 100.0, 17.0, 3),
+        ("PP", 0.0, 40.0, 4),
+    ] {
+        let got = t.arrivals(phase, depth, dist).len();
+        if got != n {
+            failures.push(format!(
+                "{phase} {depth} km {dist}°: {got} arrivals, not {n}"
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "disagreements with ObsPy:
+{}",
+        failures.join(
+            "
+"
+        )
+    );
+}
+
+#[test]
+fn later_arrivals_follow_the_first_and_each_other() {
+    // At every node: the first arrival is the grid's, and every later one comes more than
+    // merge_s after the one before it.
+    let t = table();
+    assert_eq!(t.merge_s(), 0.5);
+    let (d, x) = (t.depth_axis(), t.distance_axis());
+    let mut later = 0;
+    for phase in t.phases() {
+        for i in 0..d.count {
+            for j in 0..x.count {
+                let all = t.node_arrivals(phase, i, j);
+                assert_eq!(
+                    all.first().map(|a| a.time_s),
+                    t.node_time(phase, i, j),
+                    "{phase}"
+                );
+                // The generator kept gaps over merge_s in f64; stored as f32 one may round to it.
+                assert!(
+                    all.windows(2)
+                        .all(|w| w[1].time_s - w[0].time_s > t.merge_s() - 1e-3),
+                    "{phase} at node ({i}, {j}): {all:?}"
+                );
+                later += all.len().saturating_sub(1);
+            }
+        }
+    }
+    assert!(later > 100_000, "{later} later arrivals");
+    // The core phases and the diffracted waves have none.
+    for phase in ["PcP", "PKPab", "PKPbc", "PKPdf", "Pdiff", "Sdiff"] {
+        assert!(
+            (0..d.count).all(|i| (0..x.count).all(|j| t.node_arrivals(phase, i, j).len() <= 1)),
+            "{phase}"
+        );
+    }
 }

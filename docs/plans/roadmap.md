@@ -132,6 +132,15 @@ branches never show on the traces. Work: let `gen_tables.py` store up to N arriv
 (format version bump), `tables` returns a small list, traces and slice draw all of them; the
 map keeps drawing the first. Moderate effort, mostly in the table format and its tests.
 
+**Done 2026-10-16.** Table format version 2: the grids are unchanged (byte-identical) and the
+phases' other arrivals follow in a sparse section (about 125,000, +1.5 MB): the short way round
+only, none within 0.5 s of an earlier one. Between grid nodes each branch is followed by its ray
+parameter. The traces draw every branch with its own ray tube (tracer and ObsPy agree within a
+second in the folds); waves trapped in the crust are left out; only the first of each phase is
+labelled. The slice needed nothing: its traced fronts already fold. A guide topic explains
+triplications; `--traces <n>min` sets the trace window. The pulses are seconds apart, so they
+separate only in a short window.
+
 ### 2.4 More phases
 
 PcS, ScP, SKKS, PKKP, PKiKP, SP, PS. Each is cheap once named in `gen_tables.py` (phase order
