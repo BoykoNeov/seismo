@@ -3,7 +3,8 @@
 //! `docs/approximations.md`).
 //!
 //! Arrival times of body waves come from the travel-time table (plus the 3D-mantle delay for P
-//! and S, the same one the map uses), every branch of each phase: where a phase arrives along
+//! and S, the same one the map uses, and the real crust's correction under the source, the
+//! station and any surface reflection; see [`crate::crust`]), every branch of each phase: where a phase arrives along
 //! several paths (the triplications from the upper-mantle discontinuities, PP's and SS's own),
 //! each is its own pulse. Their amplitudes come from the ray tracer's ray tubes:
 //! for a source radiating evenly, the energy leaving between take-off angles i and i + di
@@ -26,6 +27,7 @@
 
 use std::f64::consts::{FRAC_PI_2, PI};
 
+use crate::crust::{Crust, CrustPath};
 use crate::event::Event;
 use crate::geo::{EARTH_RADIUS_KM, azimuth_deg, great_circle_deg};
 use crate::mantle::{DELAY_PHASES, DelayGrid};
@@ -461,8 +463,9 @@ fn landing_fan(tracer: &RayTracer, phase: RayPhase, depth_km: f64) -> Vec<Vec<La
 
 /// Every wave from `event` reaching `station`, in time order. Times are seconds since the
 /// event's origin. `spreading` must be built for the event's depth. `delays` are the event's
-/// 3D-mantle delays (P and S only), scaled by `strength`; `None` gives the 1D times. An
-/// earthquake with a fault ([`Event::fault`]) radiates its body waves by its pattern; surface
+/// 3D-mantle delays (P and S only), scaled by `strength`; `None` gives the 1D times. `crust`
+/// moves each body-wave arrival by the real crust along its path; `None` keeps the 1D model's
+/// crust. An earthquake with a fault ([`Event::fault`]) radiates its body waves by its pattern; surface
 /// waves leave evenly.
 #[allow(clippy::too_many_arguments)]
 pub fn station_arrivals(
@@ -472,6 +475,7 @@ pub fn station_arrivals(
     station: &Station,
     delays: Option<&DelayGrid>,
     strength: f64,
+    crust: Option<&Crust>,
     surface: &SurfaceWaves,
 ) -> Vec<StationArrival> {
     let dist = great_circle_deg(event.lat, event.lon, station.lat, station.lon);
@@ -522,6 +526,22 @@ pub fn station_arrivals(
                 (false, Motion::Shear) => (r.sv, r.sh),
                 (false, _) => (r.sv, r.sv),
             };
+            // The real crust, per arrival: each branch has its own ray parameter.
+            let crust_s = crust.map_or(0.0, |c| {
+                let path = match traced {
+                    Some(phase) => CrustPath::of(phase, takeoff_rad),
+                    None if motion == Motion::Compressional => CrustPath::direct(Wave::P),
+                    None => CrustPath::direct(Wave::S),
+                };
+                c.delay(
+                    table,
+                    event,
+                    station.lat,
+                    station.lon,
+                    path,
+                    arrival.ray_param,
+                )
+            });
             let [wv, wt] = motion.weights();
             let period_s = if motion == Motion::Compressional {
                 P_PERIOD_S
@@ -532,7 +552,7 @@ pub fn station_arrivals(
                 phase: name,
                 branch,
                 motion,
-                time_s: arrival.time_s + delay,
+                time_s: arrival.time_s + delay + crust_s,
                 amplitude: size * weight * boundaries * geometric,
                 components: [wv * vertical, wt * transverse],
                 period_s,
@@ -876,7 +896,8 @@ mod tests {
         let sp = Spreading::build(&rt, 29.0);
         let e = event(29.0);
         for d in [30.0, 60.0, 90.0, 120.0, 150.0] {
-            let got = station_arrivals(&table, &sp, &e, &station_at(d), None, 1.0, &surface());
+            let got =
+                station_arrivals(&table, &sp, &e, &station_at(d), None, 1.0, None, &surface());
             for (name, ..) in BODY_PHASES {
                 let want = table.arrival(name, 29.0, d);
                 let have = got.iter().find(|a| a.phase == name && a.branch == 0);
@@ -915,7 +936,7 @@ mod tests {
             ("SS", 45.0),
         ] {
             let got: Vec<StationArrival> =
-                station_arrivals(&table, &sp, &e, &station_at(d), None, 1.0, &surface())
+                station_arrivals(&table, &sp, &e, &station_at(d), None, 1.0, None, &surface())
                     .into_iter()
                     .filter(|a| a.phase == name)
                     .collect();
@@ -1015,6 +1036,7 @@ mod tests {
             &station_at(5.0),
             None,
             1.0,
+            None,
             &surface(),
         );
         assert_eq!(got.iter().filter(|a| a.phase == "P").count(), 1);
@@ -1025,7 +1047,7 @@ mod tests {
         let (rt, table) = (tracer(), table());
         let at = |e: &Event, d: f64| {
             let sp = Spreading::build(&rt, e.depth_km);
-            station_arrivals(&table, &sp, e, &station_at(d), None, 1.0, &surface())
+            station_arrivals(&table, &sp, e, &station_at(d), None, 1.0, None, &surface())
         };
         let find =
             |arr: &[StationArrival], name: &str| arr.iter().find(|a| a.phase == name).copied();
@@ -1081,6 +1103,7 @@ mod tests {
             &station_at(d),
             None,
             1.0,
+            None,
             &surface(),
         );
         if table.arrival("P", 29.0, d).is_none() {
@@ -1097,6 +1120,7 @@ mod tests {
             &station_at(edge - 5.0),
             None,
             1.0,
+            None,
             &surface(),
         )
         .into_iter()
@@ -1112,7 +1136,7 @@ mod tests {
         let sp_deep = Spreading::build(&rt, 300.0);
         let st = station_at(60.0);
         let get = |sp: &Spreading, depth: f64, name: &str| {
-            station_arrivals(&table, sp, &event(depth), &st, None, 1.0, &surface())
+            station_arrivals(&table, sp, &event(depth), &st, None, 1.0, None, &surface())
                 .into_iter()
                 .find(|a| a.phase == name)
                 .unwrap()
@@ -1141,7 +1165,16 @@ mod tests {
     fn rayleigh_peaks_several_times_p_at_sixty_degrees() {
         let (rt, table, sw) = (tracer(), table(), surface());
         let sp = Spreading::build(&rt, 10.0);
-        let arr = station_arrivals(&table, &sp, &event(10.0), &station_at(60.0), None, 1.0, &sw);
+        let arr = station_arrivals(
+            &table,
+            &sp,
+            &event(10.0),
+            &station_at(60.0),
+            None,
+            1.0,
+            None,
+            &sw,
+        );
         let trace = synthesize(
             &arr,
             Component::Vertical,
@@ -1175,8 +1208,16 @@ mod tests {
         let sp = Spreading::build(&rt, 10.0);
         for d in [10.0, 20.0, 30.0] {
             for component in [Component::Vertical, Component::Transverse] {
-                let arr =
-                    station_arrivals(&table, &sp, &event(10.0), &station_at(d), None, 1.0, &sw);
+                let arr = station_arrivals(
+                    &table,
+                    &sp,
+                    &event(10.0),
+                    &station_at(d),
+                    None,
+                    1.0,
+                    None,
+                    &sw,
+                );
                 let tp = arr.iter().find(|a| a.phase == "P").unwrap().time_s;
                 let trace = synthesize(
                     &arr,
@@ -1200,6 +1241,48 @@ mod tests {
     }
 
     #[test]
+    fn real_crust_moves_body_waves_by_their_own_paths() {
+        let (rt, table, sw) = (tracer(), table(), surface());
+        let model =
+            EarthModel::from_bytes(include_bytes!("../../../assets/ak135_model.csv")).unwrap();
+        let crust = Crust::new(
+            crate::tables::CrustModel::from_bytes(include_bytes!("../../../assets/crust1.bin"))
+                .unwrap(),
+            &model,
+        )
+        .unwrap();
+        let sp = Spreading::build(&rt, 10.0);
+        // From the mid-Atlantic (0, 0: thin oceanic crust) to Tibet, about 89° away.
+        let st = Station::user("X", 32.5, 88.5);
+        let e = event(10.0);
+        let one_d = station_arrivals(&table, &sp, &e, &st, None, 1.0, None, &sw);
+        let real = station_arrivals(&table, &sp, &e, &st, None, 1.0, Some(&crust), &sw);
+        assert_eq!(one_d.len(), real.len());
+        let find = |v: &[StationArrival], name: &str| {
+            *v.iter().find(|a| a.phase == name && a.branch == 0).unwrap()
+        };
+        let shift = |name: &str| find(&real, name).time_s - find(&one_d, name).time_s;
+        // Each arrival moves by its own path's crust, and nothing else about it changes.
+        for name in ["P", "S", "PcP", "ScS", "PP", "SS", "SKS", "pP", "sP"] {
+            let (a, b) = (find(&one_d, name), find(&real, name));
+            // At 89° every one of them leaves the source downward (the depth phases' way up
+            // is part of their path whatever the take-off).
+            let traced = BODY_PHASES.iter().find(|p| p.0 == name).unwrap().1;
+            let path = CrustPath::of(traced.unwrap(), 0.3);
+            let p = table.arrivals(name, 10.0, great_circle_deg(0.0, 0.0, 32.5, 88.5))[0].ray_param;
+            let want = crust.delay(&table, &e, st.lat, st.lon, path, p);
+            assert!((shift(name) - want).abs() < 1e-9, "{name}");
+            assert_eq!((a.amplitude, a.components), (b.amplitude, b.components));
+        }
+        // Thick slow crust at the station: P and S late, S more so.
+        assert!(shift("P") > 0.5, "P {}", shift("P"));
+        assert!(shift("S") > shift("P"), "S {}", shift("S"));
+        // Surface waves keep their own (1D) dispersion.
+        assert_eq!(shift("R1"), 0.0);
+        assert_eq!(shift("L1"), 0.0);
+    }
+
+    #[test]
     fn three_d_delay_moves_only_p_and_s() {
         let (rt, table) = (tracer(), table());
         let sp = Spreading::build(&rt, 29.0);
@@ -1209,9 +1292,17 @@ mod tests {
             max_abs_s: 3.0,
         };
         let st = station_at(50.0);
-        let one_d = station_arrivals(&table, &sp, &event(29.0), &st, None, 1.0, &surface());
-        let three_d =
-            station_arrivals(&table, &sp, &event(29.0), &st, Some(&grid), 2.0, &surface());
+        let one_d = station_arrivals(&table, &sp, &event(29.0), &st, None, 1.0, None, &surface());
+        let three_d = station_arrivals(
+            &table,
+            &sp,
+            &event(29.0),
+            &st,
+            Some(&grid),
+            2.0,
+            None,
+            &surface(),
+        );
         let t =
             |v: &[StationArrival], name: &str| v.iter().find(|a| a.phase == name).unwrap().time_s;
         assert!((t(&three_d, "P") - t(&one_d, "P") - 4.0).abs() < 1e-6);
@@ -1220,9 +1311,17 @@ mod tests {
         assert_eq!(t(&three_d, "R1"), t(&one_d, "R1"));
         // In the upper-mantle triplication every branch of P and S moves with the first.
         let st = station_at(20.0);
-        let one_d = station_arrivals(&table, &sp, &event(29.0), &st, None, 1.0, &surface());
-        let three_d =
-            station_arrivals(&table, &sp, &event(29.0), &st, Some(&grid), 2.0, &surface());
+        let one_d = station_arrivals(&table, &sp, &event(29.0), &st, None, 1.0, None, &surface());
+        let three_d = station_arrivals(
+            &table,
+            &sp,
+            &event(29.0),
+            &st,
+            Some(&grid),
+            2.0,
+            None,
+            &surface(),
+        );
         for (name, shift) in [("P", 4.0), ("S", -6.0)] {
             let times = |v: &[StationArrival]| -> Vec<f64> {
                 v.iter()
@@ -1414,6 +1513,7 @@ mod tests {
             &station_at(70.0),
             None,
             1.0,
+            None,
             &surface(),
         );
         let b = station_arrivals(
@@ -1423,6 +1523,7 @@ mod tests {
             &station_at(70.0),
             None,
             1.0,
+            None,
             &surface(),
         );
         assert_eq!(a, b);
@@ -1452,8 +1553,16 @@ mod tests {
             .with_kind(EventKind::NuclearTest);
         for e in [event(29.0), blast] {
             for az in [0.0, 45.0, 200.0] {
-                let arr =
-                    station_arrivals(&table, &sp, &e, &station_towards(az, 60.0), None, 1.0, &sw);
+                let arr = station_arrivals(
+                    &table,
+                    &sp,
+                    &e,
+                    &station_towards(az, 60.0),
+                    None,
+                    1.0,
+                    None,
+                    &sw,
+                );
                 for a in &arr {
                     assert_eq!(a.components, a.motion.weights(), "{} {az}", a.phase);
                 }
@@ -1469,7 +1578,16 @@ mod tests {
         // south-west, pulls to the north-west and south-east, nothing along the fault or across it.
         let e = event(29.0).with_mechanism(Some(crate::FocalMechanism::new(0.0, 90.0, 0.0)));
         let p_at = |az: f64| {
-            let arr = station_arrivals(&table, &sp, &e, &station_towards(az, 60.0), None, 1.0, &sw);
+            let arr = station_arrivals(
+                &table,
+                &sp,
+                &e,
+                &station_towards(az, 60.0),
+                None,
+                1.0,
+                None,
+                &sw,
+            );
             (find(&arr, "P"), arr)
         };
         let (ne, _) = p_at(45.0);
@@ -1516,6 +1634,7 @@ mod tests {
             &station_towards(70.0, 100.0),
             None,
             1.0,
+            None,
             &sw,
         );
         for name in ["SKS", "SKKS", "SP", "PS"] {
@@ -1550,7 +1669,8 @@ mod tests {
             (40.0, &["PcS", "ScP", "PKiKP", "SP"][..]),
             (100.0, &["PKKP", "SKKS", "PS", "SP", "PKiKP"][..]),
         ] {
-            let arr = station_arrivals(&table, &sp, &e, &station_at(d), None, 1.0, &surface());
+            let arr =
+                station_arrivals(&table, &sp, &e, &station_at(d), None, 1.0, None, &surface());
             let direct = arr
                 .iter()
                 .filter(|a| matches!(a.phase, "P" | "S" | "Pdiff" | "Sdiff"))

@@ -6,6 +6,7 @@
 //! azimuth to the antipode at the right end; epicentral distance runs over the arc.
 
 use bytemuck::{Pod, Zeroable};
+use sim::crust::CrustSample;
 use sim::mantle::{
     CUT_DELTA_COUNT, CUT_DELTA_STEP_DEG, CUT_R_BOTTOM_KM, CUT_R_COUNT, CUT_R_TOP_KM, CutGrid,
 };
@@ -18,8 +19,12 @@ use crate::theme::{Look, Theme, vec4};
 
 /// Most boundaries the disc shader draws; matches `rings_a` + `rings_b` in `slice_disc.wgsl`.
 pub const MAX_SLICE_BOUNDARIES: usize = 8;
+/// Most crust samples the crust strip takes, two to a `vec4`; matches `crust` in
+/// `slice_disc.wgsl`.
+pub const MAX_CRUST_SAMPLES: usize = 2 * CRUST_VEC4S;
+const CRUST_VEC4S: usize = 256;
 
-/// Where the half-disc sits in a viewport of a given size.
+/// Where the half-disc sits in a viewport of a given size, and the crust strip under it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SliceView {
     /// Viewport size in pixels.
@@ -28,21 +33,56 @@ pub struct SliceView {
     pub centre: [f32; 2],
     /// Earth radius in pixels.
     pub radius_px: f32,
+    /// The crust strip: left, top, right, bottom (viewport pixels), as wide as the flat edge;
+    /// `None` without one.
+    pub strip: Option<[f32; 4]>,
 }
 
 impl SliceView {
-    pub fn new(size: (f32, f32)) -> Self {
+    /// With `strip`, room is kept under the half-disc for the crust strip.
+    pub fn new(size: (f32, f32), strip: bool) -> Self {
         let (w, h) = size;
         // Room around the arc for distance labels, below the flat edge for end labels.
         let side = 0.07 * h;
         let top = 0.09 * h;
-        let bottom = 0.09 * h;
+        let labels = 0.09 * h;
+        // The strip, and a little room under it for its depth labels.
+        let strip_h = if strip {
+            (0.11 * h).clamp(24.0, 100.0)
+        } else {
+            0.0
+        };
+        let below = if strip { 0.03 * h } else { 0.0 };
+        let bottom = labels + strip_h + below;
         let radius_px = ((w - 2.0 * side) / 2.0).min(h - top - bottom).max(1.0);
+        let centre = [0.5 * w, top + radius_px];
+        let y0 = centre[1] + labels;
         Self {
             size,
-            centre: [0.5 * w, top + radius_px],
+            centre,
             radius_px,
+            strip: strip.then_some([
+                centre[0] - radius_px,
+                y0,
+                centre[0] + radius_px,
+                y0 + strip_h,
+            ]),
         }
+    }
+
+    /// Viewport pixel row of `depth_km` in the strip spanning the depths `range_km` (top,
+    /// bottom); `None` without a strip.
+    pub fn strip_y(&self, depth_km: f64, range_km: (f64, f64)) -> Option<f32> {
+        let [_, y0, _, y1] = self.strip?;
+        let f = (depth_km - range_km.0) / (range_km.1 - range_km.0);
+        Some(y0 + f as f32 * (y1 - y0))
+    }
+
+    /// How many times deeper than the half-disc the strip draws a kilometre.
+    pub fn strip_stretch(&self, range_km: (f64, f64)) -> Option<f32> {
+        let [_, y0, _, y1] = self.strip?;
+        let strip_px_per_km = (y1 - y0) / (range_km.1 - range_km.0) as f32;
+        Some(strip_px_per_km / (self.radius_px / EARTH_RADIUS_KM as f32))
     }
 
     /// Viewport pixel position (y down) of the point at radius `r_km` and epicentral distance
@@ -75,11 +115,27 @@ pub struct SliceLayer<'a> {
     pub intensity: f32,
 }
 
+/// The crust along the cut, drawn as a strip under the half-disc with its depth stretched: at
+/// true scale the crust is a few pixels thick.
+#[derive(Debug, Clone, Copy)]
+pub struct CrustStrip<'a> {
+    /// The crust every `step_deg` from the epicentre to the antipode (at most
+    /// [`MAX_CRUST_SAMPLES`]).
+    pub samples: &'a [CrustSample],
+    pub step_deg: f64,
+    /// Depths (km below sea level) at the strip's top and bottom.
+    pub range_km: (f64, f64),
+    /// The 1D model's Moho, dashed for comparison.
+    pub reference_moho_km: f64,
+}
+
 /// Everything the slice pass draws in one frame.
 #[derive(Debug, Clone, Copy)]
 pub struct SliceScene<'a> {
     pub source_depth_km: f64,
     pub boundaries: &'a [Boundary],
+    /// The crust strip; drawn when given.
+    pub crust: Option<CrustStrip<'a>>,
     pub layers: &'a [SliceLayer<'a>],
     /// Shade the mantle with the grid last given to [`SlicePass::upload_cut`].
     pub rock_shading: bool,
@@ -170,6 +226,12 @@ struct DiscUniforms {
     rock_levels: [f32; 4],
     rock: [f32; 4],
     rock_axis: [f32; 4],
+    strip: [f32; 4],
+    strip_axis: [f32; 4],
+    strip_levels: [f32; 4],
+    fill_crust: [f32; 4],
+    fill_water: [f32; 4],
+    crust: [[f32; 4]; CRUST_VEC4S],
 }
 
 /// Build the vertex list for every layer.
@@ -306,7 +368,7 @@ impl SlicePass {
         style: &SliceStyle,
         theme: &Theme,
     ) {
-        let view = SliceView::new((viewport.w, viewport.h));
+        let view = SliceView::new((viewport.w, viewport.h), scene.crust.is_some());
         let frac = |depth_km: f64| ((EARTH_RADIUS_KM - depth_km) / EARTH_RADIUS_KM) as f32;
         let find = |name: &str| {
             scene
@@ -319,6 +381,27 @@ impl SlicePass {
         for (r, b) in rings.iter_mut().zip(scene.boundaries) {
             *r = frac(b.depth_km);
         }
+        // The crust strip: its rectangle, depths, levels and samples, two to a vec4.
+        let mut crust = [[0.0f32; 4]; CRUST_VEC4S];
+        let (strip, strip_axis, count) = match (scene.crust, view.strip) {
+            (Some(c), Some(rect)) => {
+                let n = c.samples.len().min(MAX_CRUST_SAMPLES);
+                for (k, s) in c.samples[..n].iter().enumerate() {
+                    let at = 2 * (k % 2);
+                    crust[k / 2][at] = s.surface_km as f32;
+                    crust[k / 2][at + 1] = s.moho_km as f32;
+                }
+                let axis = [
+                    c.range_km.0 as f32,
+                    c.range_km.1 as f32,
+                    c.reference_moho_km as f32,
+                    c.step_deg as f32,
+                ];
+                (rect, axis, n)
+            }
+            _ => ([0.0; 4], [0.0; 4], 0),
+        };
+        let [sw0, sw1] = theme.strip_weights;
         let [fw0, fw1, fw2] = theme.fill_weights;
         let [rl0, rl1, rl2] = theme.rock_levels;
         let disc = DiscUniforms {
@@ -355,6 +438,12 @@ impl SlicePass {
                 CUT_R_COUNT as f32,
                 0.0,
             ],
+            strip,
+            strip_axis,
+            strip_levels: [count as f32, sw0, sw1, 0.0],
+            fill_crust: vec4(theme.fill_crust),
+            fill_water: vec4(theme.fill_water),
+            crust,
         };
         queue.write_buffer(&self.disc_uniforms, 0, bytemuck::bytes_of(&disc));
         let vertices = build_vertices(&view, scene, style, theme);
@@ -388,7 +477,7 @@ mod tests {
 
     #[test]
     fn projection_puts_source_left_and_antipode_right() {
-        let v = SliceView::new((800.0, 400.0));
+        let v = SliceView::new((800.0, 400.0), false);
         let src = v.project(EARTH_RADIUS_KM, 0.0);
         let anti = v.project(EARTH_RADIUS_KM, 180.0);
         let top = v.project(EARTH_RADIUS_KM, 90.0);
@@ -405,7 +494,7 @@ mod tests {
     #[test]
     fn fronts_take_their_wave_colour_and_paths_their_own() {
         use sim::slice::SlicePoint;
-        let v = SliceView::new((800.0, 400.0));
+        let v = SliceView::new((800.0, 400.0), false);
         let line = |wave: Wave| SliceLine {
             phase: RayPhase::P,
             wave,
@@ -441,6 +530,7 @@ mod tests {
         let scene = SliceScene {
             source_depth_km: 0.0,
             boundaries: &[],
+            crust: None,
             layers: &layers,
             rock_shading: false,
         };

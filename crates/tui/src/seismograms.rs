@@ -21,6 +21,8 @@ pub struct TraceScene<'a> {
     pub stations: &'a [Station],
     pub component: Component,
     pub shared_scale: bool,
+    /// The arrival times ignore the real crust (the 1D model's crust everywhere).
+    pub flat_crust: bool,
     /// Window, seconds since the selected event's origin.
     pub from_s: f64,
     pub to_s: f64,
@@ -43,10 +45,11 @@ pub fn draw(canvas: &mut Canvas, scene: &TraceScene) {
     } else {
         "each row scaled"
     };
+    let crust = if scene.flat_crust { "  flat crust" } else { "" };
     canvas.text(
         0,
         0,
-        &format!("SEISMOGRAMS  {component}  {scaling}  ·  synthetic: display-plausible, not waveform-accurate"),
+        &format!("SEISMOGRAMS  {component}  {scaling}{crust}  ·  synthetic: display-plausible, not waveform-accurate"),
         Ink::Dim,
     );
     let plot_w = canvas.width - LABEL_W;
@@ -180,6 +183,7 @@ mod tests {
                 stations: &[],
                 component: Component::Vertical,
                 shared_scale: false,
+                flat_crust: false,
                 from_s: -60.0,
                 to_s: 5400.0,
                 t: 300.0,

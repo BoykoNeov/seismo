@@ -6,7 +6,7 @@ type. A cut through the Earth shows the rays bending through the mantle and core
 seismographs at real stations show the traces they would record.
 
 The waves come from the ak135 Earth model, optionally perturbed by the SP12RTS 3D mantle
-model, with dispersive surface waves. Every shortcut is listed in
+model, with dispersive surface waves; the seismograms add the real crust from CRUST1.0. Every shortcut is listed in
 [docs/approximations.md](docs/approximations.md). The seismograms are display-plausible, not
 waveform-accurate, and the app says so.
 
@@ -27,7 +27,9 @@ Two looks are available: a green-phosphor CRT (the default) and a modern dark on
   Network stations, or at any point clicked on the map. Arrivals are marked by phase. Where
   the earthquake's fault is known (from USGS, or set by you), P and S waves follow its
   radiation pattern: stronger in some directions, starting with a push or a pull, shown as a
-  beach ball in the event panel.
+  beach ball in the event panel. Arrival times include the real crust (CRUST1.0) under the
+  quake, the station and where a wave bounces off the surface: thin ocean crust makes waves
+  early, thick mountain crust late. A strip under the slice shows the crust along the cut.
 - **Events.**
   - The live USGS feeds are polled every minute and work offline from a saved copy.
   - Past events can be searched by date and magnitude or by USGS id.
@@ -117,7 +119,7 @@ Windows for every push to `main` and every pull request.
 | `--coast off,wide` | Coastline options |
 | `--azimuth <deg>` | Direction of the slice from the epicentre |
 | `--phases all` or `--phases P,S,PKiKP` | The phases drawn in the slice (default: all but PcS, ScP, PKiKP, PKKP, SKKS, PS, SP) |
-| `--traces off,side,shared,<n>min` | Hide the traces, show the transverse component, use one amplitude scale, or show `<n>` minutes of record (5–120) |
+| `--traces off,side,shared,flatcrust,<n>min` | Hide the traces, show the transverse component, use one amplitude scale, use ak135's flat crust instead of the real one, or show `<n>` minutes of record (5–120) |
 | `--crt <list>` | Turn CRT effects off: `off`, `noscan`, `nopersist`, `nobloom`, `nobarrel`, `noflicker`, `nohot`, `novignette`, `nonoise`, `nohum`, `nowarmup` |
 | `--size <W>x<H>` | Window inner size in physical pixels |
 | `--capture <file.ppm>` | Save the rendered scene after `--capture-after <s>` seconds (default 3), then quit |
@@ -131,7 +133,7 @@ The terminal version's flags are listed by `seismo-tui --help`.
 
 | Crate | Role |
 |---|---|
-| `crates/tables` | Travel-time tables, the ak135 velocity model, dispersion curves and SP12RTS: formats and interpolation |
+| `crates/tables` | Travel-time tables, the ak135 velocity model, dispersion curves, SP12RTS and CRUST1.0: formats and interpolation |
 | `crates/sim` | The simulation and ray tracer: pure, deterministic, no GPU, no I/O, no threads |
 | `crates/feed` | USGS fetch, cache and parsing (tokio and reqwest, on its own thread) |
 | `crates/render` | The wgpu passes: map, slice, traces, CRT post-process |
@@ -160,6 +162,10 @@ each file's header records its source.
   with disba (Luu, K. (2021), disba: numba-accelerated computation of surface wave dispersion)
   by `tools/gen_dispersion.py`. Attenuation follows PREM's Q (Dziewonski, A. M. & D. L. Anderson
   (1981), Preliminary reference Earth model, *Phys. Earth Planet. Inter.*, 25, 297–356).
+- **CRUST1.0 crust.** Laske, G., G. Masters, Z. Ma & M. Pasyanos (2013). Update on CRUST1.0: a
+  1-degree global model of Earth's crust. *Geophys. Res. Abstracts*, 15, EGU2013-2658.
+  Downloaded from igppweb.ucsd.edu/~gabi/crust1.html and re-encoded without loss by
+  `tools/gen_crust.py`.
 - **Stations.** Global Seismographic Network, FDSN networks IU and II, from the EarthScope FDSN
   station service, by `tools/gen_stations.py`.
 - **Coastlines.** Natural Earth 1:10m coastline (public domain), simplified by
@@ -169,5 +175,5 @@ each file's header records its source.
 ## License
 
 No license has been chosen yet. Until one is, the code is visible but not licensed for reuse.
-The bundled data keep their own terms: the SP12RTS files carry the authors' citation request,
-and Natural Earth is public domain.
+The bundled data keep their own terms: the SP12RTS files and CRUST1.0 carry their authors'
+citation requests, and Natural Earth is public domain.

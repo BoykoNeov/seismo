@@ -138,6 +138,7 @@ fn draw_traces(f: &mut Frame, app: &App, pal: &Palette, area: Rect) {
             stations: &app.traces.stations,
             component: app.traces.component,
             shared_scale: app.traces.shared_scale,
+            flat_crust: !app.traces.real_crust,
             from_s,
             to_s,
             t: app.t(),
@@ -365,12 +366,20 @@ fn detail_lines(app: &App, pal: &Palette) -> Vec<Line<'static>> {
     if let Some(m) = &app.message {
         out.push(Line::styled(format!(" {m}"), dim));
     }
-    out.push(Line::styled(" 1D Earth (ak135): no 3D mantle here", dim));
+    let crust = if app.traces.real_crust {
+        "real"
+    } else {
+        "flat"
+    };
+    out.push(Line::styled(
+        format!(" 1D mantle (ak135), no 3D here; traces: {crust} crust"),
+        dim,
+    ));
     out
 }
 
 fn draw_help(f: &mut Frame, pal: &Palette, area: Rect) {
-    let rows: [(&str, &str); 20] = [
+    let rows: [(&str, &str); 21] = [
         ("space", "play / pause"),
         ("← →", "back / forward 30 s"),
         ("shift ← →  < >", "back / forward 5 min"),
@@ -386,6 +395,7 @@ fn draw_help(f: &mut Frame, pal: &Palette, area: Rect) {
         ("d", "default stations for the selected event"),
         ("c", "up-down / side-to-side component"),
         ("s", "each trace scaled / one shared scale"),
+        ("f", "real crust / the same flat crust everywhere"),
         ("t", "hide / show the traces"),
         ("l", "CRT / modern look"),
         ("? h F1", "this list of keys"),

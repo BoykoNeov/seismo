@@ -2,6 +2,7 @@
 
 use chrono::{DateTime, Utc};
 
+use crate::crust::Crust;
 use crate::event::Event;
 use crate::facts::ModelFacts;
 use crate::raytrace::RayPhase;
@@ -11,7 +12,8 @@ use crate::surface::SurfaceWaves;
 use crate::tables::{Dispersion, EarthModel, TravelTimeTable};
 
 /// Events, the table their surface arrivals are timed by, the velocity model their rays are
-/// traced through, and the dispersion their surface waves travel with. Pure: `state_at`
+/// traced through, the dispersion their surface waves travel with, and optionally the real
+/// crust the seismograms' arrival times are corrected for. Pure: `state_at`
 /// depends only on the events, the table and `now`.
 #[derive(Debug, Clone)]
 pub struct Simulation {
@@ -20,6 +22,7 @@ pub struct Simulation {
     surface: SurfaceWaves,
     boundaries: Vec<Boundary>,
     facts: ModelFacts,
+    crust: Option<Crust>,
     pub events: Vec<Event>,
 }
 
@@ -76,8 +79,22 @@ impl Simulation {
             surface: SurfaceWaves::new(dispersion),
             boundaries: named_boundaries(&model),
             facts,
+            crust: None,
             events,
         })
+    }
+
+    /// Give the simulation the real crust (see [`crate::crust`]); the guide's numbers about
+    /// it come from it too.
+    pub fn with_crust(mut self, crust: Crust) -> Self {
+        self.facts.add_crust(&crust);
+        self.crust = Some(crust);
+        self
+    }
+
+    /// The real crust, if one was given.
+    pub fn crust(&self) -> Option<&Crust> {
+        self.crust.as_ref()
     }
 
     pub fn table(&self) -> &TravelTimeTable {

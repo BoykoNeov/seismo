@@ -58,6 +58,8 @@ pub struct Options {
     pub traces: bool,
     pub component: Component,
     pub shared_scale: bool,
+    /// Arrival times with the 1D model's crust everywhere instead of the real one.
+    pub flat_crust: bool,
     /// Open the guide at this topic.
     pub guide: Option<String>,
 }
@@ -75,6 +77,7 @@ impl Default for Options {
             traces: true,
             component: Component::Vertical,
             shared_scale: false,
+            flat_crust: false,
             guide: None,
         }
     }
@@ -151,11 +154,15 @@ impl App {
             sim::coast::Coastlines::from_bytes(assets::COAST).context("embedded coastlines.txt")?;
         let shown: Vec<sim::Event> = events.shown().iter().map(|l| l.event.clone()).collect();
         let keys: Vec<EventKey> = events.shown().iter().map(|l| l.key).collect();
-        let sim = Simulation::new(table, model, dispersion, shown).context("ray tracer")?;
+        let crust = assets::crust(&model).context("embedded crust1.bin")?;
+        let sim = Simulation::new(table, model, dispersion, shown)
+            .context("ray tracer")?
+            .with_crust(crust);
         let mut traces = Traces::new(stations, sim.tracer().clone());
         traces.show = opts.traces;
         traces.component = opts.component;
         traces.shared_scale = opts.shared_scale;
+        traces.real_crust = !opts.flat_crust;
         let map = MapView::new(coast, sim.surface_waves().map_grid());
         let slice = SliceWorker::spawn(sim.tracer().clone());
         let mut values = Values::new(sim.facts());
@@ -361,6 +368,7 @@ impl App {
                 self.sync();
             }
             KeyCode::Char('s') => self.traces.shared_scale = !self.traces.shared_scale,
+            KeyCode::Char('f') => self.traces.real_crust = !self.traces.real_crust,
             KeyCode::Char('t') => {
                 self.traces.show = !self.traces.show;
                 self.sync();

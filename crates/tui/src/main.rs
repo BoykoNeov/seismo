@@ -42,7 +42,8 @@ Options:
   --look crt|modern     the look to start with (default crt)
   --view map|slice      the picture to start with (default map)
   --azimuth <deg>       direction of the slice from the epicentre (default 90)
-  --traces <list>       comma-separated: off, side (transverse), shared (one scale)
+  --traces <list>       comma-separated: off, side (transverse), shared (one scale),
+                        flatcrust (the same flat crust everywhere)
   --dump <cols>x<rows>  draw one frame that size as plain text to standard output, then quit
   --after <s>           with --dump: run this many real seconds first (default 3)
   --ansi                with --dump: in colour (24-bit terminal escape codes)
@@ -81,6 +82,7 @@ fn main() -> anyhow::Result<()> {
             "off" => opts.traces = false,
             "side" => opts.component = Component::Transverse,
             "shared" => opts.shared_scale = true,
+            "flatcrust" => opts.flat_crust = true,
             _ => {}
         }
     }

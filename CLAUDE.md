@@ -12,7 +12,7 @@ seismo/               # = repo root
   Cargo.toml          # workspace
   crates/
     sim/              # pure simulation core + ray tracer. NO rendering, NO async, NO I/O.
-    tables/           # travel-time table + ak135 velocity model + SP12RTS 3D mantle: format, parsing, interpolation
+    tables/           # travel-time table + ak135 velocity model + SP12RTS 3D mantle + CRUST1.0 crust: format, parsing, interpolation
     feed/             # USGS fetch/cache/parse (tokio + reqwest + serde)
     render/           # wgpu passes: map, slice, traces, CRT post-process
     session/          # what a front end needs that is not drawing: clock, event list, made events, traces, the guide's text, embedded assets
@@ -25,12 +25,14 @@ seismo/               # = repo root
     stations.csv      # bundled real seismograph stations (GSN, IU + II; generated, committed, provenance in header)
     coastlines.txt    # Natural Earth 1:10m coastline, simplified (generated, committed, provenance in header)
     surface_dispersion.csv # Rayleigh + Love phase/group velocity vs period from ak135 (generated, committed, provenance in header)
+    crust1.bin        # CRUST1.0 crust, re-encoded without loss (generated, committed, provenance in its JSON header)
     shaders/          # WGSL
   tools/
     gen_tables.py     # ObsPy script that produces both ak135 assets
     gen_stations.py   # FDSN station query that produces stations.csv (stdlib only)
     gen_coastlines.py # Natural Earth download + simplification that produces coastlines.txt (stdlib only)
     gen_dispersion.py # disba (Earth-flattened ak135) script that produces surface_dispersion.csv
+    gen_crust.py      # CRUST1.0 download + re-encoding that produces crust1.bin (stdlib only)
     requirements.txt  # pinned obspy and disba versions
   docs/
     approximations.md
@@ -88,6 +90,14 @@ start with no dependence on the working directory.
   `sim::surface` (phase velocity for the crests, group velocity for the energy,
   PREM Q, fixed source spectrum, faded in before the fastest energy); the map
   draws where those trains are (see Map); 1D only.
+- Real crust (decided 2026-10-16, `sim::crust`): the seismograms' body-wave times are corrected
+  for CRUST1.0 under the source, the station and each surface reflection: per arrival, the
+  change in vertical delay time (its own ray parameter) of the real column against ak135's,
+  down to below both Mohos; ak135's mantle fills between them. Times only, seismograms only, in
+  both front ends; on by default, `Traces::real_crust` (desktop `real crust` checkbox,
+  `--traces flatcrust`; terminal `f`). The table, the tracer, the map and the slice's rays keep
+  the flat crust; the desktop slice shows the crust along the cut as a depth-stretched strip
+  under the half-disc (the user chose it over true scale, which is a few pixels).
 - Map: the shader receives the travel-time table as an RG32Float 2D array
   texture (R = arrival time, G = ray parameter; one array layer per phase,
   width = distance, height = depth) and evaluates arrival time per
@@ -123,7 +133,7 @@ start with no dependence on the working directory.
 - Terminal version (decided 2026-10-15): `crates/tui`, binary `seismo-tui`, built on ratatui
   (the user OK'd ratatui as the terminal's screen library; "no second UI framework" is about
   the desktop app). Same simulation, feed, event list and traces as the app through `session`;
-  1D only (no 3D mantle), no search or make-your-own form (it lists your made and kept events,
+  1D only (no 3D mantle; the real-crust correction on its traces), no search or make-your-own form (it lists your made and kept events,
   never writes them). Map, slice and traces are drawn on a braille canvas (2 × 4 dots a cell)
   per frame on the CPU, in the CRT or modern colours. `--dump <cols>x<rows> [--after s]
   [--ansi]` prints one frame without a terminal, for tests and screenshots.
@@ -147,6 +157,8 @@ Earth model: ak135, optionally perturbed in the mantle by SP12RTS (Koelemeijer e
 2016; shear and compressional dlnV, spherical harmonics to degree 12, 21 radial splines from
 the model's Moho to its CMB, relative to PREM; degree 0 ignored; crust and core stay 1D).
 The bundled files must stay byte-identical to the authors' download and keep their citation.
+The seismograms' crust is CRUST1.0 (Laske, Masters, Ma and Pasyanos 2013; 1° cells, eight
+layers; free download with a citation request, no license stated).
 Key depths (km): Moho 35, 410, 660, CMB 2891.5
 (radius 3479.5), ICB 5153.5 (radius 1217.5).
 
@@ -322,6 +334,7 @@ cargo run -p tui --release             # the terminal version (seismo-tui); pres
 pip install -r tools/requirements.txt   # in a virtualenv outside the repo
 python tools/gen_tables.py              # regenerates both ak135 assets (slow: minutes)
 python tools/gen_dispersion.py          # regenerates surface_dispersion.csv (needs ak135_model.csv)
+python tools/gen_crust.py               # regenerates crust1.bin (downloads CRUST1.0, ~1 MB)
 ```
 
 ## Open questions (ask before deciding)

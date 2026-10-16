@@ -48,6 +48,10 @@ pub struct Traces {
     pub component: Component,
     /// One amplitude scale for every trace (the largest of them) instead of each its own.
     pub shared_scale: bool,
+    /// Correct the arrival times for the real crust under the source, the station and any
+    /// surface reflection (when the simulation has one); off, every place has the 1D model's
+    /// crust.
+    pub real_crust: bool,
     pub gain: f32,
     /// Length of the window after the origin (minutes).
     pub window_min: f64,
@@ -121,6 +125,7 @@ impl Traces {
             show: true,
             component: Component::Vertical,
             shared_scale: false,
+            real_crust: true,
             gain: 1.0,
             window_min: 90.0,
             click_to_place: true,
@@ -216,6 +221,7 @@ impl Traces {
         delays: &HashMap<EventKey, Arc<DelayGrid>>,
         strength: f64,
     ) {
+        let crust = sim.crust().filter(|_| self.real_crust);
         let anchor = &sim.events[selected];
         let (from, to) = self.window();
         let mut events = contributors(sim, selected, (from, to));
@@ -251,7 +257,14 @@ impl Traces {
         self.built.retain(|k, _| self.chosen.contains(k));
         for &i in &self.chosen {
             let station = &self.stations[i];
-            let key = trace_key(station, &sources, self.component, strength, (from, to));
+            let key = trace_key(
+                station,
+                &sources,
+                self.component,
+                strength,
+                crust.is_some(),
+                (from, to),
+            );
             if self.built.get(&i).is_some_and(|t| t.key == key) {
                 continue;
             }
@@ -270,6 +283,7 @@ impl Traces {
                         station,
                         grid,
                         strength,
+                        crust,
                         sim.surface_waves(),
                     )
                     .into_iter()
@@ -350,6 +364,7 @@ fn trace_key(
     sources: &[(EventKey, bool)],
     component: Component,
     strength: f64,
+    crust: bool,
     window: (f64, f64),
 ) -> u64 {
     let sources: Vec<String> = sources
@@ -363,6 +378,7 @@ fn trace_key(
         &sources.join(","),
         &format!("{component:?}"),
         &strength.to_bits().to_string(),
+        &crust.to_string(),
         &window.0.to_bits().to_string(),
         &window.1.to_bits().to_string(),
     ])

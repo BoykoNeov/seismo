@@ -224,6 +224,20 @@ impl Values {
         v.set("love_fast", speed(f.love_group_km_s.1));
         v.set("surface_period_min_s", num(f.surface_band_s.0));
         v.set("surface_period_max_s", num(f.surface_band_s.1));
+        if let Some(c) = &f.crust {
+            v.set("crust_model", &c.model);
+            v.set("crust_thin_km", km(c.thinnest_km));
+            v.set("crust_thick_km", km(c.thickest_km));
+            // Early or late by: the sign is in the words around it.
+            v.set(
+                "crust_thin_p_s",
+                num((c.thinnest_p_s.abs() * 10.0).round() / 10.0),
+            );
+            v.set(
+                "crust_thick_p_s",
+                num((c.thickest_p_s.abs() * 10.0).round() / 10.0),
+            );
+        }
         v.set(
             "deepest_quake_km",
             km(EventKind::Earthquake.profile().max_depth_km),
@@ -542,7 +556,9 @@ mod tests {
 
     fn values() -> Values {
         let (table, model, dispersion) = crate::assets::earth().unwrap();
-        let mut v = Values::new(&ModelFacts::new(&table, &model, &dispersion));
+        let mut facts = ModelFacts::new(&table, &model, &dispersion);
+        facts.add_crust(&crate::assets::crust(&model).unwrap());
+        let mut v = Values::new(&facts);
         // What the front ends add.
         v.set("map_cap", "32");
         v.set("stations", "150");

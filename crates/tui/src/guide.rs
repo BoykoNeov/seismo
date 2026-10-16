@@ -285,7 +285,9 @@ mod tests {
     #[test]
     fn the_shared_guide_fits_the_terminal() {
         let (table, model, dispersion) = session::assets::earth().unwrap();
-        let mut values = Values::new(&sim::facts::ModelFacts::new(&table, &model, &dispersion));
+        let mut facts = sim::facts::ModelFacts::new(&table, &model, &dispersion);
+        facts.add_crust(&session::assets::crust(&model).unwrap());
+        let mut values = Values::new(&facts);
         values.set("stations", "73");
         let v = GuideView::new(Guide::new(Front::Terminal, &values).unwrap());
         let pal = Palette::new(crate::palette::Look::Modern);

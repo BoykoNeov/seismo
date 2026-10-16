@@ -3,7 +3,9 @@
 //! read from the model, never written out by hand, so the guide always quotes the Earth the app
 //! simulates.
 
+use crate::crust::Crust;
 use crate::geo::EARTH_RADIUS_KM;
+use crate::raytrace::Wave;
 use crate::slice::named_boundaries;
 use crate::tables::{Dispersion, EarthModel, SurfaceWave, TravelTimeTable};
 
@@ -59,6 +61,20 @@ pub struct ModelFacts {
     pub love_group_km_s: (f64, f64),
     /// Shortest and longest surface-wave period (s) simulated.
     pub surface_band_s: (f64, f64),
+    /// The real crust, when the simulation has one.
+    pub crust: Option<CrustFacts>,
+}
+
+/// What the guide quotes about the real crust: its thinnest and thickest columns (solid ground
+/// to Moho, km) and how much each changes a P wave crossing it straight up (s; negative is
+/// early).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CrustFacts {
+    pub model: String,
+    pub thinnest_km: f64,
+    pub thickest_km: f64,
+    pub thinnest_p_s: f64,
+    pub thickest_p_s: f64,
 }
 
 impl ModelFacts {
@@ -121,7 +137,34 @@ impl ModelFacts {
             rayleigh_group_km_s: dispersion.group_range(SurfaceWave::Rayleigh),
             love_group_km_s: dispersion.group_range(SurfaceWave::Love),
             surface_band_s: dispersion.band(),
+            crust: None,
         }
+    }
+
+    /// Add the numbers about the real crust.
+    pub fn add_crust(&mut self, crust: &Crust) {
+        let mut thinnest = (f64::INFINITY, 0.0, 0.0);
+        let mut thickest = (f64::NEG_INFINITY, 0.0, 0.0);
+        for row in 0..180 {
+            for col in 0..360 {
+                let (lat, lon) = (89.5 - row as f64, -179.5 + col as f64);
+                let c = crust.column(lat, lon);
+                let km = c.moho_km - c.surface_km;
+                if km < thinnest.0 {
+                    thinnest = (km, lat, lon);
+                }
+                if km > thickest.0 {
+                    thickest = (km, lat, lon);
+                }
+            }
+        }
+        self.crust = Some(CrustFacts {
+            model: crust.model().model().to_owned(),
+            thinnest_km: thinnest.0,
+            thickest_km: thickest.0,
+            thinnest_p_s: crust.vertical_delay(thinnest.1, thinnest.2, Wave::P),
+            thickest_p_s: crust.vertical_delay(thickest.1, thickest.2, Wave::P),
+        });
     }
 }
 
@@ -196,5 +239,30 @@ mod tests {
         assert!(f.s_last_deg.unwrap() < 180.0);
         // Love waves outrun Rayleigh waves.
         assert!(f.love_group_km_s.1 > f.rayleigh_group_km_s.1);
+    }
+
+    #[test]
+    fn crust_facts_span_the_reference_crust() {
+        let model =
+            EarthModel::from_bytes(include_bytes!("../../../assets/ak135_model.csv")).unwrap();
+        let crust = Crust::new(
+            crate::tables::CrustModel::from_bytes(include_bytes!("../../../assets/crust1.bin"))
+                .unwrap(),
+            &model,
+        )
+        .unwrap();
+        let mut f = facts();
+        assert!(f.crust.is_none());
+        f.add_crust(&crust);
+        let c = f.crust.unwrap();
+        assert_eq!(c.model, "CRUST1.0");
+        // Thinner than the 1D model's crust under the oceans, thicker under mountains; early
+        // through the thinnest, late through the thickest.
+        let moho = f.moho_km.unwrap();
+        assert!(
+            c.thinnest_km < moho / 2.0 && c.thickest_km > 1.5 * moho,
+            "{c:?}"
+        );
+        assert!(c.thinnest_p_s < -0.5 && c.thickest_p_s > 1.0, "{c:?}");
     }
 }

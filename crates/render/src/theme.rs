@@ -73,6 +73,11 @@ pub struct Theme {
     pub fills: [Rgb; 3],
     /// Level weight of each fill, times the style's fill brightness.
     pub fill_weights: [f32; 3],
+    /// The crust strip's fills, crust and sea, and their weights as in `fill_weights` (its
+    /// mantle is the mantle fill).
+    pub fill_crust: Rgb,
+    pub fill_water: Rgb,
+    pub strip_weights: [f32; 2],
     /// Layer boundaries.
     pub boundary: Rgb,
     /// The Earth's surface, distance ticks, the flat edge; the traces' axes, grids, baselines,
@@ -119,6 +124,10 @@ impl Theme {
             fills: [g; 3],
             // Faint fills: the liquid outer core brightest.
             fill_weights: [0.35, 1.0, 0.6],
+            // The strip's crust stands out from the faint mantle, the sea a little.
+            fill_crust: g,
+            fill_water: g,
+            strip_weights: [3.0, 1.2],
             boundary: g,
             chrome: g,
             ray_path: g,
@@ -148,6 +157,9 @@ impl Theme {
             marker_selected: hex(0xff_ff_ff),
             fills: [hex(0x1d_26_33), hex(0x4a_34_18), hex(0x6e_58_34)],
             fill_weights: [1.0, 1.0, 1.0],
+            fill_crust: hex(0x5a_4f_42),
+            fill_water: hex(0x14_2f_52),
+            strip_weights: [1.0, 1.0],
             boundary: hex(0x8f_a3_bf),
             chrome: hex(0x93_a1_b5),
             ray_path: hex(0xa8_b8_cc),
@@ -200,6 +212,7 @@ mod tests {
             assert_eq!(c, g);
         }
         assert!(t.fills.iter().all(|&f| f == g));
+        assert_eq!((t.fill_crust, t.fill_water), (g, g));
         // Slow rock paints nothing: its level weight is zero.
         assert_eq!(t.rock_levels[2], 0.0);
     }

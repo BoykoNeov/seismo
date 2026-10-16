@@ -20,8 +20,8 @@ pub use map::{
 };
 pub use sim::coast::{CoastError, Coastlines};
 pub use slice::{
-    MAX_SLICE_BOUNDARIES, SliceLayer, SlicePass, SliceScene, SliceStyle, SliceView, StrokeKind,
-    phase_gain,
+    CrustStrip, MAX_CRUST_SAMPLES, MAX_SLICE_BOUNDARIES, SliceLayer, SlicePass, SliceScene,
+    SliceStyle, SliceView, StrokeKind, phase_gain,
 };
 pub use theme::{Look, Rgb, Theme};
 pub use traces::{TraceLayout, TracePass, TraceRow, TraceScene, TraceStyle};

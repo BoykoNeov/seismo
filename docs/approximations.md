@@ -200,7 +200,8 @@ overtones are left out.
   test.
 - **One Earth for every path.** ak135's crust is continental (35 km thick, no ocean), so every
   path gets continental dispersion. Real oceanic paths are faster at short periods (thin crust)
-  and continental shields differ again; the 3D mantle model does not change surface waves.
+  and continental shields differ again; neither the 3D mantle model nor the real crust (a
+  body-wave time correction) changes surface waves.
 - **No attenuation in the curves.** Real attenuation also makes velocities depend slightly on
   period (physical dispersion); ak135 has no Q here, and none is applied.
 
@@ -376,6 +377,61 @@ tracer.
   rebuilt on a worker thread when any of these changes (about 2–3 s), and the 1D fans are drawn
   until they are ready.
 
+## Real crust: CRUST1.0 as a correction to the seismograms' times
+
+ak135 has one crust everywhere: 35 km thick, two flat layers, no sea. The real crust is from
+about 4 km (young ocean floor) to 80 km (Tibet, counting its height) thick, and its rock is slower
+than the mantle's, so a wave crossing thick crust arrives late and one crossing thin crust early.
+SEISMO's seismograms take the crust from CRUST1.0 (Laske, Masters, Ma and Pasyanos 2013): per 1°
+× 1° cell, up to eight layers (water, ice, three sediment layers, three crystalline layers)
+with their P and S speeds and the Moho beneath. `assets/crust1.bin` is the authors' files
+re-encoded without loss by `tools/gen_crust.py` (heights and speeds to the files' 0.01; the
+densities and the speeds below the Moho left out). The `real crust` switch (desktop, under
+Seismographs; `f` in the terminal; on by default) turns the correction off.
+
+- **Times only, seismograms only.** Each body-wave arrival on a trace moves; nothing else does.
+  The travel-time table, the ray tracer, the ray-tube amplitudes, the map's rings and the slice's
+  fronts and rays all keep ak135's flat crust. A real crust also amplifies, reverberates and
+  converts waves (sediments ring, oceans echo); none of that is drawn. Surface waves keep their
+  ak135 dispersion (see above).
+- **Vertical delay time.** Where a ray crosses the crust it travels steeply, so the correction is
+  the change in its vertical delay time, τ = ∫ √(1/v² − u²) dz with u its horizontal slowness at
+  that depth (the arrival's ray parameter over the radius): the real column against ak135's,
+  from the surface to below both Mohos. To first order the ray's sideways shift is paid for by its
+  horizontal slowness, so it does not change the time. Good for teleseismic rays; rough for rays
+  that run nearly flat under the Moho at regional distances (Pn), where the vertical slowness in
+  the top of the mantle goes to 0 (it is clamped there rather than turning the ray).
+- **The mantle between the two Mohos is ak135's.** Where the real Moho is shallower than 35 km
+  the gap is mantle at ak135's speed just below its Moho (8.04 km/s for P), not CRUST1.0's own
+  uppermost-mantle speed: only the crust is replaced. Below 35 km both columns are ak135, so the
+  3D mantle's delays (which start there) add without overlap.
+- **Where each wave crosses.** Under the source, the part of the column below the source, as
+  the wave the source sends (none for a source below both Mohos). Under the station, the whole
+  column, as the wave that arrives (SKS and PcS as S, sP and ScP as P). A wave that left the
+  source upward and reaches the station directly (p, s) crosses only the station's column, down
+  to the source's depth. PP, SS, PS and SP cross the column where they reflect off the surface
+  twice, once as each leg's wave; the reflection point is where the table's direct wave from
+  the same source depth with the same ray parameter comes up. pP and sP cross the column above
+  the source and then the whole column, both taken right above the source (for a deep source the
+  real reflection point is up to a few degrees away). Each later branch of a phase uses its own
+  ray parameter. The diffracted waves (Pdiff, Sdiff) count as direct waves.
+- **Seas.** Water is never part of a column. A station sits on the solid ground of its cell: on
+  an island whose 1° cell is mostly ocean that is the cell's average sea floor, with oceanic
+  crust under it (Hawaii's HON: P about 1.2 s early). A source is at its depth below sea level,
+  moved down to the sea floor if it is shallower than the sea. The depth phases reflect off the
+  sea floor, not the sea surface (no pwP), and nothing echoes in the water.
+- **Heights.** On land a column starts at its cell's average height (ETOPO1 binned by the model's
+  authors), not at the station's own elevation from `stations.csv`, which is not used.
+- **Cells.** A point takes its cell's column, with no interpolation between cells (CRUST1.0's
+  values are cell averages). A point on a cell edge belongs to the cell to its south or east.
+- **Size.** Straight up through the crust, P moves from about 2.1 s early to 2.2 s late over the
+  whole model and S from about 3.2 s early to 5.2 s late (the deep sediment basins).
+- **Slice strip.** The desktop slice cannot show the crust at its own scale (a few pixels), so a
+  strip under it shows the crust along the cut, sampled every 0.5° and linearly in between, its
+  depth stretched (about ×12 in the default window; the label gives the factor) between the
+  model's highest ground and deepest Moho. With the switch off it shows ak135's flat crust.
+  The terminal version's slice has no strip.
+
 ## Seismograms: display-plausible, not waveform-accurate
 
 The virtual stations' traces are built from a list of arrivals, each drawn as a wavelet. They
@@ -384,12 +440,15 @@ their sizes only roughly physical. The UI says so.
 
 - **Stations.** The bundled list is the open stations of the Global Seismographic Network (FDSN
   networks IU and II), thinned so that no two are closer than 12°, generated by
-  `tools/gen_stations.py` (query and date in the file's header). Elevation is ignored (spherical
-  Earth). Users can add their own stations anywhere.
+  `tools/gen_stations.py` (query and date in the file's header). The list's elevations are not
+  used: with the real crust on, a station's column starts at its cell's average height (see
+  "Real crust" above). Users can add their own stations anywhere.
 - **Times.** Body-wave times are the table's (the first arrival of each named phase and its
   later arrivals, see above; PKP as three branches), plus the 3D-mantle delay for P and S (not pP
   or sP), sampled from the same grid with the same interpolation as the map, so a trace and a map
-  ring agree. Only each phase's first arrival is labelled; its later ones get a tick. Other phases stay 1D. Surface waves
+  ring agree. With the real crust on, every body-wave arrival also moves by the crust along its
+  path (see "Real crust" above), which a map ring does not. Only each phase's first arrival is
+  labelled; its later ones get a tick. Other phases stay 1D. Surface waves
   are dispersed trains (see above), the short way round (R1, L1) and the long way (R2, L2); their
   tick and label mark when the 20 s energy arrives, the train starting well before.
 - **Amplitudes from ray tubes.** For each body phase the ray tracer lands a fan of rays (take-off
@@ -528,7 +587,8 @@ and simplifies more:
 
 - **1D only.** The 3D mantle (SP12RTS) is not used: map fronts are not nudged by 3D delays, the
   slice's rays are not bent, the mantle is not shaded by rock speed, and the traces have no 3D
-  delays. Every time and amplitude is the 1D ak135 one.
+  delays. Every time and amplitude is the 1D ak135 one, except that the traces have the same
+  real-crust correction as the desktop's (`f` switches it); the slice has no crust strip.
 - **Coarse map.** Each terminal cell holds 2 × 4 braille dots, so on a 160-column terminal one
   dot is about 1.5° of arc. Fronts are drawn on the dots within about half a dot's width of the
   tabulated front, as on the desktop map. Trails and the Rayleigh-wave glow are a tint over

@@ -2,7 +2,8 @@
 //! directory, and the built-in example event.
 
 use chrono::{TimeZone, Utc};
-use sim::tables::{Dispersion, EarthModel, TableError, TravelTimeTable};
+use sim::crust::Crust;
+use sim::tables::{CrustModel, Dispersion, EarthModel, TableError, TravelTimeTable};
 use sim::{Event, EventKind, FocalMechanism};
 
 pub static TABLE: &[u8] = include_bytes!("../../../assets/ak135.tt");
@@ -10,6 +11,7 @@ pub static MODEL: &[u8] = include_bytes!("../../../assets/ak135_model.csv");
 pub static STATIONS: &[u8] = include_bytes!("../../../assets/stations.csv");
 pub static COAST: &[u8] = include_bytes!("../../../assets/coastlines.txt");
 pub static DISPERSION: &[u8] = include_bytes!("../../../assets/surface_dispersion.csv");
+pub static CRUST: &[u8] = include_bytes!("../../../assets/crust1.bin");
 
 /// The travel-time table, velocity model and surface-wave dispersion, parsed.
 pub fn earth() -> Result<(TravelTimeTable, EarthModel, Dispersion), TableError> {
@@ -18,6 +20,13 @@ pub fn earth() -> Result<(TravelTimeTable, EarthModel, Dispersion), TableError> 
         EarthModel::from_bytes(MODEL)?,
         Dispersion::from_bytes(DISPERSION)?,
     ))
+}
+
+/// The real crust (CRUST1.0), set against `model`'s own crust. An error if the file does not
+/// parse or the model has no Moho.
+pub fn crust(model: &EarthModel) -> Result<Crust, TableError> {
+    Crust::new(CrustModel::from_bytes(CRUST)?, model)
+        .ok_or_else(|| TableError::Crust("the velocity model has no Moho".into()))
 }
 
 /// The built-in example event, there with or without the feed: 2011 Tōhoku, with the fault

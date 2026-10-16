@@ -1,6 +1,7 @@
 // Slice pass, background: the half-disc cross-section of the Earth along a great circle, with
 // the surface, layer boundaries, region fills, the 3D mantle's fast and slow rock,
-// distance ticks and the source.
+// distance ticks and the source; and under it the crust strip: the crust along the same cut with
+// its depth stretched (sea, crust and mantle, the Moho, and the 1D model's Moho dashed).
 // The epicentre is at the left end of the flat edge, the antipode at the right end; epicentral
 // distance delta runs over the arc. Each feature is painted in its theme colour at its level
 // (display space) and the per-channel maximum is kept.
@@ -36,6 +37,17 @@ struct Uniforms {
     // rock grid: delta step (deg), delta count, radius count (radius rows run evenly from the
     // bottom fraction to the surface), unused
     rock_axis: vec4<f32>,
+    // crust strip: left, top, right, bottom (viewport px, y down); right <= left = none
+    strip: vec4<f32>,
+    // depth (km below sea level) at the strip's top and bottom, the 1D model's Moho, sample
+    // spacing (deg) from the epicentre
+    strip_axis: vec4<f32>,
+    // sample count, crust fill weight, sea fill weight, unused
+    strip_levels: vec4<f32>,
+    fill_crust: vec4<f32>,
+    fill_water: vec4<f32>,
+    // crust samples, two to a vec4: (solid surface depth, Moho depth) km below sea level
+    crust: array<vec4<f32>, 256>,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -94,6 +106,61 @@ fn ring(r_px: f32, frac: f32, w: f32) -> f32 {
 // the bloom.
 fn paint(c: vec4<f32>, level: f32) -> vec3<f32> {
     return mix(u.background.rgb, c.rgb, clamp(level, 0.0, 1.0)) * max(1.0, level);
+}
+
+// Crust sample `k` (clamped to the samples given): solid surface depth, Moho depth.
+fn crust_at(k: i32) -> vec2<f32> {
+    let i = clamp(k, 0, i32(u.strip_levels.x) - 1);
+    let v = u.crust[i / 2];
+    return select(v.xy, v.zw, (i % 2) == 1);
+}
+
+// The crust strip at viewport pixel `px`, painted over `under`.
+fn crust_strip(px: vec2<f32>, under: vec3<f32>) -> vec3<f32> {
+    let x0 = u.strip.x;
+    let y0 = u.strip.y;
+    let x1 = u.strip.z;
+    let y1 = u.strip.w;
+    if (x1 <= x0 || px.x < x0 - 1.0 || px.x > x1 + 1.0 || px.y < y0 - 2.0 || px.y > y1 + 1.0) {
+        return under;
+    }
+    var colour = under;
+    // Sample coordinate along the cut, and depth per pixel down the strip.
+    let px_per_sample = (x1 - x0) / (180.0 / u.strip_axis.w);
+    let f = clamp((px.x - x0) / px_per_sample, 0.0, u.strip_levels.x - 1.0);
+    let k = floor(f);
+    let a = crust_at(i32(k));
+    let b = crust_at(i32(k) + 1);
+    let c = mix(a, b, f - k);
+    let km_per_px = (u.strip_axis.y - u.strip_axis.x) / (y1 - y0);
+    let z = u.strip_axis.x + (px.y - y0) * km_per_px;
+    if (px.y >= y0 && px.y <= y1 && px.x >= x0 && px.x <= x1) {
+        if (z >= c.y) {
+            colour = max(colour, paint(u.fill_mantle, u.style.y * u.fill_weights.x));
+        } else if (z >= c.x) {
+            colour = max(colour, paint(u.fill_crust, u.style.y * u.strip_levels.y));
+        } else if (z >= 0.0) {
+            colour = max(colour, paint(u.fill_water, u.style.y * u.strip_levels.z));
+        }
+    }
+    // Lines, as thick across as along a slope: the distance in pixels, divided by the slope's
+    // stretch.
+    let slope = (b - a) / km_per_px / px_per_sample;
+    let top = min(c.x, 0.0);
+    let y_top = y0 + (top - u.strip_axis.x) / km_per_px;
+    let y_moho = y0 + (c.y - u.strip_axis.x) / km_per_px;
+    let y_ref = y0 + (u.strip_axis.z - u.strip_axis.x) / km_per_px;
+    let top_slope = select(slope.x, 0.0, c.x > 0.0);
+    let ground = line((px.y - y_top) / sqrt(1.0 + top_slope * top_slope), 0.6);
+    let moho = line((px.y - y_moho) / sqrt(1.0 + slope.y * slope.y), 0.5);
+    let dash = step(0.5, fract((px.x - x0) / 8.0));
+    let reference = line(px.y - y_ref, 0.4) * dash;
+    // Its ends, like the flat edge.
+    let ends = (line(px.x - x0, 0.4) + line(px.x - x1, 0.4)) * step(y0, px.y) * step(px.y, y1);
+    colour = max(colour, paint(u.chrome_colour, 0.75 * ground));
+    colour = max(colour, paint(u.boundary_colour, u.style.x * max(moho, 0.6 * reference)));
+    colour = max(colour, paint(u.chrome_colour, 0.3 * ends));
+    return colour;
 }
 
 @fragment
@@ -164,6 +231,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let ds = length(rel - src);
     let source = max(1.4 * (1.0 - smoothstep(2.5, 3.5, ds)), line(ds - 7.0, 0.5));
     colour = max(colour, paint(u.source_colour, source));
+    colour = crust_strip(px, colour);
 
     return vec4<f32>(colour, 1.0);
 }

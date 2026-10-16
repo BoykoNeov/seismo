@@ -14,6 +14,7 @@ use std::time::Instant;
 use anyhow::{Context as _, anyhow};
 use chrono::{DateTime, NaiveDate, Utc};
 use eframe::{egui, wgpu};
+use sim::crust::{CUT_STEP_DEG, CrustSample};
 use sim::mantle::DelayGrid;
 use sim::seismogram::{Component, StationArrival};
 use sim::slice::{PhaseLabel, SliceFans, SliceLine};
@@ -29,6 +30,7 @@ use session::guide::{Front, Guide, Values};
 use session::made::{self, MakeForm, TIME_FORMAT};
 use session::traces::{MAX_TRACES, Traces};
 
+use session::assets::crust as real_crust;
 use session::assets::{
     COAST as COAST_BYTES, DISPERSION as DISPERSION_BYTES, MODEL as MODEL_BYTES,
     STATIONS as STATIONS_BYTES, TABLE as TABLE_BYTES, TOHOKU_PLACE, tohoku,
@@ -166,6 +168,9 @@ struct SeismoApp {
     fans: Option<SliceFans>,
     /// Ray fans bent through the 3D mantle, for the slice as it was when asked for.
     bent: Option<(BendKey, SliceFans)>,
+    /// The crust along the slice's cut for its strip, by epicentre, azimuth (f64 bits) and
+    /// whether it is the real crust.
+    crust_cut: Option<([u64; 4], Vec<CrustSample>)>,
     slice: SliceSettings,
     /// Virtual seismograph stations and their traces.
     traces: Traces,
@@ -334,7 +339,10 @@ impl SeismoApp {
         let stations = sim::parse_stations(STATIONS_BYTES).context("embedded stations.csv")?;
         let shown: Vec<Event> = events.shown().iter().map(|l| l.event.clone()).collect();
         let keys: Vec<EventKey> = events.shown().iter().map(|l| l.key).collect();
-        let sim = Simulation::new(table, model, dispersion, shown).context("ray tracer")?;
+        let crust = real_crust(&model).context("embedded crust1.bin")?;
+        let sim = Simulation::new(table, model, dispersion, shown)
+            .context("ray tracer")?
+            .with_crust(crust);
         let started = Instant::now();
         renderer
             .map
@@ -414,12 +422,14 @@ impl SeismoApp {
             }
         }
         //   --traces <list>     comma-separated: off, side (transverse), shared (one scale),
-        //                       <n>min (the window's length in minutes, as the slider allows)
+        //                       flatcrust (the 1D model's crust everywhere), <n>min (the
+        //                       window's length in minutes, as the slider allows)
         for flag in arg("--traces").unwrap_or_default().split(',') {
             match flag {
                 "off" => traces.show = false,
                 "side" => traces.component = Component::Transverse,
                 "shared" => traces.shared_scale = true,
+                "flatcrust" => traces.real_crust = false,
                 _ => {
                     if let Some(min) = flag.strip_suffix("min").and_then(|n| n.parse::<f64>().ok())
                     {
@@ -477,6 +487,7 @@ impl SeismoApp {
             mantle,
             fans: None,
             bent: None,
+            crust_cut: None,
             slice,
             traces,
             trace_style: render::TraceStyle::default(),
@@ -777,6 +788,9 @@ impl SeismoApp {
             ui.radio_value(&mut tr.shared_scale, false, "each row");
             ui.radio_value(&mut tr.shared_scale, true, "shared");
         });
+        ui.checkbox(&mut tr.real_crust, "real crust").on_hover_text(
+            "Arrival times include the real crust (CRUST1.0) under the quake, the station and              where a wave bounces off the surface: thin under oceans (early), thick under              mountains (late). Off: the same flat crust everywhere.",
+        );
         ui.add(
             egui::Slider::new(&mut tr.gain, 0.25..=20.0)
                 .logarithmic(true)
@@ -1798,9 +1812,34 @@ impl SeismoApp {
             kind: render::StrokeKind::Front,
             intensity: 1.0,
         });
+        // The crust strip: the real crust along the cut, or with the seismograms' real-crust
+        // switch off the 1D model's, which they then use.
+        if let Some(crust) = self.sim.crust() {
+            let (lat, lon) = (self.sim.events[sel].lat, self.sim.events[sel].lon);
+            let (az, real) = (self.slice.azimuth_deg, self.traces.real_crust);
+            let key = [lat.to_bits(), lon.to_bits(), az.to_bits(), u64::from(real)];
+            if self.crust_cut.as_ref().is_none_or(|(k, _)| *k != key) {
+                let samples = if real {
+                    crust.along(lat, lon, az)
+                } else {
+                    vec![crust.flat(); (180.0 / CUT_STEP_DEG).round() as usize + 1]
+                };
+                self.crust_cut = Some((key, samples));
+            }
+        }
+        let crust_strip = match (self.sim.crust(), &self.crust_cut) {
+            (Some(crust), Some((_, samples))) => Some(render::CrustStrip {
+                samples,
+                step_deg: CUT_STEP_DEG,
+                range_km: strip_range_km(crust),
+                reference_moho_km: crust.reference_moho_km(),
+            }),
+            _ => None,
+        };
         let slice_scene = render::SliceScene {
             source_depth_km: depth_km,
             boundaries: self.sim.boundaries(),
+            crust: crust_strip,
             layers: &layers,
             rock_shading,
         };
@@ -2348,7 +2387,7 @@ impl SeismoApp {
     fn slice_labels(&self, ui: &egui::Ui, rect: egui::Rect, labels: &[PhaseLabel]) {
         let pal = self.pal();
         let vp = self.renderer.slice_viewport();
-        let view = render::SliceView::new((vp.w, vp.h));
+        let view = render::SliceView::new((vp.w, vp.h), self.sim.crust().is_some());
         // Scene pixels to UI points.
         let to_ui = |p: [f32; 2]| self.scene_to_ui(rect, [p[0] + vp.x, p[1] + vp.y]);
         let at = |r_km: f64, delta_deg: f64| to_ui(view.project(r_km, delta_deg));
@@ -2404,6 +2443,40 @@ impl SeismoApp {
             }
         }
 
+        // The crust strip: what it is, how much it is stretched, and its depths.
+        if let Some(crust) = self.sim.crust() {
+            let range = strip_range_km(crust);
+            let y = |depth: f64| view.strip_y(depth, range).unwrap_or(0.0);
+            if let (Some([x0, y0, x1, _]), Some(stretch)) = (view.strip, view.strip_stretch(range))
+            {
+                let which = if self.traces.real_crust {
+                    "CRUST ALONG THE CUT"
+                } else {
+                    "CRUST ALONG THE CUT: FLAT (REAL CRUST OFF)"
+                };
+                text(
+                    to_ui([0.5 * (x0 + x1), y0 - 3.0]),
+                    egui::Align2::CENTER_BOTTOM,
+                    &format!("{which}  ·  DEPTH ×{stretch:.0}"),
+                    pal.dim,
+                );
+                let right = |depth: f64, s: &str| {
+                    text(
+                        to_ui([x1 + 4.0, y(depth)]),
+                        egui::Align2::LEFT_CENTER,
+                        s,
+                        pal.dim,
+                    );
+                };
+                right(0.0, "0 km");
+                right(
+                    crust.reference_moho_km(),
+                    &format!("{:.0} km", crust.reference_moho_km()),
+                );
+                right(range.1, &format!("{:.0} km", range.1));
+            }
+        }
+
         if self.slice.labels {
             for l in labels {
                 let p = at(l.at.r_km, l.at.delta_deg);
@@ -2422,6 +2495,13 @@ impl SeismoApp {
 struct TraceLabel {
     text: String,
     picks: Vec<(f32, &'static str)>,
+}
+
+/// Depths (km below sea level) the crust strip spans: the crust model's highest ground and
+/// deepest Moho, out to the next 5 km.
+fn strip_range_km(crust: &sim::crust::Crust) -> (f64, f64) {
+    let (top, bottom) = crust.extremes_km();
+    ((top / 5.0).floor() * 5.0, (bottom / 5.0).ceil() * 5.0)
 }
 
 fn phase_index(phase: RayPhase) -> usize {

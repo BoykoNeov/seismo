@@ -165,6 +165,8 @@ The slice is a cut through the Earth, like a slice of cake, from the quake's epi
 @desktop The **azimuth** slider turns the cut around the epicentre (north is 0, east is 90). **aim**, next to a station under Seismographs, turns it towards that station. With the [[mantle-control|3D mantle]] on, **rock** shades the mantle by how fast its rock is (brighter or blue for fast, dimmer or red for slow), and the rays bend through it. In a plain 1D Earth every direction looks the same, so turning the cut only moves its line on the map.
 @terminal **[ ]** turn the cut around the epicentre; its direction is drawn on the map.
 
+@desktop The strip under the slice shows the crust along the same cut, from the epicentre on the left to the antipode on the right, with its depth stretched: at the slice's scale the whole crust would be a few pixels thick. See [[crust]].
+
 === seismograms | The seismograms | screen
 Each row is the record a seismograph at one station would make: the ground's shaking over time, with the time of the quake (origin) at the left. Rows are sorted by distance, nearest at the top.
 
@@ -174,11 +176,13 @@ Each row is the record a seismograph at one station would make: the ground's sha
 - A wave can reach a station along several paths a few seconds apart, most often at stations where its rays bottom out near the transition zone. Each arrival gets a tick; only the first is named. See [[folds]].
 - A quake with a known fault sends its waves out unevenly, so the P pulse can swing up at one station and down at another. See [[fault]].
 - At nearby stations P and S come close together; far away they are minutes apart, and surface waves trail far behind. That gap is how seismologists measure distance: see [[locating]].
+- Arrival times include the real crust under the quake and under the station, thin under oceans and thick under mountains: see [[crust]].
 @desktop - **shaking: up-down** shows vertical motion (P waves, Rayleigh waves). **side-to-side** shows motion across the path (S waves polarised sideways, Love waves).
 @desktop - **scale: each row** makes every row fill its band, so faint far stations are visible; **shared** uses one scale for all, so you can compare sizes.
 @desktop - **gain** magnifies the wiggles; **window min** sets how many minutes of record are shown.
+@desktop - **real crust** switches the [[crust|real crust]] off and on, so you can watch each arrival move.
 @desktop - Add stations from the list, by clicking a triangle on the map, or by clicking an empty spot to place your own. Up to {max_traces} are shown.
-@terminal - **c** switches between up-down and side-to-side shaking, **s** between each row scaled and one shared scale, **d** picks default stations, **t** hides the traces. Click a station on the map to show or hide it.
+@terminal - **c** switches between up-down and side-to-side shaking, **s** between each row scaled and one shared scale, **d** picks default stations, **t** hides the traces, **f** switches the [[crust|real crust]] off and on. Click a station on the map to show or hide it.
 
 These traces are made by SEISMO, not recorded: each wave is drawn as a simple pulse with a plausible size and timing. They are right about when waves arrive, roughly right about which are big, and wrong in the details. Real seismograms are messier and richer. See [[simplified]] and [[stations]].
 
@@ -218,12 +222,13 @@ SEISMO can look like an old green-phosphor radar screen (CRT) or like a modern d
 SEISMO is built on real Earth models and real travel times, but it simplifies in places, and it says so. The full list, with what each costs, is docs/approximations.md in SEISMO's source.
 
 - **The Earth is a perfect sphere.** The real one is slightly flattened, which shifts arrival times by up to about a second.
-- **Wave times come from a standard Earth model** ({model}), the same in every direction, optionally nudged by a [[tomography|3D mantle model]]. Real local structure (thick crust, sediments, slabs) changes things more.
+- **Wave times come from a standard Earth model** ({model}), the same in every direction, optionally nudged by a [[tomography|3D mantle model]]. The seismograms add the [[crust|real crust]], as a correction to the times only. Other local structure, such as sinking slabs, is left out.
+- **The map and the slice keep the standard model's flat crust.** The real crust moves an arrival by a second or two, too little to see on them.
 - **Each quake is a point.** A great quake really breaks a fault hundreds of kilometres long over minutes.
 - **The fault's pattern is used for P and S waves only**, where it is known: the surface waves and the map's rings leave evenly in every direction, and the waves' sizes and signs are not changed where they bounce or convert. See [[fault]].
 - **The seismograms are synthetic**: plausible shapes and timings, not real recordings.
 - **Surface waves** follow the 1D model only, with a fixed source; the map shows where they are, not how strong.
-- **Waves trapped in the crust are left out.** Near a quake, real seismograms are often dominated by waves that run along inside the crust; SEISMO's crust is flat and the same everywhere, so it does not draw them. Where a wave arrives along several paths through the mantle, each arrival is drawn ([[folds]]), but ones only a moment apart show as one.
+- **Waves trapped in the crust are left out.** Near a quake, real seismograms are often dominated by waves that run along inside the crust; the standard model's crust is flat and the same everywhere, and the real crust only shifts arrival times, so SEISMO does not draw them. Where a wave arrives along several paths through the mantle, each arrival is drawn ([[folds]]), but ones only a moment apart show as one.
 - **No tsunami.** Impacts and quakes can carry a tsunami flag, but no ocean waves are modelled.
 @terminal - **The terminal version is 1D only**: no 3D mantle.
 
@@ -338,7 +343,7 @@ Seismologists draw the pattern as a **beach ball**: the lower half of a sphere r
 === interior | Inside the Earth | learn
 The Earth is layered like an onion: a thin rocky crust, a thick solid mantle, a liquid iron outer core and a solid iron inner core. Almost everything we know about these layers comes from seismic waves.
 
-- **Crust**: the outer shell, down to the Moho, at {moho_km} km in the {model} model (in reality much thinner under the oceans and thicker under mountains). Named after Andrija Mohorovičić, who found it from records of the 1909 Kupa Valley earthquake near Zagreb: some waves arrived earlier than expected, because they had dipped into faster rock below the crust.
+- **Crust**: the outer shell, down to the Moho, at {moho_km} km in the {model} model (in reality much thinner under the oceans and thicker under mountains: see [[crust]]). Named after Andrija Mohorovičić, who found it from records of the 1909 Kupa Valley earthquake near Zagreb: some waves arrived earlier than expected, because they had dipped into faster rock below the crust.
 - **Upper mantle**: hot solid rock, which nevertheless flows very slowly over millions of years. This slow flow, mantle convection, moves the tectonic plates.
 - **Transition zone**: between about {d410_km} and {d660_km} km, the mineral olivine changes into denser crystal structures under the growing pressure, and wave speeds jump at each change.
 - **Lower mantle**: down to the core-mantle boundary at {cmb_km} km, almost halfway to the centre.
@@ -349,6 +354,18 @@ The Earth's radius is {earth_radius_km} km; the core's is {core_radius_km} km, a
 
 ## The model SEISMO uses
 {model} (Kennett, Engdahl and Buland, 1995) is a standard reference Earth: wave speed and density as a function of depth only, averaged over the whole planet and tuned to fit millions of real arrival times. See [[tomography]] for the lumps it leaves out, and [[shadow|the shadow zone]] for how the core was discovered.
+
+=== crust | The crust: thin under oceans, thick under mountains | learn
+The crust is the thin rocky skin on top of the mantle, and it is far from even: about {crust_thin_km} km thick at its thinnest, under the oceans, and up to about {crust_thick_km} km under the highest mountains. Its rock is slower than the mantle's, so how thick it is changes when waves arrive.
+
+- The {model} model gives the whole Earth one crust, {moho_km} km thick. SEISMO's seismograms use the real one instead, from the {crust_model} model: the layers of sea, ice, sediment and rock in every square of a grid one degree across.
+- Through thin ocean crust a wave spends less time in slow rock and arrives early: a P wave going straight up through the thinnest crust gains about {crust_thin_p_s} s. Through the thickest it is about {crust_thick_p_s} s late. S waves, slower still in the crust, change more.
+- Every wave crosses the crust at least twice: under the quake (unless the quake is deeper than the crust) and under the station. Waves that bounce off the surface on the way, such as PP and SS, cross it twice more where they bounce, and so do the depth phases above the quake.
+- Soft sediments, kilometres deep in some basins, slow S waves most of all.
+@desktop - **real crust**, under Seismographs, switches it off and on. The strip under the slice shows the crust along the cut, its depth stretched; with the switch off it shows the flat crust the seismograms then use. The dashed line is the {model} model's Moho.
+@terminal - **f** switches it off and on.
+
+Only the timing changes. Real crust also rings and scatters waves, making seismograms longer and messier, and that SEISMO does not draw. The model is CRUST1.0 (Laske, Masters, Ma and Pasyanos, 2013). See [[simplified]].
 
 === rays | Why rays bend | learn
 Seismic waves bend as they travel, because their speed changes with depth. The rule is the same one that bends light in a lens or a mirage (Snell's law): a wave turns away from faster rock.
@@ -374,7 +391,7 @@ Wave speed jumps at the {d410_km} and {d660_km} km boundaries of the [[interior|
 ## What it tells us
 The times of the branches and the gaps between them depend on how deep the boundaries are and how big the jumps in speed are. Matching them in records from many stations is one of the main ways seismologists pin down the transition zone.
 
-The crust makes folds of its own, with waves that run along inside it. SEISMO's crust is a flat, featureless layer, so it leaves those out: see [[simplified]].
+The crust makes folds of its own, with waves that run along inside it. The standard model's crust is a flat, featureless layer, so SEISMO leaves those out: see [[simplified]].
 
 === phase-names | Reading phase names | learn
 Seismologists name each path a wave can take with letters, one for each leg of the journey. Once you know the code, a name like SKS or PKIKP reads like a route.
@@ -520,6 +537,7 @@ Short definitions of the words used in this guide.
 - **Focal mechanism**: which way a quake's fault runs and slipped, found from its waves. See [[fault]].
 - **Great circle**: the shortest path between two points on a sphere.
 - **Magnitude**: a quake's size on a logarithmic scale. See [[magnitude]].
+- **Crust**: the Earth's thin rocky outer layer, above the Moho. See [[crust]].
 - **Moho**: the base of the crust.
 - **Nodal plane**: a direction in which a quake's P wave is silent; one of the two is the fault.
 - **Origin time**: when the fault started to slip.
@@ -539,6 +557,7 @@ The numbers about the Earth in this guide are read from the model SEISMO simulat
 ## The models SEISMO uses
 - Kennett, Engdahl and Buland (1995), Constraints on seismic velocities in the Earth from traveltimes. Geophysical Journal International: the {model} model and its travel times.
 - Koelemeijer, Ritsema, Deuss and van Heijst (2016), SP12RTS: a degree-12 model of shear- and compressional-wave velocity for Earth's mantle. Geophysical Journal International: the [[mantle-control|3D mantle]].
+- Laske, Masters, Ma and Pasyanos (2013), Update on CRUST1.0: a 1-degree global model of Earth's crust. Geophysical Research Abstracts: the [[crust|real crust]].
 - Station list: the Global Seismographic Network, from the EarthScope station service. Events: the USGS earthquake catalogue (earthquake.usgs.gov).
 
 ## The history

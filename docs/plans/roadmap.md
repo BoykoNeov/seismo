@@ -162,6 +162,16 @@ crust. Work: a new asset plus generator script, a crustal time correction per st
 source in `sim`, slice shading of the Moho depth. Moderate effort; the map would keep the 1D
 crust (per-pixel crust corrections are a texture of their own, defer).
 
+**Done 2026-10-16.** `assets/crust1.bin` (1.4 MB, CRUST1.0 re-encoded without loss by
+`tools/gen_crust.py`); `sim::crust` moves every body-wave arrival on the seismograms by the
+change in vertical delay time through the real crust under the source, the station and any
+surface reflection, against ak135's (straight up, P from about 2 s early to 2 s late, S from 3 s
+early to 5 s late). On by default with a switch in both front ends. The map and the slice's
+rays keep the flat crust; the desktop slice gained a strip under the half-disc showing the crust
+along the cut, depth stretched (at true scale it is a few pixels, which the user saw and turned
+down). Not done: station elevations, water reverberations, the crust's effect on surface waves
+and on amplitudes.
+
 ## 3. Features that expand what the app is for
 
 ### 3.1 Real recorded waveforms beside the synthetic ones — recommended

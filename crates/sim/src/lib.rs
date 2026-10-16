@@ -5,6 +5,7 @@
 pub use tables;
 
 pub mod coast;
+pub mod crust;
 mod event;
 pub mod facts;
 mod geo;
