@@ -1981,12 +1981,14 @@ impl SeismoApp {
             let at = self.scene_to_ui(rect, [vp.x + vp.w - inset, vp.y + inset]);
             self.guide.corner(ui, at, topic);
         }
-        if let Some(header) = trace_header {
-            self.guide.corner(
-                ui,
-                header.right_center() + egui::vec2(16.0, 0.0),
-                "seismograms",
-            );
+        // After the header, but never past the column's edge (a narrow column cuts the header).
+        if let (Some(header), Some(vp)) = (trace_header, self.renderer.traces_viewport()) {
+            let edge = self
+                .scene_to_ui(rect, [vp.x + vp.w - inset, vp.y + inset])
+                .x;
+            let x = (header.right() + 16.0).min(edge);
+            self.guide
+                .corner(ui, egui::pos2(x, header.center().y), "seismograms");
         }
     }
 

@@ -6,9 +6,13 @@
 SEISMO shows how the shaking from an earthquake travels through and around the whole planet. Pick a quake (a live one, a famous one from the past, or one you make up) and watch its waves spread out on a world map, dive through a slice of the Earth, and arrive at seismograph stations as wiggly lines.
 
 ## The three pictures
-- **The world map** (top): the wave fronts spreading out over the surface. See [[map]].
-- **The slice** (below the map): a cut through the Earth from the quake to the far side of the world, with the waves moving through the mantle and the core. See [[slice]].
-- **The seismograms** (right): what seismographs at chosen stations would record. See [[seismograms]].
+- **The world map**: the wave fronts spreading out over the surface. See [[map]].
+- **The slice**: a cut through the Earth from the quake to the far side of the world, with the waves moving through the mantle and the core. See [[slice]].
+- **The seismograms**: what seismographs at chosen stations would record. See [[seismograms]].
+
+@desktop The map is at the top, the slice below it, and the seismograms on the right.
+
+@terminal **Tab** switches between the map and the slice; the seismograms are below them.
 
 @desktop The panel on the left holds the clock, the selected event and every setting. Each section has a **?** next to its name: click it for a short explanation, and follow its link for more. **F1** opens this guide at any time.
 
@@ -54,13 +58,20 @@ Each quake has its own "time since origin": how long ago its fault started to sl
 Why "live" shows waves already in flight: it takes a while for seismologists to locate a quake and publish it, so by the time a new event appears in the list its waves have usually travelled a long way. Replay it from its origin to see the start. See [[usgs]].
 
 === events | Choosing an event | start
-The event list holds the built-in example, recent quakes from the US Geological Survey (USGS), and any you kept or made. Click a line to select it; the map, slice and seismograms follow the selected event.
+The event list holds the built-in example, recent quakes from the US Geological Survey (USGS), and any you kept or made. The map, slice and seismograms follow the event you select.
+
+@desktop Click a line to select it.
+
+@terminal Move through the list with **↑ ↓** and press **Enter** to select.
 
 - Until you pick one yourself, SEISMO picks for you: the largest quake of the last few hours, and then every new quake of magnitude {follow_mag} or more as it comes in. Once you pick, it stops switching.
-- Selecting an event never moves the clock. To watch it from the start, use [[clock|replay from origin]].
-- The **min M** slider hides small events (default {default_min_mag}). Every listed event above it is drawn on the map at once, not just the selected one.
-- Marks at the start of a line: a star (*) for a past quake you picked from a search and kept, a plus (+) for an event you made, nothing for the live feed.
-- Events that are not earthquakes (quarry blasts, explosions, landslides) show their type in brackets.
+- Selecting an event never moves the clock. To watch it from the start, replay it from its origin: see [[clock]].
+- Small events are hidden below a minimum magnitude (default {default_min_mag}). Every listed event above it is drawn on the map at once, not just the selected one.
+@desktop - The **min M** slider sets the minimum magnitude.
+@terminal - **m** and **M** lower and raise the minimum magnitude.
+@desktop - Marks at the start of a line: a star (*) for a past quake you picked from a search and kept, a plus (+) for an event you made, nothing for the live feed.
+@terminal - Marks at the start of a line: a dot (●) for the selected event, an equals sign (=) for a past quake kept from a search, a plus (+) for an event you made. Searching and making events are done in the desktop app.
+@desktop - Events that are not earthquakes (quarry blasts, explosions, landslides) show their type in brackets.
 @desktop - Hover over a line for its exact time and place.
 
 The list is refreshed from USGS every minute while online, and a saved copy is used when offline. See [[usgs]].
@@ -116,7 +127,7 @@ The map shows the whole Earth flattened out, with each quake's waves spreading o
 ## The rings
 - The **P ring** (solid line) is where the first compressional wave is arriving at the surface right now. The **S ring** (dashed) is the slower shear wave. See [[body-waves]].
 - Behind each ring a fading trail shows where it was a moment ago.
-- The rings stop near {p_last_deg}° from the quake, about a quarter of the way round the world: beyond that the direct waves are blocked by the core. See [[shadow]].
+- The rings stop near {p_last_deg}° from the quake, a little more than a quarter of the way round the world: beyond that the direct waves are blocked by the core. See [[shadow]].
 - The rings speed up as they spread: waves reaching distant places have dived deep, where rock is faster. See [[rays]].
 @desktop - With the [[mantle-control|3D mantle]] on, the rings are nudged earlier over fast, cold rock and later over slow, hot rock, so they are no longer perfect circles.
 
@@ -142,7 +153,7 @@ The slice is a cut through the Earth, like a slice of cake, from the quake's epi
 - The lines inside are the boundaries between layers: the Moho (base of the crust), the {d410_km} and {d660_km} km boundaries in the mantle, the core-mantle boundary at {cmb_km} km, and the inner-core boundary at {icb_km} km. See [[interior]].
 - **Wave fronts**: P solid, S dashed, each labelled with its phase name (such as PcP, SKS or PKIKP). See [[phase-names]].
 - **Ray paths** (dotted): the paths individual bits of wave energy follow. Notice how they curve, and how they bend sharply at the core. See [[rays]].
-- Fainter copies of the fronts trail behind, showing where they were moments ago.
+@desktop - Fainter copies of the fronts trail behind, showing where they were moments ago.
 
 ## Things to watch for
 - S fronts stop at the core: the outer core is liquid and cannot carry shear waves.
@@ -169,13 +180,16 @@ Each row is the record a seismograph at one station would make: the ground's sha
 These traces are made by SEISMO, not recorded: each wave is drawn as a simple pulse with a plausible size and timing. They are right about when waves arrive, roughly right about which are big, and wrong in the details. Real seismograms are messier and richer. See [[simplified]] and [[stations]].
 
 === event-panel | The selected event | screen
-The block under the clock describes the selected quake: its size, place, time and depth, and how far its waves have travelled so far.
+The selected quake's details: its size, place, time and depth.
 
-- **M** and the magnitude type: Mw is moment magnitude; other types (mb, ml, md) are older ways of measuring. See [[magnitude]].
+@desktop They are in the block under the clock, with how far its waves have travelled so far.
+@terminal They are under SELECTED, below the event list; the top line shows the clock and the time since the quake's origin.
+
+- The magnitude and its type: Mw is moment magnitude; other types (mb, ml, md) are older ways of measuring. See [[magnitude]].
 - The place, the origin time in UTC, and the coordinates of the epicentre with the depth of the hypocentre. See [[earthquakes]].
-- The USGS code and whether seismologists have reviewed the solution yet ("reviewed") or it is still the automatic first guess.
-- **t**: seconds since the origin (negative before it).
-- **P** and **S**: how far, in degrees of arc, the direct P and S fronts have reached at the surface. One degree is about {km_per_deg} km. A dash means the wave has not started yet or has gone past the edge of its [[shadow|shadow zone]].
+- Whether seismologists have reviewed the solution yet ("reviewed") or it is still the automatic first guess.
+@desktop - **t**: seconds since the origin (negative before it).
+@desktop - **P** and **S**: how far, in degrees of arc, the direct P and S fronts have reached at the surface. One degree is about {km_per_deg} km. A dash means the wave has not started yet or has gone past the edge of its [[shadow|shadow zone]].
 
 === mantle-control | The 3D mantle | screen | desktop
 The basic Earth model is the same in every direction (1D: speed changes only with depth). The **3D mantle** adds the real Earth's lumps: rock that is slightly faster or slower than average, mapped by seismic tomography.
@@ -272,7 +286,7 @@ On the map, P is the solid ring and S the dashed one; at {far_deg}° P arrives a
 === surface-waves | Surface waves: Rayleigh and Love | learn
 Surface waves travel along the Earth's surface rather than through its interior. They are slower than P and S waves, but for shallow quakes they make the largest and longest shaking far from the source. There are two kinds, named after the physicists who predicted them.
 
-- **Rayleigh waves** (Lord Rayleigh, 1885) make the ground roll: each point moves in an ellipse, up and down and back and forth along the path, like a buoy on ocean swell. They show on the **up-down** seismograms.
+- **Rayleigh waves** (Lord Rayleigh, 1885) make the ground roll: each point moves in an ellipse, up and down and back and forth along the path. Near the surface the ellipse turns the opposite way to the water in an ocean wave. They show on the **up-down** seismograms.
 - **Love waves** (Augustus Love, 1911) shake the ground side to side, across the path. They are a little faster than Rayleigh waves and show on the **side-to-side** seismograms.
 
 ## Why they last so long: dispersion
@@ -398,7 +412,9 @@ Seismic tomography maps the inside of the Earth from millions of wave arrival ti
 - The differences are small, a few percent in wave speed, but with enough data they stand out clearly.
 
 ## In SEISMO
-The [[mantle-control|3D mantle]] uses SP12RTS, a model of both S and P speed in the mantle by Koelemeijer, Ritsema, Deuss and van Heijst (2016). Turn it on, set the slice's **rock** shading, and turn the cut to find the slabs and the slow regions; on the map, see the rings dent where they cross fast or slow rock.
+@desktop The [[mantle-control|3D mantle]] uses SP12RTS, a model of both S and P speed in the mantle by Koelemeijer, Ritsema, Deuss and van Heijst (2016). Turn it on, set the slice's **rock** shading, and turn the cut to find the slabs and the slow regions; on the map, see the rings dent where they cross fast or slow rock.
+
+@terminal The terminal version shows the plain 1D Earth only. The desktop app can add a 3D mantle, SP12RTS (Koelemeijer, Ritsema, Deuss and van Heijst, 2016), shade the slice by rock speed and bend the rays through it.
 
 === sources | Explosions, landslides, impacts and volcanoes | learn
 Earthquakes are not the only things that shake the planet. Each kind of source makes its own mix of waves, and seismologists use that mix to tell them apart.
@@ -418,7 +434,7 @@ Great undersea quakes, landslides and impacts can lift the sea floor and start a
 The live events come from the US Geological Survey (USGS), which collects quake detections from seismic networks around the world and publishes them within minutes.
 
 - SEISMO checks three USGS lists every minute: all quakes of the past hour, all of the past day, and the significant quakes of the past month.
-- A new quake usually appears a few minutes to about twenty minutes after its origin, longer for remote places. Its waves are already far along by then: use **Replay from origin**.
+- A new quake usually appears a few minutes to about twenty minutes after its origin, longer for remote places. Its waves are already far along by then: replay it from its origin (**Replay from origin** in the desktop app, **r** in the terminal).
 - The first solution is automatic. Seismologists then review it: location, depth and magnitude often change in the first hour, and an event can be merged with another network's report of the same quake or deleted. SEISMO follows each event through these changes.
 - Without the internet, SEISMO uses the copy it saved last time, so it always starts and works offline.
 
