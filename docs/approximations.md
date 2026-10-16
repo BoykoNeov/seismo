@@ -417,7 +417,10 @@ Seismographs; `f` in the terminal; on by default) turns the correction off.
   ray parameter. The diffracted waves (Pdiff, Sdiff) count as direct waves.
 - **Seas.** Water is never part of a column. A station sits on the solid ground of its cell: on
   an island whose 1° cell is mostly ocean that is the cell's average sea floor, with oceanic
-  crust under it (Hawaii's HON: P about 1.2 s early). A source is at its depth below sea level,
+  crust under it. 29 of the 73 bundled stations are in cells with some sea; on the small
+  islands in deep water (Midway, Wake, Rarotonga, Pitcairn, Ascension and a dozen more) P
+  arrives about 1.6–1.7 s early and S about 2 s early straight up, where the island's own
+  volcanic rock would make them later. A source is at its depth below sea level,
   moved down to the sea floor if it is shallower than the sea. The depth phases reflect off the
   sea floor, not the sea surface (no pwP), and nothing echoes in the water.
 - **Heights.** On land a column starts at its cell's average height (ETOPO1 binned by the model's
