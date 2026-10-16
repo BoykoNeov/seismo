@@ -16,9 +16,11 @@ use sim::seismogram::Component;
 use session::assets;
 use session::clock::{MAX_SPEED, MIN_SPEED, SimClock, secs};
 use session::events::{EventKey, EventList, Listed};
+use session::guide::{Front, Guide, Values};
 use session::made;
 use session::traces::Traces;
 
+use crate::guide::{GuideView, Outcome};
 use crate::map::{MapView, Projection};
 use crate::palette::Look;
 use crate::slice::SliceWorker;
@@ -56,6 +58,8 @@ pub struct Options {
     pub traces: bool,
     pub component: Component,
     pub shared_scale: bool,
+    /// Open the guide at this topic.
+    pub guide: Option<String>,
 }
 
 impl Default for Options {
@@ -71,6 +75,7 @@ impl Default for Options {
             traces: true,
             component: Component::Vertical,
             shared_scale: false,
+            guide: None,
         }
     }
 }
@@ -94,7 +99,9 @@ pub struct App {
     pub look: Look,
     /// The event list's cursor, by handle.
     pub cursor: u64,
+    /// The help overlay is up: the keys, or the guide.
     pub help: bool,
+    pub guide: GuideView,
     /// A note for the status line (e.g. why your events could not be read).
     pub message: Option<String>,
     /// Where the map was last drawn and its size in cells, for mouse picking.
@@ -151,6 +158,13 @@ impl App {
         traces.shared_scale = opts.shared_scale;
         let map = MapView::new(coast, sim.surface_waves().map_grid());
         let slice = SliceWorker::spawn(sim.tracer().clone());
+        let mut values = Values::new(sim.facts());
+        values.set("stations", traces.stations.len().to_string());
+        let mut guide =
+            GuideView::new(Guide::new(Front::Terminal, &values).map_err(anyhow::Error::msg)?);
+        if let Some(id) = &opts.guide {
+            guide.open_at(id);
+        }
         let mut app = Self {
             events_rev: events.rev(),
             traces_follow: u64::MAX - 1,
@@ -166,7 +180,8 @@ impl App {
             azimuth_deg: opts.azimuth_deg.rem_euclid(360.0),
             view: opts.view,
             look: opts.look,
-            help: false,
+            help: opts.guide.is_some(),
+            guide,
             message,
             map_area: None,
             quit: false,
@@ -268,16 +283,27 @@ impl App {
     pub fn key(&mut self, k: KeyEvent) {
         let shift = k.modifiers.contains(KeyModifiers::SHIFT);
         if self.help {
-            // Any key closes the help; q still quits.
-            self.help = false;
-            if !matches!(k.code, KeyCode::Char('q')) {
+            // q still quits; the overlay takes every other key (any key closes the key list).
+            if matches!(k.code, KeyCode::Char('q')) {
+                self.help = false;
+            } else {
+                if self.guide.key(k) == Outcome::Close {
+                    self.help = false;
+                }
                 return;
             }
         }
         match k.code {
             KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
             KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => self.quit = true,
-            KeyCode::Char('?') | KeyCode::Char('h') | KeyCode::F(1) => self.help = true,
+            KeyCode::Char('?') | KeyCode::Char('h') | KeyCode::F(1) => {
+                self.help = true;
+                self.guide.page = crate::guide::Page::Keys;
+            }
+            KeyCode::Char('g') => {
+                self.help = true;
+                self.guide.page = crate::guide::Page::Topics;
+            }
             KeyCode::Char(' ') => self.clock.set_playing(!self.clock.playing()),
             KeyCode::Char('+') | KeyCode::Char('=') => {
                 self.clock

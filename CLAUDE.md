@@ -15,7 +15,7 @@ seismo/               # = repo root
     tables/           # travel-time table + ak135 velocity model + SP12RTS 3D mantle: format, parsing, interpolation
     feed/             # USGS fetch/cache/parse (tokio + reqwest + serde)
     render/           # wgpu passes: map, slice, traces, CRT post-process
-    session/          # what a front end needs that is not drawing: clock, event list, made events, traces, embedded assets
+    session/          # what a front end needs that is not drawing: clock, event list, made events, traces, the guide's text, embedded assets
     app/              # eframe (wgpu backend) + egui shell, owns the clock, wires everything together
     tui/              # seismo-tui: the terminal version (ratatui): braille map, slice, traces, event list
   assets/
@@ -127,6 +127,16 @@ start with no dependence on the working directory.
   never writes them). Map, slice and traces are drawn on a braille canvas (2 × 4 dots a cell)
   per frame on the CPU, in the CRT or modern colours. `--dump <cols>x<rows> [--after s]
   [--ansi]` prints one frame without a terminal, for tests and screenshots.
+- Guide (decided 2026-10-16): help and teaching text in `session/src/guide.txt` (topics in three
+  parts: getting started, what you see, learn), parsed by `session::guide`, shared by both front
+  ends; blocks or topics tagged `@desktop`/`@terminal` show in one only. Every number about the
+  Earth in it is a `{placeholder}` filled from `sim::facts::ModelFacts` (read from the loaded
+  model and tables) and every app setting from its constant; a test rejects typed depths, speeds
+  and travel times. Desktop: a Guide window (header button, F1, `?` when not typing), a `?`
+  beside each section's name that unfolds the topic's opening paragraph, a `?` in each picture's
+  corner, and a welcome card on the first start only (marker file `welcomed` beside `made.json`;
+  never with `--capture`, `--capture-ui`, `--bench`, `--event`, `--guide` or `--no-welcome`).
+  `--guide <topic>` opens it at a topic. Terminal: `g`, or Tab from the key list; `--guide`.
 - The feed runs on a tokio runtime in its own thread and talks to the app via
   `crossbeam_channel`. The UI thread is synchronous.
 - Every new feature touching physics gets a unit test in `sim` or `tables`.

@@ -1,0 +1,473 @@
+// The guide's text. Markup and rules: see the top of guide.rs. Every number about the Earth is a
+// {placeholder} filled from the loaded model; a test rejects typed depths, speeds and times.
+// A topic opens with a short paragraph: it is what the ? glyphs show inline.
+
+=== welcome | Welcome to SEISMO | start
+SEISMO shows how the shaking from an earthquake travels through and around the whole planet. Pick a quake (a live one, a famous one from the past, or one you make up) and watch its waves spread out on a world map, dive through a slice of the Earth, and arrive at seismograph stations as wiggly lines.
+
+## The three pictures
+- **The world map** (top): the wave fronts spreading out over the surface. See [[map]].
+- **The slice** (below the map): a cut through the Earth from the quake to the far side of the world, with the waves moving through the mantle and the core. See [[slice]].
+- **The seismograms** (right): what seismographs at chosen stations would record. See [[seismograms]].
+
+@desktop The panel on the left holds the clock, the selected event and every setting. Each section has a **?** next to its name: click it for a short explanation, and follow its link for more. **F1** opens this guide at any time.
+
+@terminal The panel on the right lists the events; the line at the bottom shows the main keys. Press **?** for all the keys, and **Tab** in there to come back to this guide.
+
+## Where to go next
+- New here? Start with [[first-steps]].
+- Curious about what you are looking at? Read the topics under "What you see".
+- Want to understand the physics? The "Learn" topics explain earthquakes, seismic waves and what they reveal about the inside of the Earth, starting with [[earthquakes]].
+
+=== first-steps | Your first five minutes | start
+A quick tour: replay a famous quake, speed it up, and watch the three pictures together.
+
+@desktop - **Replay a quake.** The built-in example is the 2011 Tōhoku earthquake off Japan. Click **Replay from origin** (near the top left): the clock jumps to the moment the fault began to slip, and the waves start spreading.
+@desktop - **Speed it up.** Drag the **speed ×** slider to about 30. Real waves take many minutes to cross the planet; at 30× you see it in well under a minute.
+@desktop - **Scrub.** Drag the **s since origin** slider to move back and forth in time. Everything on screen is computed for that exact moment, so you can go backwards too.
+@desktop - **Watch the slice.** Below the map, waves leave the quake and dive into the Earth. P waves (solid lines) cross the liquid core; S waves (dashed) cannot.
+@desktop - **Watch the seismograms.** On the right, each row is a station, nearest at the top. A moving pen marks "now"; little ticks show when each wave is due.
+@desktop - **Pick another quake.** Open **Events** and click any line. The clock does not move, so click **Replay from origin** again to see its waves from the start, or **Live** to return to the present.
+@desktop - **Explore.** Hover over any control for a hint, or click a **?** for an explanation.
+
+@terminal - **Replay a quake.** The built-in example is the 2011 Tōhoku earthquake off Japan. Press **r**: the clock jumps to the moment the fault began to slip, and the waves start spreading.
+@terminal - **Speed it up.** Press **+** a few times. Real waves take many minutes to cross the planet; faster speeds show it in seconds. **0** returns to real speed.
+@terminal - **Step in time.** The arrow keys **← →** jump back and forth; with **shift**, by bigger steps.
+@terminal - **Watch the slice.** **Tab** switches the map for a slice through the Earth, where P waves (solid) cross the liquid core and S waves (dashed) cannot.
+@terminal - **Pick another quake.** Move in the event list with **↑ ↓** and press **Enter**. The clock does not move, so press **r** to replay it, or **n** to return to now.
+
+=== clock | Time and the clock | start
+Everything on screen is computed for one moment in time, shown in UTC (world time, no time zones). You can play, pause, speed up, jump back to a quake's start, or return to the present.
+
+Each quake has its own "time since origin": how long ago its fault started to slip. A wave's position depends only on that, so the picture is right at any speed and even when you go backwards. Before a quake's origin its time is negative and nothing shows yet.
+
+@desktop - **Play / Pause** starts and stops the clock.
+@desktop - **Replay from origin** jumps to the moment the selected quake began and plays.
+@desktop - **Live** jumps to the present at real speed. Waves from a quake a few minutes ago show where they really are right now.
+@desktop - **speed ×** runs the clock from {min_speed}× (slow motion) to {max_speed}× real time.
+@desktop - **s since origin** scrubs: drag it to any moment from just before the quake to long after.
+
+@terminal - **space** plays and pauses; **← →** step back and forth, **shift ← →** (or **< >**) in bigger steps.
+@terminal - **+ -** change the speed between {min_speed}× and {max_speed}×; **0** returns to real speed.
+@terminal - **r** replays the selected quake from its origin; **n** returns to now, live.
+
+Why "live" shows waves already in flight: it takes a while for seismologists to locate a quake and publish it, so by the time a new event appears in the list its waves have usually travelled a long way. Replay it from its origin to see the start. See [[usgs]].
+
+=== events | Choosing an event | start
+The event list holds the built-in example, recent quakes from the US Geological Survey (USGS), and any you kept or made. Click a line to select it; the map, slice and seismograms follow the selected event.
+
+- Until you pick one yourself, SEISMO picks for you: the largest quake of the last few hours, and then every new quake of magnitude {follow_mag} or more as it comes in. Once you pick, it stops switching.
+- Selecting an event never moves the clock. To watch it from the start, use [[clock|replay from origin]].
+- The **min M** slider hides small events (default {default_min_mag}). Every listed event above it is drawn on the map at once, not just the selected one.
+- Marks at the start of a line: a star (*) for a past quake you picked from a search and kept, a plus (+) for an event you made, nothing for the live feed.
+- Events that are not earthquakes (quarry blasts, explosions, landslides) show their type in brackets.
+@desktop - Hover over a line for its exact time and place.
+
+The list is refreshed from USGS every minute while online, and a saved copy is used when offline. See [[usgs]].
+
+=== search | Searching past quakes | start | desktop
+**Search past quakes** asks USGS for historical earthquakes: by a range of dates and a minimum magnitude, or one quake by its USGS event code.
+
+- Dates are UTC days written YYYY-MM-DD, both included. The largest quakes come first.
+- The default search finds the largest quakes on record: try it, then click one to watch it.
+- Clicking a result keeps it in your event list (marked with a star, and saved so it works offline) and replays it from its origin. **Forget** under the selected event removes it again.
+- A USGS event code (such as usp000hvnu for Tōhoku) looks up one quake. You find codes on the USGS earthquake pages.
+- Searching needs the internet; offline it fails at once with a message.
+
+Some quakes worth a look: the 1960 Chile earthquake (the largest ever recorded, magnitude 9.5), the 2004 Sumatra–Andaman earthquake, and the 2013 Sea of Okhotsk earthquake (code usb000h4jh), the largest deep earthquake ever recorded, which shows clear [[depth-phases|depth phases]].
+
+=== make | Making your own event | start | desktop
+**Make your own event** creates an earthquake, nuclear test, volcanic tremor, landslide or impact anywhere on Earth, at any depth its type allows, with any magnitude and time.
+
+- **Pick on map**, then click the map to set the place; or type latitude and longitude.
+- Each type has its own depth range and its own mix of waves: an explosion makes mostly P waves, an impact strong surface waves. See [[sources]].
+- **time** is UTC, written YYYY-MM-DD HH:MM:SS. Leave it empty to use the clock's time, so the waves start where the clock is now.
+- **Make new** adds it to the list (marked with a plus) and selects it. Making one never moves the clock: use **Replay from origin**.
+- Select one of your events to load it into the form; **Update** changes it, **Delete** (under the event) removes it. Your events are kept across restarts.
+
+Try it: put a magnitude 7 quake under your home town and watch when each wave would reach the stations around the world.
+
+=== keys | Mouse, keys and options | start | desktop
+Most of SEISMO is driven from the panel on the left. A few things are done on the pictures themselves.
+
+## Mouse
+- **Click a station** (a triangle on the map) to show or hide its seismogram. Hover over it to see its name.
+- **Click an empty spot on the map** to put your own station there (a diamond), when "click empty map: add a station" is ticked under Seismographs.
+- **Hover** over almost any control for a short hint.
+- The **?** glyphs explain each section; the ones in the corners of the pictures open the matching topic here.
+
+## Keys
+- **F1**, or **?** when you are not typing in a box: open or close this guide.
+- **Esc**: close the guide.
+
+## Starting options
+SEISMO also takes options when started from a command line, for example seismo --look modern. The main ones:
+- --look crt or --look modern: the look to start with.
+- --event code: select an event by its USGS code (it is looked up if needed), or made-n for one of yours.
+- --start-offset s: start that many seconds after the selected event's origin.
+- --speed x: the starting clock speed. --paused starts with the clock stopped.
+- --offline: no network; events come from the saved copy.
+- --mantle x: the 3D mantle's strength (0 turns it off).
+- --guide topic: open this guide at a topic on start.
+
+=== map | The world map | screen
+The map shows the whole Earth flattened out, with each quake's waves spreading over the surface as rings. Every listed event is drawn at its own moment, so you often see several sets of rings at once.
+
+## The rings
+- The **P ring** (solid line) is where the first compressional wave is arriving at the surface right now. The **S ring** (dashed) is the slower shear wave. See [[body-waves]].
+- Behind each ring a fading trail shows where it was a moment ago.
+- The rings stop near {p_last_deg}° from the quake, about a quarter of the way round the world: beyond that the direct waves are blocked by the core. See [[shadow]].
+- The rings speed up as they spread: waves reaching distant places have dived deep, where rock is faster. See [[rays]].
+@desktop - With the [[mantle-control|3D mantle]] on, the rings are nudged earlier over fast, cold rock and later over slow, hot rock, so they are no longer perfect circles.
+
+## The surface-wave bands
+- After the rings come broad bands: the **surface waves**, Rayleigh (a smooth glow) and Love (dotted). They travel along the surface, more slowly than the body waves but with the biggest shaking. See [[surface-waves]].
+- Each band shows where the wave train is, not how strong it is. A train spreads out as it goes, because its long waves outrun its short ones.
+- Fainter bands follow later: waves that went the long way round the planet.
+- Only quakes of magnitude {surface_map_mag} or more get bands; smaller ones make surface waves too weak to follow across the globe.
+
+## Other marks
+- **Triangles** are real seismograph stations of the Global Seismographic Network; **diamonds** are yours. Stations whose seismograms are shown are labelled. See [[stations]].
+- A **line from the selected quake** marks where [[slice|the slice]] cuts through the Earth.
+@desktop - Up to {map_cap} events are drawn at once: those whose body waves are still travelling first, largest first.
+- Why the rings look oval near the top and bottom: the flat map stretches the polar regions sideways, so a circle on the globe becomes an oval on the map.
+
+@desktop The **Map** section on the left sets line widths, trail length, grid, coastline and surface-band brightness.
+
+=== slice | The slice through the Earth | screen
+The slice is a cut through the Earth, like a slice of cake, from the quake's epicentre (left end) along one direction to the antipode, the point on the opposite side of the world (right end). It shows the waves moving through the inside of the planet.
+
+## What is drawn
+- The arc at the top is the surface; the numbers along it are degrees of distance from the quake.
+- The lines inside are the boundaries between layers: the Moho (base of the crust), the {d410_km} and {d660_km} km boundaries in the mantle, the core-mantle boundary at {cmb_km} km, and the inner-core boundary at {icb_km} km. See [[interior]].
+- **Wave fronts**: P solid, S dashed, each labelled with its phase name (such as PcP, SKS or PKIKP). See [[phase-names]].
+- **Ray paths** (dotted): the paths individual bits of wave energy follow. Notice how they curve, and how they bend sharply at the core. See [[rays]].
+- Fainter copies of the fronts trail behind, showing where they were moments ago.
+
+## Things to watch for
+- S fronts stop at the core: the outer core is liquid and cannot carry shear waves.
+- P fronts slow down and bend as they enter the core, which leaves a gap at the surface: [[shadow|the shadow zone]].
+- Fronts reflect off the core (PcP, ScS) and off the surface (PP, SS).
+- For a deep quake, waves leave upward too and bounce off the surface just above the source: [[depth-phases|the depth phases]].
+
+@desktop The **azimuth** slider turns the cut around the epicentre (north is 0, east is 90). **aim**, next to a station under Seismographs, turns it towards that station. With the [[mantle-control|3D mantle]] on, **rock** shades the mantle by how fast its rock is (brighter or blue for fast, dimmer or red for slow), and the rays bend through it. In a plain 1D Earth every direction looks the same, so turning the cut only moves its line on the map.
+@terminal **[ ]** turn the cut around the epicentre; its direction is drawn on the map.
+
+=== seismograms | The seismograms | screen
+Each row is the record a seismograph at one station would make: the ground's shaking over time, with the time of the quake (origin) at the left. Rows are sorted by distance, nearest at the top.
+
+- Each row is labelled with the station code, its distance from the quake in degrees, and its name.
+- The **pen** is "now": the trace is drawn up to it, so you watch the recording being made.
+- **Ticks** mark when each wave is due, labelled with its [[phase-names|phase name]] where there is room.
+- At nearby stations P and S come close together; far away they are minutes apart, and surface waves trail far behind. That gap is how seismologists measure distance: see [[locating]].
+@desktop - **shaking: up-down** shows vertical motion (P waves, Rayleigh waves). **side-to-side** shows motion across the path (S waves polarised sideways, Love waves).
+@desktop - **scale: each row** makes every row fill its band, so faint far stations are visible; **shared** uses one scale for all, so you can compare sizes.
+@desktop - **gain** magnifies the wiggles; **window min** sets how many minutes of record are shown.
+@desktop - Add stations from the list, by clicking a triangle on the map, or by clicking an empty spot to place your own. Up to {max_traces} are shown.
+@terminal - **c** switches between up-down and side-to-side shaking, **s** between each row scaled and one shared scale, **d** picks default stations, **t** hides the traces. Click a station on the map to show or hide it.
+
+These traces are made by SEISMO, not recorded: each wave is drawn as a simple pulse with a plausible size and timing. They are right about when waves arrive, roughly right about which are big, and wrong in the details. Real seismograms are messier and richer. See [[simplified]] and [[stations]].
+
+=== event-panel | The selected event | screen
+The block under the clock describes the selected quake: its size, place, time and depth, and how far its waves have travelled so far.
+
+- **M** and the magnitude type: Mw is moment magnitude; other types (mb, ml, md) are older ways of measuring. See [[magnitude]].
+- The place, the origin time in UTC, and the coordinates of the epicentre with the depth of the hypocentre. See [[earthquakes]].
+- The USGS code and whether seismologists have reviewed the solution yet ("reviewed") or it is still the automatic first guess.
+- **t**: seconds since the origin (negative before it).
+- **P** and **S**: how far, in degrees of arc, the direct P and S fronts have reached at the surface. One degree is about {km_per_deg} km. A dash means the wave has not started yet or has gone past the edge of its [[shadow|shadow zone]].
+
+=== mantle-control | The 3D mantle | screen | desktop
+The basic Earth model is the same in every direction (1D: speed changes only with depth). The **3D mantle** adds the real Earth's lumps: rock that is slightly faster or slower than average, mapped by seismic tomography.
+
+- **strength ×**: 0 is the plain 1D Earth, 1 is the published model (**Model** button), and above 1 the differences are exaggerated so they are easier to see; the app then says EXAGGERATED.
+- On the map, fronts arrive a little earlier over fast rock and later over slow rock.
+- In the slice, rays bend through the fast and slow rock, and the **rock** shading shows it.
+- The differences in the real Earth are only a few percent, so at strength 1 the changes are small: a few seconds on a journey of many minutes. That is real, and it is all seismologists need to map the inside of the planet.
+
+The model is SP12RTS (Koelemeijer and others, 2016). See [[tomography]].
+
+=== looks | The two looks | screen
+SEISMO can look like an old green-phosphor radar screen (CRT) or like a modern dark display. The physics is the same; only the colours change.
+
+- **CRT**: everything in one green, with brightness telling things apart; scanlines, glow, a curved glass and afterglow imitate an old cathode-ray tube.
+- **Modern**: P waves amber, S waves cyan, Rayleigh waves violet, Love waves pink; fast rock blue and slow rock red, as seismologists usually draw it.
+- In both looks P is a solid line, S a dashed one, and ray paths dotted.
+@desktop Switch with **look** at the top of the panel. Under **CRT**, each effect can be tuned or turned off.
+@terminal Press **l** to switch.
+
+=== simplified | What SEISMO simplifies | screen
+SEISMO is built on real Earth models and real travel times, but it simplifies in places, and it says so. The full list, with what each costs, is docs/approximations.md in SEISMO's source.
+
+- **The Earth is a perfect sphere.** The real one is slightly flattened, which shifts arrival times by up to about a second.
+- **Wave times come from a standard Earth model** ({model}), the same in every direction, optionally nudged by a [[tomography|3D mantle model]]. Real local structure (thick crust, sediments, slabs) changes things more.
+- **Each quake is a point.** A great quake really breaks a fault hundreds of kilometres long over minutes, and sends waves out unevenly in different directions.
+- **The seismograms are synthetic**: plausible shapes and timings, not real recordings.
+- **Surface waves** follow the 1D model only, with a fixed source; the map shows where they are, not how strong.
+- **Only the first arrival of each wave type** is drawn where a wave could arrive along several paths.
+- **No tsunami.** Impacts and quakes can carry a tsunami flag, but no ocean waves are modelled.
+@terminal - **The terminal version is 1D only**: no 3D mantle.
+
+=== earthquakes | What is an earthquake? | learn
+An earthquake is the sudden slip of rock on a fault, a crack in the Earth's crust. Rock on either side is slowly pushed by the movement of tectonic plates, bends a little, and holds, until the stress overcomes the friction and the fault snaps, releasing the stored energy as seismic waves.
+
+This idea, elastic rebound, came from Harry Fielding Reid's study of the 1906 San Francisco earthquake, published in 1910. Where the San Andreas fault crossed fences and roads they were found offset; a fence near Point Reyes was shifted by about two and a half metres.
+
+## Hypocentre and epicentre
+- The **hypocentre** (or focus) is where the rupture starts, underground.
+- The **epicentre** is the point on the surface directly above it. Maps, distances and the slice all start from the epicentre.
+- The **depth** is how far down the hypocentre is. Most quakes are shallow, within the crust; the deepest occur down to about {deepest_quake_km} km, in slabs of ocean floor sinking into the mantle. See [[where-quakes]].
+
+## How long it lasts
+A small quake breaks a patch of fault in a fraction of a second. A great one unzips a fault hundreds of kilometres long over minutes; the 2011 Tōhoku rupture lasted about two and a half to three minutes. SEISMO treats every quake as a point in space and time: see [[simplified]].
+
+## Other sources of seismic waves
+Explosions, landslides, volcanoes and meteorite impacts shake the ground too, each in its own way: see [[sources]].
+
+=== where-quakes | Where earthquakes happen | learn
+Most earthquakes happen where tectonic plates meet. On a map of live quakes, they outline the plates.
+
+- **Subduction zones**, where one plate dives under another, make the largest quakes (Chile, Alaska, Sumatra, Japan) and the deepest, down to about {deepest_quake_km} km along the sinking plate. The Pacific "Ring of Fire" is mostly subduction zones.
+- **Mid-ocean ridges**, where plates pull apart, make many shallow, moderate quakes along the middle of the oceans.
+- **Transform faults**, where plates slide past each other (the San Andreas fault, the North Anatolian fault) make shallow quakes that can be very damaging.
+- **Collisions** between continents (the Himalaya, Iran, Turkey) spread quakes over wide belts.
+- Quakes far from any plate boundary are rarer but happen, and volcanoes have their own swarms.
+
+Watch the USGS list over a day: you will see dozens of small quakes in California, Alaska and Hawaii (dense local networks record even tiny ones there) and a handful of larger ones around the Pacific.
+
+=== magnitude | Magnitude and energy | learn
+Magnitude measures the size of an earthquake on a logarithmic scale: each step up means about ten times larger wiggles on a seismogram and about 32 times more energy released. A magnitude 7 releases about a thousand times the energy of a magnitude 5.
+
+## Kinds of magnitude
+- **Mw, moment magnitude** (Hanks and Kanamori, 1979) is the standard today. It comes from the seismic moment: how stiff the rock is, times the area of fault that slipped, times how far it slipped. It does not saturate, so it works for the largest quakes.
+- **ml, local magnitude** is Charles Richter's original 1935 scale for California. "Richter scale" is often used loosely for any magnitude.
+- **mb, body-wave magnitude** uses the size of the P wave; **ms, surface-wave magnitude** the size of the surface waves. For very large quakes both stop growing ("saturate"), which is why Mw replaced them.
+- **md, duration magnitude** uses how long the shaking lasts, for small local quakes.
+
+## How often
+Small quakes are far more common than large ones: roughly ten times as many for each step down in magnitude (the Gutenberg–Richter law). Worldwide there are on average roughly fifteen to twenty quakes of magnitude 7 or more a year (the count swings widely from year to year), and about one of magnitude 8 or more. The largest ever recorded was the 1960 Chile earthquake, magnitude 9.5.
+
+## Magnitude is not shaking
+How strongly the ground shakes at a place (the intensity) depends on the magnitude, but also on the distance, the depth and the local ground. A moderate shallow quake under a city can do more damage than a great one far offshore.
+
+In SEISMO, magnitude sets how big the traces are and whether the map draws surface-wave bands (magnitude {surface_map_mag} and up).
+
+=== body-waves | P and S waves | learn
+Body waves travel through the inside of the Earth. There are two kinds: **P waves**, which push and pull the rock along their direction of travel, and **S waves**, which shake it sideways. P is always faster, so it arrives first: P for "primary", S for "secondary".
+
+## P waves: push and pull
+A P wave is a sound wave in rock: it squeezes and stretches the material in the direction it is going. It travels through solids, liquids and gases alike. Near the surface P travels at about {vp_surface} km/s in the {model} model, about {vp_upper_mantle} km/s just below the crust, and up to about {vp_lowest_mantle} km/s at the bottom of the mantle.
+
+## S waves: shear
+An S wave shakes the rock at right angles to its direction of travel, like a wave sent along a rope. It needs rock that resists being sheared, so it cannot travel through liquid. It is slower: about {vs_surface} km/s near the surface and {vs_lowest_mantle} km/s at the bottom of the mantle, a little more than half the speed of P.
+
+S waves shaking in the vertical plane are called SV, those shaking horizontally SH. The **side-to-side** seismograms show SH.
+
+## Why S is usually bigger
+An earthquake is two blocks of rock sliding past each other: a shearing motion, which radiates far more S energy than P. An explosion pushes outwards equally in all directions and makes mostly P. That difference helps tell nuclear tests from earthquakes: see [[sources]].
+
+## Seeing them in SEISMO
+On the map, P is the solid ring and S the dashed one; at {far_deg}° P arrives about {p90_min} minutes after the quake and S about {s90_min} minutes after. In the slice, watch the S front stop dead at the liquid outer core.
+
+=== surface-waves | Surface waves: Rayleigh and Love | learn
+Surface waves travel along the Earth's surface rather than through its interior. They are slower than P and S waves, but for shallow quakes they make the largest and longest shaking far from the source. There are two kinds, named after the physicists who predicted them.
+
+- **Rayleigh waves** (Lord Rayleigh, 1885) make the ground roll: each point moves in an ellipse, up and down and back and forth along the path, like a buoy on ocean swell. They show on the **up-down** seismograms.
+- **Love waves** (Augustus Love, 1911) shake the ground side to side, across the path. They are a little faster than Rayleigh waves and show on the **side-to-side** seismograms.
+
+## Why they last so long: dispersion
+Long surface waves reach deeper into the Earth, where rock is faster, so they travel faster than short ones. A surface-wave train therefore stretches out as it goes: long waves arrive first, short ones later. This is called dispersion. In SEISMO's model, over periods from {surface_period_min_s} to {surface_period_max_s} seconds, Rayleigh energy travels at {rayleigh_slow} to {rayleigh_fast} km/s and Love energy at {love_slow} to {love_fast} km/s.
+
+## Round the world
+Surface waves spread over the surface (a growing circle) instead of through the whole interior (a growing sphere), so they weaken more slowly with distance. After a great quake they circle the planet several times. R1 and L1 are the waves that took the short way to a station; R2 and L2 went the long way round, and arrive much later.
+
+## Depth matters
+A deep quake makes weak surface waves, because they are trapped near the surface, far from the source. Compare a shallow quake with a deep one on the seismograms.
+
+=== interior | Inside the Earth | learn
+The Earth is layered like an onion: a thin rocky crust, a thick solid mantle, a liquid iron outer core and a solid iron inner core. Almost everything we know about these layers comes from seismic waves.
+
+- **Crust**: the outer shell, down to the Moho, at {moho_km} km in the {model} model (in reality much thinner under the oceans and thicker under mountains). Named after Andrija Mohorovičić, who found it from records of the 1909 Kupa Valley earthquake near Zagreb: some waves arrived earlier than expected, because they had dipped into faster rock below the crust.
+- **Upper mantle**: hot solid rock, which nevertheless flows very slowly over millions of years. This slow flow, mantle convection, moves the tectonic plates.
+- **Transition zone**: between about {d410_km} and {d660_km} km, the mineral olivine changes into denser crystal structures under the growing pressure, and wave speeds jump at each change.
+- **Lower mantle**: down to the core-mantle boundary at {cmb_km} km, almost halfway to the centre.
+- **Outer core**: liquid iron and nickel, from {cmb_km} km down to {icb_km} km. Its churning makes the Earth's magnetic field. P waves slow down sharply on entering it (from about {vp_lowest_mantle} to {vp_outer_core} km/s) and S waves cannot enter at all.
+- **Inner core**: solid iron, {inner_core_radius_km} km in radius. It is hotter than the outer core but solid because of the enormous pressure. S waves can travel in it again (at about {vs_inner_core} km/s).
+
+The Earth's radius is {earth_radius_km} km; the core's is {core_radius_km} km, a little over half.
+
+## The model SEISMO uses
+{model} (Kennett, Engdahl and Buland, 1995) is a standard reference Earth: wave speed and density as a function of depth only, averaged over the whole planet and tuned to fit millions of real arrival times. See [[tomography]] for the lumps it leaves out, and [[shadow|the shadow zone]] for how the core was discovered.
+
+=== rays | Why rays bend | learn
+Seismic waves bend as they travel, because their speed changes with depth. The rule is the same one that bends light in a lens or a mirage (Snell's law): a wave turns away from faster rock.
+
+- Rock generally gets faster with depth, so a wave heading down gradually turns and curves back up to the surface. That is why the ray paths in the slice are curved arcs, bowed downward.
+- The farther a wave travels, the deeper it dives before turning. Deep rock is fast, so waves reaching distant stations cover more distance per second, and the rings on the map spread faster the farther out they are.
+- At a sharp boundary a wave splits: part **reflects**, part goes through (**refracts**), and part can **convert** between P and S. Each piece is a new "phase" with its own name: see [[phase-names]].
+- At the core, P slows down sharply, so rays bend steeply inward. This bending opens a gap in the waves reaching the surface: [[shadow|the shadow zone]].
+
+A **wave front** joins the points reached by a wave at the same moment. In the slice, SEISMO traces many rays and draws the fronts through them: the fronts are always at right angles to the rays.
+
+=== phase-names | Reading phase names | learn
+Seismologists name each path a wave can take with letters, one for each leg of the journey. Once you know the code, a name like SKS or PKIKP reads like a route.
+
+- **P**, **S**: a leg through the mantle (or crust) as a P or an S wave.
+- **K**: a P leg through the liquid outer core (from the German Kern, core).
+- **I**: a P leg through the inner core; **J** would be an S leg there.
+- **c**: a reflection off the core-mantle boundary; **i**: off the inner-core boundary.
+- **p**, **s** (lower case): a short upward leg from a deep source to the surface just above it.
+- **diff**: a wave diffracted, crawling along the core-mantle boundary.
+
+## The phases SEISMO shows
+- **P, S**: the direct waves.
+- **PcP, ScS**: reflected off the core.
+- **PP, SS**: bounced once off the surface halfway along.
+- **SKS**: down as S, through the outer core as P, back up as S.
+- **PKP** (also written P′): through the outer core. It comes in branches, ab and bc, along slightly different paths.
+- **PKIKP** (PKPdf): straight through the inner core; it reaches the antipode after about {pkikp180_min} minutes.
+- **Pdiff, Sdiff**: diffracted around the core into [[shadow|the shadow zone]].
+- **pP, sP**: [[depth-phases|the depth phases]], echoes off the surface above a deep source.
+
+=== shadow | The shadow zone and the core | learn
+Seen from a quake, there is a band of the world where direct P waves do not arrive: a shadow cast by the core. In SEISMO's model direct P reaches about {p_last_deg}° from the quake; PKP waves come back to the surface from about {pkp_first_deg}°. In between, only faint diffracted and inner-core waves arrive.
+
+## How the shadow forms
+P waves that just miss the core curve back up and arrive at the edge of the shadow. P waves that hit the core slow down abruptly and bend steeply, so they cross the core and come out much farther away. Nothing direct lands in between. Watch it in [[slice|the slice]].
+
+## The S shadow is bigger
+S waves cannot travel through the liquid outer core at all. Direct S stops at about {s_last_deg}°, and the whole far side of the planet gets no direct S. Only converted waves like SKS (crossing the core as P) get through.
+
+## How the core was discovered
+- **1906**: Richard Oldham noticed P waves arriving late and weak on the far side of the world, and proposed a core.
+- **1913–14**: Beno Gutenberg measured the depth of the core's edge from the travel times. His value was close to today's {cmb_km} km.
+- **1926**: Harold Jeffreys showed the core must be liquid: the whole Earth flexes under the tides more easily than its stiff mantle allows, so the core cannot be rigid. The missing S waves fit the same picture.
+- **1936**: Inge Lehmann noticed faint P waves arriving inside the shadow zone (in records of the 1929 Murchison earthquake in New Zealand, among others), and explained them with an **inner core** that bends waves back out. Within a few years the leading seismologists agreed; that the inner core is solid was confirmed decades later.
+
+Textbooks often quote slightly different edges for the shadow: they come from real recordings, where the diffracted waves keep faint P energy going a little farther.
+
+=== locating | Travel times and locating a quake | learn
+S waves are slower than P waves, so the farther a station is from a quake, the longer it waits for S after P arrives. Measure that gap, and you know the distance. With three or more stations you know where the quake was.
+
+## The S−P gap
+In SEISMO's model, from a surface quake:
+- at {near_deg}° away, P arrives after {p30_min} minutes and S after {s30_min} minutes: a gap of {sp30_min} minutes;
+- at {far_deg}° away, P arrives after {p90_min} minutes and S after {s90_min} minutes: a gap of {sp90_min} minutes.
+
+The gap grows steadily with distance, so it works like a ruler. Compare the nearest and farthest rows of the seismograms.
+
+## From distance to place
+One station gives a distance: the quake lies somewhere on a circle around it. A second station gives a second circle, crossing the first at two points; a third circle picks one. Modern locations use hundreds of stations at once, solving for latitude, longitude, depth and origin time together, and refining the answer as more data come in; that is why USGS locations change during the first hour. See [[usgs]].
+
+## Travel-time tables
+The tables that turn times into distances took decades to build: Jeffreys and Bullen's in 1940, then iasp91 and {model} in the 1990s. SEISMO's map is drawn from the {model} tables.
+
+=== depth-phases | Depth phases: how deep was it? | learn
+A deep quake sends waves upward as well as down. They bounce off the surface just above the source and then follow almost the same path as the direct P wave, arriving a little after it as an echo. These echoes, pP and sP, tell seismologists how deep the quake was.
+
+- **pP** leaves upward as P, reflects off the surface above the source, and travels on as P.
+- **sP** leaves upward as S and turns into P at that surface bounce.
+- The deeper the quake, the longer the trip up and down, so the larger the gap between P and pP. The gap barely changes with distance, which is what makes it a good depth gauge.
+- For a shallow quake the echo arrives almost with P and cannot be seen: most live quakes are too shallow to show it.
+
+@desktop Try it: under **Search past quakes**, look up code usb000h4jh, the 2013 Sea of Okhotsk earthquake, the largest deep earthquake ever recorded. In the slice, watch waves leave upward and bounce off the surface; on the seismograms, a second burst follows P.
+
+=== stations | Seismographs and stations | learn
+A seismograph records the ground's motion over time. Modern instruments are so sensitive that a large quake anywhere on Earth shows up on every one of them.
+
+- Inside, a mass on a spring (or held in place electronically) tends to stay still while the ground moves around it; the instrument records the difference.
+- A station records three directions: up-down, north-south and east-west. Seismologists often turn the two horizontal ones to face the quake: **radial** (towards it) and **transverse** (across). SEISMO's up-down and side-to-side traces are the vertical and the transverse.
+- The vertical shows P waves and Rayleigh waves best; the transverse shows SH waves and Love waves.
+
+## The Global Seismographic Network
+SEISMO's triangles are real stations of the Global Seismographic Network, run jointly by the US Geological Survey (network IU, from its Albuquerque Seismological Laboratory) and the US National Science Foundation (network II, operated by EarthScope), with partners worldwide. They are spread round the globe, many on islands and in remote places, so every quake is well recorded. SEISMO bundles {stations} of them, each named by a short code (such as ANMO, in Albuquerque, New Mexico).
+
+## Reading a seismogram
+- Before the first wave: quiet, apart from noise (wind, waves, traffic).
+- **P** arrives first, often small and sharp.
+- **S** follows, usually bigger.
+- The **surface waves** come last, with the largest and longest-lasting shaking at stations far from a shallow quake.
+- Far away, in [[shadow|the shadow zone]], direct P and S are missing, and core waves such as PKP and SKS arrive instead.
+
+=== tomography | Seeing inside: seismic tomography | learn
+Seismic tomography maps the inside of the Earth from millions of wave arrival times, much as a medical CT scan maps the inside of a body. Waves that arrive a little early travelled through fast rock; late ones through slow rock.
+
+- **Fast rock** is usually cold. The clearest examples are slabs of old ocean floor sinking through the mantle under Japan, South America and Indonesia, some reaching the bottom of the mantle.
+- **Slow rock** is usually hot: the rising mantle under mid-ocean ridges and hot spots such as Hawaii and Iceland.
+- At the base of the mantle lie two huge slow regions, under Africa and under the Pacific, each thousands of kilometres across. What they are made of is still debated.
+- The differences are small, a few percent in wave speed, but with enough data they stand out clearly.
+
+## In SEISMO
+The [[mantle-control|3D mantle]] uses SP12RTS, a model of both S and P speed in the mantle by Koelemeijer, Ritsema, Deuss and van Heijst (2016). Turn it on, set the slice's **rock** shading, and turn the cut to find the slabs and the slow regions; on the map, see the rings dent where they cross fast or slow rock.
+
+=== sources | Explosions, landslides, impacts and volcanoes | learn
+Earthquakes are not the only things that shake the planet. Each kind of source makes its own mix of waves, and seismologists use that mix to tell them apart.
+
+- **Explosions**, including nuclear tests, push outwards equally in all directions. They make strong P waves but weak S and surface waves, and they are always shallow. For the same P-wave size, an explosion's surface waves are much smaller than an earthquake's: one of the main ways a nuclear test is told from a quake. A worldwide network watches for them under the Comprehensive Nuclear-Test-Ban Treaty.
+- **Landslides** and rock avalanches push the ground slowly and at the surface: little P, strong long-period surface waves.
+- **Volcanic tremor** is long-lasting shaking from magma and gas moving underground, mostly shallow.
+- **Meteorite impacts** and large airbursts hit at or above the surface and make strong surface waves. The 2013 Chelyabinsk airburst in Russia was recorded by seismographs thousands of kilometres away.
+- USGS also lists **quarry blasts** and mining explosions, mostly small and in the daytime.
+
+@desktop In SEISMO, events from USGS show their reported type, and you can make each kind yourself under [[make|Make your own event]] to compare their seismograms.
+
+## Tsunamis
+Great undersea quakes, landslides and impacts can lift the sea floor and start a tsunami. Tsunamis cross oceans at the speed of a jet plane, far slower than seismic waves, which is what gives warning centres time to act. SEISMO marks events that may carry a tsunami but does not model the waves.
+
+=== usgs | Live data from USGS | learn
+The live events come from the US Geological Survey (USGS), which collects quake detections from seismic networks around the world and publishes them within minutes.
+
+- SEISMO checks three USGS lists every minute: all quakes of the past hour, all of the past day, and the significant quakes of the past month.
+- A new quake usually appears a few minutes to about twenty minutes after its origin, longer for remote places. Its waves are already far along by then: use **Replay from origin**.
+- The first solution is automatic. Seismologists then review it: location, depth and magnitude often change in the first hour, and an event can be merged with another network's report of the same quake or deleted. SEISMO follows each event through these changes.
+- Without the internet, SEISMO uses the copy it saved last time, so it always starts and works offline.
+
+The data are free and public: earthquake.usgs.gov has a page for every event, with maps, shaking reports and the scientific details.
+
+=== glossary | Glossary | learn
+Short definitions of the words used in this guide.
+
+- **Antipode**: the point on the exact opposite side of the Earth.
+- **Arrival**: the moment a wave reaches a station.
+- **Azimuth**: a direction, in degrees clockwise from north.
+- **Body waves**: waves through the Earth's interior, P and S. See [[body-waves]].
+- **Core-mantle boundary**: where the rocky mantle meets the liquid iron outer core.
+- **Degrees of distance**: distance measured as an angle at the Earth's centre; halfway round the world is the antipode. One degree is about {km_per_deg} km.
+- **Discontinuity**: a depth where wave speed jumps, such as the Moho.
+- **Dispersion**: waves of different lengths travelling at different speeds. See [[surface-waves]].
+- **Epicentre**: the point on the surface above where a quake starts. **Hypocentre**: the starting point itself, underground.
+- **Fault**: a fracture in the rock along which the two sides move.
+- **Great circle**: the shortest path between two points on a sphere.
+- **Magnitude**: a quake's size on a logarithmic scale. See [[magnitude]].
+- **Moho**: the base of the crust.
+- **Origin time**: when the fault started to slip.
+- **Phase**: one path a wave takes, named by its legs. See [[phase-names]].
+- **Ray**: the path a bit of wave energy follows. See [[rays]].
+- **Seismogram**: the record of the ground's shaking at a station.
+- **Shadow zone**: where direct waves do not reach because of the core. See [[shadow]].
+- **Surface waves**: waves trapped near the surface, Rayleigh and Love.
+- **Tomography**: mapping the inside of the Earth from wave arrival times. See [[tomography]].
+- **UTC**: Coordinated Universal Time, the world's reference clock, used everywhere in SEISMO.
+- **Wave front**: the line joining the points a wave has reached at the same moment.
+
+=== reading | Where these facts come from | learn
+The numbers about the Earth in this guide are read from the model SEISMO simulates. The history and statistics come from the published work below, which is worth reading for more.
+
+## The models SEISMO uses
+- Kennett, Engdahl and Buland (1995), Constraints on seismic velocities in the Earth from traveltimes. Geophysical Journal International: the {model} model and its travel times.
+- Koelemeijer, Ritsema, Deuss and van Heijst (2016), SP12RTS: a degree-12 model of shear- and compressional-wave velocity for Earth's mantle. Geophysical Journal International: the [[mantle-control|3D mantle]].
+- Station list: the Global Seismographic Network, from the EarthScope station service. Events: the USGS earthquake catalogue (earthquake.usgs.gov).
+
+## The history
+- Rayleigh (1885), On waves propagated along the plane surface of an elastic solid; Love (1911), Some Problems of Geodynamics: the two surface waves.
+- Oldham (1906), The constitution of the interior of the Earth, as revealed by earthquakes: the core.
+- Mohorovičić (1910), his study of the 1909 Kupa Valley earthquake: the Moho.
+- Reid (1910), in the State Earthquake Investigation Commission's report on the 1906 California earthquake: elastic rebound.
+- Lehmann (1936), P′: the inner core.
+- Richter (1935), An instrumental earthquake magnitude scale; Hanks and Kanamori (1979), A moment magnitude scale.
+- Jeffreys and Bullen (1940), Seismological Tables; Kennett and Engdahl (1991), iasp91.
+
+## Good places to read more
+- The USGS Earthquake Hazards Program (usgs.gov/programs/earthquake-hazards): magnitude, statistics and every event.
+- EarthScope Consortium (earthscope.org), formerly IRIS: teaching material, animations and live seismograms.
+- Any introductory seismology text, such as Stein and Wysession, An Introduction to Seismology, Earthquakes, and Earth Structure.

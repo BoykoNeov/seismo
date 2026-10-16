@@ -6,6 +6,7 @@ pub use tables;
 
 pub mod coast;
 mod event;
+pub mod facts;
 mod geo;
 pub mod mantle;
 pub mod raytrace;

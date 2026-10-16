@@ -5,6 +5,7 @@
 
 mod app;
 mod canvas;
+mod guide;
 mod map;
 mod palette;
 mod seismograms;
@@ -45,9 +46,10 @@ Options:
   --dump <cols>x<rows>  draw one frame that size as plain text to standard output, then quit
   --after <s>           with --dump: run this many real seconds first (default 3)
   --ansi                with --dump: in colour (24-bit terminal escape codes)
+  --guide <topic>       open the guide at a topic (e.g. map, shadow); `list` for the list
   --help                this text
 
-Keys: press ? in the program.";
+Keys: press ? in the program; g opens the guide (how to use it, and how seismic waves work).";
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -62,6 +64,7 @@ fn main() -> anyhow::Result<()> {
         event: arg("--event"),
         start_offset: arg("--start-offset").and_then(|s| s.parse().ok()),
         speed: arg("--speed").and_then(|s| s.parse().ok()),
+        guide: arg("--guide"),
         ..Options::default()
     };
     if arg("--look").as_deref() == Some("modern") {
@@ -264,6 +267,21 @@ mod tests {
         assert!(app.help);
         press(&mut app, KeyCode::Char('x'));
         assert!(!app.help && !app.quit);
+        // Tab in the key list goes to the guide; its keys stay in the overlay until Esc.
+        press(&mut app, KeyCode::Char('?'));
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.guide.page, guide::Page::Topic(1));
+        // Space pages the topic; the clock is not touched.
+        let playing = app.clock.playing();
+        press(&mut app, KeyCode::Char(' '));
+        assert!(app.help && app.clock.playing() == playing);
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.help && !app.quit);
+        press(&mut app, KeyCode::Char('g'));
+        assert!(app.help && app.guide.page == guide::Page::Topics);
         press(&mut app, KeyCode::Char('q'));
         assert!(app.quit);
     }

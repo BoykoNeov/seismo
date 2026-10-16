@@ -10,6 +10,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 use crate::app::{App, View};
 use crate::canvas::Canvas;
+use crate::guide::Page;
 use crate::map::MapScene;
 use crate::palette::{Ink, Palette};
 use crate::seismograms::{self, TraceScene};
@@ -74,7 +75,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_side(f, app, &pal, side);
     }
     if app.help {
-        draw_help(f, &pal, area);
+        match app.guide.page {
+            Page::Keys => draw_help(f, &pal, area),
+            Page::Topics | Page::Topic(_) => draw_guide(f, app, &pal, area),
+        }
     }
 }
 
@@ -223,6 +227,8 @@ fn header_line(app: &App, pal: &Palette) -> Line<'static> {
 
 fn footer_line(pal: &Palette) -> Line<'static> {
     let keys = [
+        ("?", "keys"),
+        ("g", "guide"),
         ("space", "pause"),
         ("←→", "±30s"),
         ("shift ←→", "±5min"),
@@ -232,7 +238,6 @@ fn footer_line(pal: &Palette) -> Line<'static> {
         ("↑↓ enter", "pick event"),
         ("tab", "map/slice"),
         ("[]", "cut"),
-        ("?", "help"),
         ("q", "quit"),
     ];
     let mut spans = vec![Span::raw(" ")];
@@ -350,7 +355,7 @@ fn detail_lines(app: &App, pal: &Palette) -> Vec<Line<'static>> {
 }
 
 fn draw_help(f: &mut Frame, pal: &Palette, area: Rect) {
-    let rows: [(&str, &str); 19] = [
+    let rows: [(&str, &str); 20] = [
         ("space", "play / pause"),
         ("← →", "back / forward 30 s"),
         ("shift ← →  < >", "back / forward 5 min"),
@@ -368,7 +373,8 @@ fn draw_help(f: &mut Frame, pal: &Palette, area: Rect) {
         ("s", "each trace scaled / one shared scale"),
         ("t", "hide / show the traces"),
         ("l", "CRT / modern look"),
-        ("? h F1", "this help"),
+        ("? h F1", "this list of keys"),
+        ("g", "the guide: how to use SEISMO, how seismic waves work"),
         ("q Esc", "quit"),
     ];
     let w = 64.min(area.width.saturating_sub(4));
@@ -393,7 +399,10 @@ fn draw_help(f: &mut Frame, pal: &Palette, area: Rect) {
         " P solid, S dashed; violet glow Rayleigh, dots Love (surface waves).",
         style(pal, Ink::Dim),
     ));
-    lines.push(Line::styled(" Any key closes this.", style(pal, Ink::Dim)));
+    lines.push(Line::styled(
+        " Tab: the guide. Any other key closes this.",
+        style(pal, Ink::Dim),
+    ));
     let block = Block::default()
         .title(" KEYS ")
         .borders(Borders::ALL)
@@ -401,6 +410,66 @@ fn draw_help(f: &mut Frame, pal: &Palette, area: Rect) {
         .style(Style::default().bg(pal.background()));
     f.render_widget(Clear, rect);
     f.render_widget(Paragraph::new(lines).block(block), rect);
+}
+
+/// The guide over the screen: the list of topics, or one topic to read.
+fn draw_guide(f: &mut Frame, app: &mut App, pal: &Palette, area: Rect) {
+    let w = 84.min(area.width.saturating_sub(2));
+    let h = area.height.saturating_sub(2);
+    let rect = Rect {
+        x: area.x + (area.width - w) / 2,
+        y: area.y + (area.height - h) / 2,
+        width: w,
+        height: h,
+    };
+    let block = Block::default()
+        .title(" GUIDE ")
+        .borders(Borders::ALL)
+        .border_style(style(pal, Ink::Accent))
+        .style(Style::default().bg(pal.background()));
+    let inner = block.inner(rect);
+    f.render_widget(Clear, rect);
+    f.render_widget(block, rect);
+    if inner.height < 2 || inner.width < 10 {
+        return;
+    }
+    // The text, and a line of keys at the bottom.
+    let rows = usize::from(inner.height - 1);
+    let g = &mut app.guide;
+    g.rows = rows;
+    let (lines, first, hint) = match g.page {
+        Page::Topic(i) => {
+            let lines = g.topic_lines(i, usize::from(inner.width) - 1, pal);
+            g.scroll = g.scroll.min(lines.len().saturating_sub(rows));
+            let more = if g.scroll + rows < lines.len() {
+                "↓ more  "
+            } else {
+                ""
+            };
+            let hint = format!(" {more}↑↓ PgDn scroll  n p next/prev  Esc back");
+            (lines, g.scroll, hint)
+        }
+        _ => {
+            let (lines, at) = g.list_lines(pal);
+            // The cursor in the middle, unless near either end.
+            let first = at
+                .saturating_sub(rows / 2)
+                .min(lines.len().saturating_sub(rows));
+            (
+                lines,
+                first,
+                " ↑↓ choose  Enter read  Tab keys  Esc close".to_owned(),
+            )
+        }
+    };
+    let shown: Vec<Line> = lines.into_iter().skip(first).take(rows).collect();
+    let [text_area, hint_area] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(inner);
+    f.render_widget(Paragraph::new(shown), text_area);
+    f.render_widget(
+        Paragraph::new(Line::styled(hint, style(pal, Ink::Dim))),
+        hint_area,
+    );
 }
 
 #[cfg(test)]

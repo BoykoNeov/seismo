@@ -3,6 +3,7 @@
 use chrono::{DateTime, Utc};
 
 use crate::event::Event;
+use crate::facts::ModelFacts;
 use crate::raytrace::{RayTraceError, RayTracer};
 use crate::slice::{Boundary, SliceFans, named_boundaries};
 use crate::surface::SurfaceWaves;
@@ -17,6 +18,7 @@ pub struct Simulation {
     tracer: RayTracer,
     surface: SurfaceWaves,
     boundaries: Vec<Boundary>,
+    facts: ModelFacts,
     pub events: Vec<Event>,
 }
 
@@ -66,11 +68,13 @@ impl Simulation {
         dispersion: Dispersion,
         events: Vec<Event>,
     ) -> Result<Self, RayTraceError> {
+        let facts = ModelFacts::new(&table, &model, &dispersion);
         Ok(Self {
             table,
             tracer: RayTracer::new(&model)?,
             surface: SurfaceWaves::new(dispersion),
             boundaries: named_boundaries(&model),
+            facts,
             events,
         })
     }
@@ -85,6 +89,11 @@ impl Simulation {
 
     pub fn surface_waves(&self) -> &SurfaceWaves {
         &self.surface
+    }
+
+    /// Numbers about the model and tables, for the guide.
+    pub fn facts(&self) -> &ModelFacts {
+        &self.facts
     }
 
     /// Named discontinuities of the velocity model (Moho, 410, 660, CMB, ICB).

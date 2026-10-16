@@ -3,6 +3,7 @@
 //! Allowed dependencies: everything in the workspace.
 
 mod bench;
+mod guide;
 mod mantle;
 
 use std::collections::HashMap;
@@ -18,9 +19,11 @@ use sim::slice::{PhaseLabel, SliceFans, SliceLine};
 use sim::tables::{Dispersion, EarthModel, TravelTimeTable};
 use sim::{EARTH_RADIUS_KM, Event, EventKind, RayPhase, Simulation, Wave, azimuth_deg};
 
+use guide::GuideUi;
 use mantle::{BendKey, CutKey, MantleWorker, Ready};
 use session::clock::{MAX_SPEED, MIN_SPEED, SimClock, secs};
 use session::events::{EventKey, EventList, FOLLOW_MIN_MAG, Listed};
+use session::guide::{Front, Guide, Values};
 use session::made::{self, MakeForm, TIME_FORMAT};
 use session::traces::{MAX_TRACES, Traces};
 
@@ -214,6 +217,8 @@ struct SeismoApp {
     map_cap: usize,
     /// `--bench <s>`: frame-time measurement, reported before quitting.
     bench: Option<bench::Bench>,
+    /// The guide window, the `?` glyphs and the welcome card.
+    guide: GuideUi,
 }
 
 impl SeismoApp {
@@ -425,6 +430,30 @@ impl SeismoApp {
                 .unwrap_or(5.0);
             bench::Bench::new(s, warmup, arg("--bench-out").map(Into::into))
         });
+        //   --guide <topic>     open the guide at that topic (e.g. map, slice, shadow)
+        //   --no-welcome        never show the first-start welcome card (nor do --capture,
+        //                       --capture-ui, --bench, --event and --guide)
+        //   --welcome           show it anyway (for screenshots)
+        let mut values = Values::new(sim.facts());
+        values.set("map_cap", map_cap.to_string());
+        values.set("stations", traces.stations.len().to_string());
+        let text = Guide::new(Front::Desktop, &values).map_err(|e| anyhow!("guide.txt: {e}"))?;
+        let automated = [
+            "--capture",
+            "--capture-ui",
+            "--bench",
+            "--event",
+            "--guide",
+            "--no-welcome",
+        ]
+        .iter()
+        .any(|f| flag(f));
+        let welcome = made_path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(|dir| dir.join("welcomed"))
+            .filter(|marker| flag("--welcome") || (!automated && !marker.exists()));
+        let guide = GuideUi::new(text, arg("--guide").as_deref(), welcome);
         let now = Instant::now();
         Ok(Self {
             sim,
@@ -466,6 +495,7 @@ impl SeismoApp {
             pending_size,
             map_cap,
             bench,
+            guide,
         })
     }
 
@@ -608,6 +638,37 @@ impl SeismoApp {
             self.fans = Some(fans);
         }
         self.fans.as_ref().expect("just built")
+    }
+
+    /// A collapsible section of the controls with a `?` beside its name, whose explanation
+    /// unfolds under the name. Returns whether the section is open.
+    fn section(
+        &mut self,
+        ui: &mut egui::Ui,
+        title: &str,
+        topic: &'static str,
+        default_open: bool,
+        body: impl FnOnce(&mut Self, &mut egui::Ui),
+    ) -> bool {
+        let id = ui.make_persistent_id(title);
+        let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
+            ui.ctx(),
+            id,
+            default_open,
+        );
+        let header = ui.horizontal(|ui| {
+            state.show_toggle_button(ui, egui::collapsing_header::paint_default_icon);
+            let name = egui::Label::new(egui::RichText::new(title).strong())
+                .selectable(false)
+                .sense(egui::Sense::click());
+            if ui.add(name).clicked() {
+                state.toggle(ui);
+            }
+            self.guide.glyph(ui, topic);
+        });
+        self.guide.note(ui, topic);
+        state.show_body_indented(&header.response, ui, |ui| body(self, ui));
+        state.is_open()
     }
 
     fn slice_controls(&mut self, ui: &mut egui::Ui) {
@@ -1149,6 +1210,18 @@ impl SeismoApp {
                 pal.dim,
                 format!("{:.0} fps", 1.0 / self.frame_time_s.max(1e-6)),
             );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .selectable_label(self.guide.open, "? Guide")
+                    .on_hover_text(
+                        "How to use SEISMO, what each picture shows, and how earthquakes and \
+                         seismic waves work (F1)",
+                    )
+                    .clicked()
+                {
+                    self.guide.open = !self.guide.open;
+                }
+            });
         });
         ui.horizontal(|ui| {
             ui.label("look:");
@@ -1163,7 +1236,11 @@ impl SeismoApp {
         let now = self.clock.now();
         // chrono has no one-decimal fraction specifier; append tenths by hand.
         let tenths = now.timestamp_subsec_millis() / 100;
-        ui.monospace(format!("{}.{tenths} UTC", now.format("%Y-%m-%d %H:%M:%S")));
+        ui.horizontal(|ui| {
+            ui.monospace(format!("{}.{tenths} UTC", now.format("%Y-%m-%d %H:%M:%S")));
+            self.guide.glyph(ui, "clock");
+        });
+        self.guide.note(ui, "clock");
 
         ui.horizontal(|ui| {
             let label = if self.clock.playing() {
@@ -1221,10 +1298,14 @@ impl SeismoApp {
         } else {
             format!("  {}", listed.usgs_type.to_uppercase())
         };
-        ui.label(
-            egui::RichText::new(format!("M{:.1} {}{kind}", event.magnitude, event.mag_type))
-                .strong(),
-        );
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(format!("M{:.1} {}{kind}", event.magnitude, event.mag_type))
+                    .strong(),
+            );
+            self.guide.glyph(ui, "event-panel");
+        });
+        self.guide.note(ui, "event-panel");
         ui.label(&listed.place);
         ui.monospace(format!("{} UTC", event.origin.format("%Y-%m-%d %H:%M:%S")));
         ui.monospace(format!(
@@ -1287,166 +1368,163 @@ impl SeismoApp {
         );
 
         ui.separator();
-        egui::CollapsingHeader::new("Events")
-            .default_open(!self.make_open)
-            .show(ui, |ui| self.event_controls(ui));
+        let make_open = self.make_open;
+        self.section(ui, "Events", "events", !make_open, Self::event_controls);
 
         ui.separator();
-        self.make_open = egui::CollapsingHeader::new("Make your own event")
-            .default_open(self.make_open)
-            .show(ui, |ui| self.make_controls(ui))
-            .body_returned
-            .is_some();
+        self.make_open = self.section(
+            ui,
+            "Make your own event",
+            "make",
+            make_open,
+            Self::make_controls,
+        );
 
         ui.separator();
-        egui::CollapsingHeader::new("Search past quakes")
-            .default_open(true)
-            .show(ui, |ui| self.search_controls(ui));
+        self.section(
+            ui,
+            "Search past quakes",
+            "search",
+            true,
+            Self::search_controls,
+        );
 
         ui.separator();
-        egui::CollapsingHeader::new("3D mantle")
-            .default_open(true)
-            .show(ui, |ui| self.mantle_controls(ui));
+        self.section(
+            ui,
+            "3D mantle",
+            "mantle-control",
+            true,
+            Self::mantle_controls,
+        );
 
         ui.separator();
         match self.look {
-            render::Look::Crt => self.crt_controls(ui),
-            render::Look::Modern => self.glow_controls(ui),
-        }
+            render::Look::Crt => self.section(ui, "CRT", "looks", true, Self::crt_controls),
+            render::Look::Modern => self.section(ui, "Glow", "looks", true, Self::glow_controls),
+        };
 
-        egui::CollapsingHeader::new("Seismographs")
-            .default_open(true)
-            .show(ui, |ui| self.trace_controls(ui));
-
-        egui::CollapsingHeader::new("Slice")
-            .default_open(true)
-            .show(ui, |ui| self.slice_controls(ui));
-
-        egui::CollapsingHeader::new("Map")
-            .default_open(false)
-            .show(ui, |ui| {
-                let s = &mut self.style;
-                ui.add(egui::Slider::new(&mut s.front_width_px, 1.0..=6.0).text("front px"));
-                ui.add(
-                    egui::Slider::new(&mut s.trail_s, 1.0..=300.0)
-                        .logarithmic(true)
-                        .text("trail s"),
-                );
-                ui.add(egui::Slider::new(&mut s.trail_strength, 0.0..=1.0).text("trail"));
-                ui.add(egui::Slider::new(&mut s.grid_brightness, 0.0..=1.0).text("grid"));
-                ui.add(egui::Slider::new(&mut s.coast_brightness, 0.0..=1.0).text("coast"));
-                ui.add(egui::Slider::new(&mut s.surface_brightness, 0.0..=1.0).text("surface"))
-                    .on_hover_text("Surface-wave bands; 0 hides them");
-                ui.checkbox(&mut s.coast_wide, "Wide coastlines")
-                    .on_hover_text(
-                        "Wider lines stay solid; thin ones are hatched by the scanlines",
-                    );
-            });
+        self.section(
+            ui,
+            "Seismographs",
+            "seismograms",
+            true,
+            Self::trace_controls,
+        );
+        self.section(ui, "Slice", "slice", true, Self::slice_controls);
+        self.section(ui, "Map", "map", false, |app, ui| {
+            let s = &mut app.style;
+            ui.add(egui::Slider::new(&mut s.front_width_px, 1.0..=6.0).text("front px"));
+            ui.add(
+                egui::Slider::new(&mut s.trail_s, 1.0..=300.0)
+                    .logarithmic(true)
+                    .text("trail s"),
+            );
+            ui.add(egui::Slider::new(&mut s.trail_strength, 0.0..=1.0).text("trail"));
+            ui.add(egui::Slider::new(&mut s.grid_brightness, 0.0..=1.0).text("grid"));
+            ui.add(egui::Slider::new(&mut s.coast_brightness, 0.0..=1.0).text("coast"));
+            ui.add(egui::Slider::new(&mut s.surface_brightness, 0.0..=1.0).text("surface"))
+                .on_hover_text("Surface-wave bands; 0 hides them");
+            ui.checkbox(&mut s.coast_wide, "Wide coastlines")
+                .on_hover_text("Wider lines stay solid; thin ones are hatched by the scanlines");
+        });
     }
 
     /// The modern look's only post-process: a soft glow around the bright fronts.
     fn glow_controls(&mut self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new("Glow")
-            .default_open(true)
-            .show(ui, |ui| {
-                let c = &mut self.post[render::Look::Modern.index()];
-                ui.checkbox(&mut c.bloom, "glow around bright lines");
-                ui.add_enabled(
-                    c.bloom,
-                    egui::Slider::new(&mut c.bloom_intensity, 0.0..=2.0).text("strength"),
-                );
-                ui.add_enabled(
-                    c.bloom,
-                    egui::Slider::new(&mut c.bloom_radius_px, 2.0..=24.0).text("radius px"),
-                );
-                ui.add_enabled(
-                    c.bloom,
-                    egui::Slider::new(&mut c.bloom_threshold, 0.0..=1.0).text("from brightness"),
-                )
-                .on_hover_text("Only parts brighter than this glow");
-            });
+        let c = &mut self.post[render::Look::Modern.index()];
+        ui.checkbox(&mut c.bloom, "glow around bright lines");
+        ui.add_enabled(
+            c.bloom,
+            egui::Slider::new(&mut c.bloom_intensity, 0.0..=2.0).text("strength"),
+        );
+        ui.add_enabled(
+            c.bloom,
+            egui::Slider::new(&mut c.bloom_radius_px, 2.0..=24.0).text("radius px"),
+        );
+        ui.add_enabled(
+            c.bloom,
+            egui::Slider::new(&mut c.bloom_threshold, 0.0..=1.0).text("from brightness"),
+        )
+        .on_hover_text("Only parts brighter than this glow");
     }
 
     fn crt_controls(&mut self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new("CRT")
-            .default_open(true)
-            .show(ui, |ui| {
-                let c = &mut self.post[render::Look::Crt.index()];
-                ui.checkbox(&mut c.enabled, "enabled (master)");
-                ui.add_enabled_ui(c.enabled, |ui| {
-                    ui.checkbox(&mut c.scanlines, "scanlines");
-                    ui.add_enabled(
-                        c.scanlines,
-                        egui::Slider::new(&mut c.scanline_intensity, 0.0..=1.0).text("depth"),
-                    );
-                    ui.add_enabled(
-                        c.scanlines,
-                        egui::Slider::new(&mut c.scanline_period_px, 2.0..=8.0).text("period px"),
-                    );
-                    ui.checkbox(&mut c.persistence, "persistence");
-                    ui.add_enabled(
-                        c.persistence,
-                        egui::Slider::new(&mut c.persistence_tau_s, 0.02..=3.0)
-                            .logarithmic(true)
-                            .text("decay s"),
-                    );
-                    ui.checkbox(&mut c.bloom, "bloom (glow)");
-                    ui.add_enabled(
-                        c.bloom,
-                        egui::Slider::new(&mut c.bloom_intensity, 0.0..=2.0).text("strength"),
-                    );
-                    ui.add_enabled(
-                        c.bloom,
-                        egui::Slider::new(&mut c.bloom_radius_px, 2.0..=24.0).text("radius px"),
-                    );
-                    ui.checkbox(&mut c.barrel, "barrel (curved glass)");
-                    ui.add_enabled(
-                        c.barrel,
-                        egui::Slider::new(&mut c.barrel_amount, 0.0..=0.2).text("bulge"),
-                    );
-                    ui.checkbox(&mut c.flicker, "flicker");
-                    ui.add_enabled(
-                        c.flicker,
-                        egui::Slider::new(&mut c.flicker_amount, 0.0..=0.2).text("amount"),
-                    );
-                    ui.checkbox(&mut c.hot_spots, "hot spots go pale")
-                        .on_hover_text(
-                            "The overbright core of a line whitens, as a saturated phosphor does",
-                        );
-                    ui.add_enabled(
-                        c.hot_spots,
-                        egui::Slider::new(&mut c.hot_spot_amount, 0.0..=2.0).text("amount"),
-                    );
-                    ui.checkbox(&mut c.vignette, "vignette (dim edges, rounded corners)");
-                    ui.add_enabled(
-                        c.vignette,
-                        egui::Slider::new(&mut c.vignette_amount, 0.0..=1.0).text("darkening"),
-                    );
-                    ui.add_enabled(
-                        c.vignette,
-                        egui::Slider::new(&mut c.corner_radius, 0.0..=0.15).text("corner radius"),
-                    );
-                    ui.checkbox(&mut c.noise, "signal noise");
-                    ui.add_enabled(
-                        c.noise,
-                        egui::Slider::new(&mut c.noise_amount, 0.0..=0.3).text("amount"),
-                    );
-                    ui.checkbox(&mut c.hum_bar, "hum bar (rolling band)");
-                    ui.add_enabled(
-                        c.hum_bar,
-                        egui::Slider::new(&mut c.hum_bar_amount, 0.0..=0.2).text("amount"),
-                    );
-                    ui.add_enabled(
-                        c.hum_bar,
-                        egui::Slider::new(&mut c.hum_bar_period_s, 2.0..=30.0).text("period s"),
-                    );
-                    ui.checkbox(&mut c.warm_up, "warm-up when switched on");
-                    ui.add_enabled(
-                        c.warm_up,
-                        egui::Slider::new(&mut c.warm_up_s, 0.2..=3.0).text("seconds"),
-                    );
-                });
-            });
+        let c = &mut self.post[render::Look::Crt.index()];
+        ui.checkbox(&mut c.enabled, "enabled (master)");
+        ui.add_enabled_ui(c.enabled, |ui| {
+            ui.checkbox(&mut c.scanlines, "scanlines");
+            ui.add_enabled(
+                c.scanlines,
+                egui::Slider::new(&mut c.scanline_intensity, 0.0..=1.0).text("depth"),
+            );
+            ui.add_enabled(
+                c.scanlines,
+                egui::Slider::new(&mut c.scanline_period_px, 2.0..=8.0).text("period px"),
+            );
+            ui.checkbox(&mut c.persistence, "persistence");
+            ui.add_enabled(
+                c.persistence,
+                egui::Slider::new(&mut c.persistence_tau_s, 0.02..=3.0)
+                    .logarithmic(true)
+                    .text("decay s"),
+            );
+            ui.checkbox(&mut c.bloom, "bloom (glow)");
+            ui.add_enabled(
+                c.bloom,
+                egui::Slider::new(&mut c.bloom_intensity, 0.0..=2.0).text("strength"),
+            );
+            ui.add_enabled(
+                c.bloom,
+                egui::Slider::new(&mut c.bloom_radius_px, 2.0..=24.0).text("radius px"),
+            );
+            ui.checkbox(&mut c.barrel, "barrel (curved glass)");
+            ui.add_enabled(
+                c.barrel,
+                egui::Slider::new(&mut c.barrel_amount, 0.0..=0.2).text("bulge"),
+            );
+            ui.checkbox(&mut c.flicker, "flicker");
+            ui.add_enabled(
+                c.flicker,
+                egui::Slider::new(&mut c.flicker_amount, 0.0..=0.2).text("amount"),
+            );
+            ui.checkbox(&mut c.hot_spots, "hot spots go pale")
+                .on_hover_text(
+                    "The overbright core of a line whitens, as a saturated phosphor does",
+                );
+            ui.add_enabled(
+                c.hot_spots,
+                egui::Slider::new(&mut c.hot_spot_amount, 0.0..=2.0).text("amount"),
+            );
+            ui.checkbox(&mut c.vignette, "vignette (dim edges, rounded corners)");
+            ui.add_enabled(
+                c.vignette,
+                egui::Slider::new(&mut c.vignette_amount, 0.0..=1.0).text("darkening"),
+            );
+            ui.add_enabled(
+                c.vignette,
+                egui::Slider::new(&mut c.corner_radius, 0.0..=0.15).text("corner radius"),
+            );
+            ui.checkbox(&mut c.noise, "signal noise");
+            ui.add_enabled(
+                c.noise,
+                egui::Slider::new(&mut c.noise_amount, 0.0..=0.3).text("amount"),
+            );
+            ui.checkbox(&mut c.hum_bar, "hum bar (rolling band)");
+            ui.add_enabled(
+                c.hum_bar,
+                egui::Slider::new(&mut c.hum_bar_amount, 0.0..=0.2).text("amount"),
+            );
+            ui.add_enabled(
+                c.hum_bar,
+                egui::Slider::new(&mut c.hum_bar_period_s, 2.0..=30.0).text("period s"),
+            );
+            ui.checkbox(&mut c.warm_up, "warm-up when switched on");
+            ui.add_enabled(
+                c.warm_up,
+                egui::Slider::new(&mut c.warm_up_s, 0.2..=3.0).text("seconds"),
+            );
+        });
     }
 
     fn scene(&mut self, ui: &mut egui::Ui, frame: &eframe::Frame, real_dt: f64) {
@@ -1869,10 +1947,11 @@ impl SeismoApp {
             return;
         }
         self.slice_labels(ui, rect, &labels);
-        if let Some(vp) = trace_vp {
-            self.trace_labels(ui, rect, vp, &layout, &trace_labels, &grid_times, from, to);
-        }
+        let trace_header = trace_vp.map(|vp| {
+            self.trace_labels(ui, rect, vp, &layout, &trace_labels, &grid_times, from, to)
+        });
         self.station_picking(ui, rect, &response);
+        self.picture_glyphs(ui, rect, trace_header);
         if self.style.mantle_strength > 1.0 {
             let map_h = self.renderer.map_viewport().h;
             ui.painter_at(rect).text(
@@ -1881,6 +1960,32 @@ impl SeismoApp {
                 format!("3D MANTLE EXAGGERATED ×{:.1}", self.style.mantle_strength),
                 self.font(13.0),
                 pal.text,
+            );
+        }
+    }
+
+    /// A `?` on each picture that opens its topic in the guide: in the top-right corner of the
+    /// map and the slice, and after the seismograms' header (`trace_header`, where it was
+    /// written), whose top-right corner is the CRT's rounded glass and crowded with labels.
+    fn picture_glyphs(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+        trace_header: Option<egui::Rect>,
+    ) {
+        let inset = 16.0 * ui.ctx().pixels_per_point();
+        for (vp, topic) in [
+            (self.renderer.map_viewport(), "map"),
+            (self.renderer.slice_viewport(), "slice"),
+        ] {
+            let at = self.scene_to_ui(rect, [vp.x + vp.w - inset, vp.y + inset]);
+            self.guide.corner(ui, at, topic);
+        }
+        if let Some(header) = trace_header {
+            self.guide.corner(
+                ui,
+                header.right_center() + egui::vec2(16.0, 0.0),
+                "seismograms",
             );
         }
     }
@@ -2009,7 +2114,7 @@ impl SeismoApp {
     }
 
     /// Text over the traces column: title, station names, phase names at their ticks, and the
-    /// time axis.
+    /// time axis. Returns where the title was written.
     #[allow(clippy::too_many_arguments)]
     fn trace_labels(
         &self,
@@ -2021,7 +2126,7 @@ impl SeismoApp {
         grid_times: &[f64],
         from: f64,
         to: f64,
-    ) {
+    ) -> egui::Rect {
         let pal = self.pal();
         let scale = rect.width() / self.renderer.size().0.max(1) as f32;
         let to_ui = |x: f32, y: f32| self.scene_to_ui(rect, [x + vp.x, y + vp.y]);
@@ -2038,7 +2143,7 @@ impl SeismoApp {
             "each row scaled"
         };
         let header = to_ui(layout.plot_x().0, 0.0);
-        painter.text(
+        let title = painter.text(
             header + egui::vec2(0.0, 3.0),
             egui::Align2::LEFT_TOP,
             format!("SEISMOGRAMS  {component}  {scaling}"),
@@ -2115,6 +2220,7 @@ impl SeismoApp {
                 pal.dim,
             );
         }
+        title
     }
 
     /// Text over the slice, drawn by egui on top of the scene (undistorted): distances along
@@ -2247,8 +2353,14 @@ impl eframe::App for SeismoApp {
             .frame(egui::Frame::new().fill(self.pal().background))
             .show(ui, |ui| self.scene(ui, frame, real_dt));
 
-        self.capture_window(ui.ctx());
-        ui.ctx().request_repaint();
+        let ctx = ui.ctx().clone();
+        let dim = self.pal().dim;
+        self.guide.keys(&ctx);
+        self.guide.window(&ctx, dim);
+        self.guide.welcome(&ctx, dim);
+
+        self.capture_window(&ctx);
+        ctx.request_repaint();
     }
 }
 

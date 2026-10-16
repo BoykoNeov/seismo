@@ -32,6 +32,11 @@ Two looks are available: a green-phosphor CRT (the default) and a modern dark on
     landslide or impact.
 - **Clock.** The clock is absolute UTC and can be paused, scrubbed, replayed from origin, or
   run at 0.1 to 1000 times real speed.
+- **Guide.** A built-in guide explains how to use the program and what each picture shows. It
+  also has short lessons on earthquakes, P, S and surface waves, the Earth's interior, the core's
+  shadow zone, magnitude, locating quakes and seismic tomography. Its numbers are read from the
+  Earth model the app simulates. Open it with the Guide button or F1. Every section of the
+  controls has a **?** that explains it in place. In the terminal version, press `g`.
 
 ## Terminal version
 
@@ -68,7 +73,7 @@ PMSA     149° ⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤Pdiff          SS                  
                                                                     │ Mw 9.1  earthquake  built-in
                                                                     │ 6 stations shown (click the
          min  0     10 ▲  20    30    40    50    60    70    80    │map to change)
- space pause  ←→ ±30s  shift ←→ ±5min  +- speed  r replay  n now  ↑↓ enter pick event  tab map/slice
+ ? keys  g guide  space pause  ←→ ±30s  shift ←→ ±5min  +- speed  r replay  n now  ↑↓ enter pick eve
 ```
 
 ## Building and running
@@ -126,7 +131,7 @@ The terminal version's flags are listed by `seismo-tui --help`.
 | `crates/sim` | The simulation and ray tracer: pure, deterministic, no GPU, no I/O, no threads |
 | `crates/feed` | USGS fetch, cache and parsing (tokio and reqwest, on its own thread) |
 | `crates/render` | The wgpu passes: map, slice, traces, CRT post-process |
-| `crates/session` | What a front end needs besides drawing: clock, event list, made events, traces, embedded assets |
+| `crates/session` | What a front end needs besides drawing: clock, event list, made events, traces, the guide's text, embedded assets |
 | `crates/app` | The desktop app (eframe and egui) |
 | `crates/tui` | The terminal app (ratatui) |
 
