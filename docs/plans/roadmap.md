@@ -124,6 +124,14 @@ phase. Work: generate the coefficients in `tools/gen_tables.py`, apply in `table
 source latitude, distance and azimuth. Small effort; the map shader would need the three
 coefficients per phase as uniforms or a tiny texture.
 
+**Done 2026-10-16**, differently in two places. Neither ObsPy nor TauP has a correction, so the
+coefficients come from EllipticiPy (Russell and others 2022), computed from ObsPy's ak135 ray
+paths by a new `tools/gen_ellipticity.py` into a separate `assets/ak135_ellip.bin` (25 km × 1°,
+1.3 MB) rather than a table format bump. It is applied in `sim` to the seismograms' times, not
+in the table lookup, and not on the map: there it would move the P and S rings by at most two
+thirds of a pixel. Teleseismic P moves by up to about 0.9 s, the slowest phases by up to about
+3.6 s. A guide topic explains it.
+
 ### 2.3 Later arrivals (triplications and multiple branches)
 
 Each table cell keeps only the first arrival of its phase, so the P and S triplications at

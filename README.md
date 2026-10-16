@@ -6,7 +6,8 @@ type. A cut through the Earth shows the rays bending through the mantle and core
 seismographs at real stations show the traces they would record.
 
 The waves come from the ak135 Earth model, optionally perturbed by the SP12RTS 3D mantle
-model, with dispersive surface waves; the seismograms add the real crust from CRUST1.0. Every shortcut is listed in
+model, with dispersive surface waves; the seismograms add the real crust from CRUST1.0 and the
+Earth's flattening. Every shortcut is listed in
 [docs/approximations.md](docs/approximations.md). The seismograms are display-plausible, not
 waveform-accurate, and the app says so.
 
@@ -29,7 +30,8 @@ Two looks are available: a green-phosphor CRT (the default) and a modern dark on
   radiation pattern: stronger in some directions, starting with a push or a pull, shown as a
   beach ball in the event panel. Arrival times include the real crust (CRUST1.0) under the
   quake, the station and where a wave bounces off the surface: thin ocean crust makes waves
-  early, thick mountain crust late. A strip under the slice shows the crust along the cut.
+  early, thick mountain crust late. A strip under the slice shows the crust along the cut. They
+  also include the Earth's flattening, which moves an arrival by up to a few seconds.
 - **Events.**
   - The live USGS feeds are polled every minute and work offline from a saved copy.
   - Past events can be searched by date and magnitude or by USGS id.
@@ -133,7 +135,7 @@ The terminal version's flags are listed by `seismo-tui --help`.
 
 | Crate | Role |
 |---|---|
-| `crates/tables` | Travel-time tables, the ak135 velocity model, dispersion curves, SP12RTS and CRUST1.0: formats and interpolation |
+| `crates/tables` | Travel-time tables, the ak135 velocity model, dispersion curves, SP12RTS, CRUST1.0 and the ellipticity coefficients: formats and interpolation |
 | `crates/sim` | The simulation and ray tracer: pure, deterministic, no GPU, no I/O, no threads |
 | `crates/feed` | USGS fetch, cache and parsing (tokio and reqwest, on its own thread) |
 | `crates/render` | The wgpu passes: map, slice, traces, CRT post-process |
@@ -166,6 +168,11 @@ each file's header records its source.
   1-degree global model of Earth's crust. *Geophys. Res. Abstracts*, 15, EGU2013-2658.
   Downloaded from igppweb.ucsd.edu/~gabi/crust1.html and re-encoded without loss by
   `tools/gen_crust.py`.
+- **Ellipticity.** The coefficients of the flattening correction for each ak135 phase, computed
+  with EllipticiPy (Russell, S., J. F. Rudge, J. C. E. Irving & S. Cottaar (2022). A
+  re-examination of ellipticity corrections for seismic phases. *Geophys. J. Int.*, 231(3),
+  2095–2101. doi:10.1093/gji/ggac315) by `tools/gen_ellipticity.py`, after Dziewonski, A. M. &
+  F. Gilbert (1976), *Geophys. J. R. astr. Soc.*, 44, 7–17.
 - **Stations.** Global Seismographic Network, FDSN networks IU and II, from the EarthScope FDSN
   station service, by `tools/gen_stations.py`.
 - **Coastlines.** Natural Earth 1:10m coastline (public domain), simplified by

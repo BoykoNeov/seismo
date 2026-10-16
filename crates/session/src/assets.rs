@@ -3,7 +3,10 @@
 
 use chrono::{TimeZone, Utc};
 use sim::crust::Crust;
-use sim::tables::{CrustModel, Dispersion, EarthModel, TableError, TravelTimeTable};
+use sim::ellipticity::Ellipticity;
+use sim::tables::{
+    CrustModel, Dispersion, EarthModel, EllipticityTable, TableError, TravelTimeTable,
+};
 use sim::{Event, EventKind, FocalMechanism};
 
 pub static TABLE: &[u8] = include_bytes!("../../../assets/ak135.tt");
@@ -12,6 +15,7 @@ pub static STATIONS: &[u8] = include_bytes!("../../../assets/stations.csv");
 pub static COAST: &[u8] = include_bytes!("../../../assets/coastlines.txt");
 pub static DISPERSION: &[u8] = include_bytes!("../../../assets/surface_dispersion.csv");
 pub static CRUST: &[u8] = include_bytes!("../../../assets/crust1.bin");
+pub static ELLIPTICITY: &[u8] = include_bytes!("../../../assets/ak135_ellip.bin");
 
 /// The travel-time table, velocity model and surface-wave dispersion, parsed.
 pub fn earth() -> Result<(TravelTimeTable, EarthModel, Dispersion), TableError> {
@@ -27,6 +31,11 @@ pub fn earth() -> Result<(TravelTimeTable, EarthModel, Dispersion), TableError> 
 pub fn crust(model: &EarthModel) -> Result<Crust, TableError> {
     Crust::new(CrustModel::from_bytes(CRUST)?, model)
         .ok_or_else(|| TableError::Crust("the velocity model has no Moho".into()))
+}
+
+/// The Earth's flattening: the ellipticity coefficients of the table's phases.
+pub fn ellipticity() -> Result<Ellipticity, TableError> {
+    Ok(Ellipticity::new(EllipticityTable::from_bytes(ELLIPTICITY)?))
 }
 
 /// The built-in example event, there with or without the feed: 2011 Tōhoku, with the fault

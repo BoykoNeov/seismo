@@ -176,7 +176,7 @@ Each row is the record a seismograph at one station would make: the ground's sha
 - A wave can reach a station along several paths a few seconds apart, most often at stations where its rays bottom out near the transition zone. Each arrival gets a tick; only the first is named. See [[folds]].
 - A quake with a known fault sends its waves out unevenly, so the P pulse can swing up at one station and down at another. See [[fault]].
 - At nearby stations P and S come close together; far away they are minutes apart, and surface waves trail far behind. That gap is how seismologists measure distance: see [[locating]].
-- Arrival times include the real crust under the quake and under the station, thin under oceans and thick under mountains: see [[crust]].
+- Arrival times include the real crust under the quake and under the station, thin under oceans and thick under mountains (see [[crust]]), and the Earth's flattening (see [[flattening]]).
 @desktop - **shaking: up-down** shows vertical motion (P waves, Rayleigh waves). **side-to-side** shows motion across the path (S waves polarised sideways, Love waves).
 @desktop - **scale: each row** makes every row fill its band, so faint far stations are visible; **shared** uses one scale for all, so you can compare sizes.
 @desktop - **gain** magnifies the wiggles; **window min** sets how many minutes of record are shown.
@@ -221,7 +221,7 @@ SEISMO can look like an old green-phosphor radar screen (CRT) or like a modern d
 === simplified | What SEISMO simplifies | screen
 SEISMO is built on real Earth models and real travel times, but it simplifies in places, and it says so. The full list, with what each costs, is docs/approximations.md in SEISMO's source.
 
-- **The Earth is a perfect sphere.** The real one is slightly flattened, which shifts arrival times by up to about a second.
+- **The map and the slice draw a perfect sphere.** The real Earth is slightly flattened; the seismograms correct their arrival times for it, by up to about {ellip_largest_s} s, but distances are measured on a sphere. See [[flattening]].
 - **Wave times come from a standard Earth model** ({model}), the same in every direction, optionally nudged by a [[tomography|3D mantle model]]. The seismograms add the [[crust|real crust]], as a correction to the times only. Other local structure, such as sinking slabs, is left out.
 - **The map and the slice keep the standard model's flat crust.** The real crust moves an arrival by a second or two, too little to see on them.
 - **Each quake is a point.** A great quake really breaks a fault hundreds of kilometres long over minutes.
@@ -366,6 +366,16 @@ The crust is the thin rocky skin on top of the mantle, and it is far from even: 
 @terminal - **f** switches it off and on.
 
 Only the timing changes. Real crust also rings and scatters waves, making seismograms longer and messier, and that SEISMO does not draw. The model is CRUST1.0 (Laske, Masters, Ma and Pasyanos, 2013). See [[simplified]].
+
+=== flattening | The Earth is not quite round | learn
+The Earth spins once a day, and the spin makes it bulge at the equator: it is a little wider there than from pole to pole, and the layers inside it are flattened the same way. A wave crossing a flattened Earth takes slightly more or less time than it would in a perfect sphere, depending on where the quake is and which way the wave goes.
+
+- Waves running along the equator, where the Earth is widest, have further to go and arrive late; waves crossing near the poles arrive early.
+- For a P wave at a station {near_deg} to {far_deg} degrees away it is up to about {ellip_p_s} s either way. Waves that spend longer inside the Earth, such as those through the core or bouncing off it, change more: up to about {ellip_largest_s} s.
+- That is small next to a journey of many minutes, but larger than the precision of a good arrival-time reading, so seismologists always correct for it.
+- SEISMO's seismograms correct every body wave's arrival time for it, with coefficients worked out for the {model} model. The map and the slice keep a perfect sphere: on them the difference is smaller than a pixel.
+
+The coefficients come from EllipticiPy (Russell, Rudge, Irving and Cottaar, 2022), following the method of Dziewonski and Gilbert (1976). See [[simplified]].
 
 === rays | Why rays bend | learn
 Seismic waves bend as they travel, because their speed changes with depth. The rule is the same one that bends light in a lens or a mirage (Snell's law): a wave turns away from faster rock.
@@ -558,6 +568,7 @@ The numbers about the Earth in this guide are read from the model SEISMO simulat
 - Kennett, Engdahl and Buland (1995), Constraints on seismic velocities in the Earth from traveltimes. Geophysical Journal International: the {model} model and its travel times.
 - Koelemeijer, Ritsema, Deuss and van Heijst (2016), SP12RTS: a degree-12 model of shear- and compressional-wave velocity for Earth's mantle. Geophysical Journal International: the [[mantle-control|3D mantle]].
 - Laske, Masters, Ma and Pasyanos (2013), Update on CRUST1.0: a 1-degree global model of Earth's crust. Geophysical Research Abstracts: the [[crust|real crust]].
+- Russell, Rudge, Irving and Cottaar (2022), A re-examination of ellipticity corrections for seismic phases. Geophysical Journal International: the [[flattening|Earth's flattening]], after Dziewonski and Gilbert (1976), The effect of small, aspherical perturbations on travel times and a re-examination of the corrections for ellipticity.
 - Station list: the Global Seismographic Network, from the EarthScope station service. Events: the USGS earthquake catalogue (earthquake.usgs.gov).
 
 ## The history

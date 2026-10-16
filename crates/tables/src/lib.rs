@@ -1,16 +1,18 @@
 //! `tables`: the ak135 travel-time table, velocity model and surface-wave dispersion, the
-//! SP12RTS 3D mantle perturbations and the CRUST1.0 crust — file formats, parsing,
-//! interpolation.
+//! SP12RTS 3D mantle perturbations, the CRUST1.0 crust and the ellipticity coefficients — file
+//! formats, parsing, interpolation.
 //! Allowed dependencies: serde, serde_json, thiserror, bytemuck. No GPU, no network, no threads.
 
 mod crust;
 mod dispersion;
+mod ellipticity;
 mod mantle;
 mod model;
 mod table;
 
 pub use crust::{CRUST_FORMAT_VERSION, CRUST_MAGIC, CrustColumn, CrustLayer, CrustModel};
 pub use dispersion::{Dispersion, SurfaceWave};
+pub use ellipticity::{ELLIP_FORMAT_VERSION, ELLIP_MAGIC, EllipticityTable};
 pub use mantle::{MantleModel, SPH_R_BOTTOM_KM, SPH_R_TOP_KM, SphModel};
 pub use model::{EarthModel, ModelPoint};
 pub use table::{Arrival, Axis, FORMAT_VERSION, GPU_MISSING, MAGIC, TravelTimeTable};

@@ -238,6 +238,10 @@ impl Values {
                 num((c.thickest_p_s.abs() * 10.0).round() / 10.0),
             );
         }
+        if let Some(e) = &f.ellipticity {
+            v.set("ellip_p_s", num((e.largest_p_s * 10.0).round() / 10.0));
+            v.set("ellip_largest_s", num((e.largest_s * 10.0).round() / 10.0));
+        }
         v.set(
             "deepest_quake_km",
             km(EventKind::Earthquake.profile().max_depth_km),
@@ -558,6 +562,7 @@ mod tests {
         let (table, model, dispersion) = crate::assets::earth().unwrap();
         let mut facts = ModelFacts::new(&table, &model, &dispersion);
         facts.add_crust(&crate::assets::crust(&model).unwrap());
+        facts.add_ellipticity(&crate::assets::ellipticity().unwrap());
         let mut v = Values::new(&facts);
         // What the front ends add.
         v.set("map_cap", "32");

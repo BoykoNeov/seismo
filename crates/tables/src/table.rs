@@ -33,7 +33,7 @@ impl Axis {
     }
 
     /// Lower cell index and fraction in [0, 1] for `x`, or `None` outside the axis.
-    fn locate(&self, x: f64) -> Option<(usize, f64)> {
+    pub(crate) fn locate(&self, x: f64) -> Option<(usize, f64)> {
         let u = (x - self.start) / self.step;
         let last = (self.count - 1) as f64;
         // Small tolerance so an exact end value is not rejected by rounding.

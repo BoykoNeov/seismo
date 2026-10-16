@@ -287,6 +287,7 @@ mod tests {
         let (table, model, dispersion) = session::assets::earth().unwrap();
         let mut facts = sim::facts::ModelFacts::new(&table, &model, &dispersion);
         facts.add_crust(&session::assets::crust(&model).unwrap());
+        facts.add_ellipticity(&session::assets::ellipticity().unwrap());
         let mut values = Values::new(&facts);
         values.set("stations", "73");
         let v = GuideView::new(Guide::new(Front::Terminal, &values).unwrap());

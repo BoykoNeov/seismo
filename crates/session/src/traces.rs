@@ -284,6 +284,7 @@ impl Traces {
                         grid,
                         strength,
                         crust,
+                        sim.ellipticity(),
                         sim.surface_waves(),
                     )
                     .into_iter()

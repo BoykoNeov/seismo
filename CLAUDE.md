@@ -12,7 +12,7 @@ seismo/               # = repo root
   Cargo.toml          # workspace
   crates/
     sim/              # pure simulation core + ray tracer. NO rendering, NO async, NO I/O.
-    tables/           # travel-time table + ak135 velocity model + SP12RTS 3D mantle + CRUST1.0 crust: format, parsing, interpolation
+    tables/           # travel-time table + ak135 velocity model + SP12RTS 3D mantle + CRUST1.0 crust + ellipticity coefficients: format, parsing, interpolation
     feed/             # USGS fetch/cache/parse (tokio + reqwest + serde)
     render/           # wgpu passes: map, slice, traces, CRT post-process
     session/          # what a front end needs that is not drawing: clock, event list, made events, traces, the guide's text, embedded assets
@@ -26,6 +26,7 @@ seismo/               # = repo root
     coastlines.txt    # Natural Earth 1:10m coastline, simplified (generated, committed, provenance in header)
     surface_dispersion.csv # Rayleigh + Love phase/group velocity vs period from ak135 (generated, committed, provenance in header)
     crust1.bin        # CRUST1.0 crust, re-encoded without loss (generated, committed, provenance in its JSON header)
+    ak135_ellip.bin   # ellipticity coefficients per phase, depth and distance (generated, committed, provenance in its JSON header)
     shaders/          # WGSL
   tools/
     gen_tables.py     # ObsPy script that produces both ak135 assets
@@ -33,7 +34,8 @@ seismo/               # = repo root
     gen_coastlines.py # Natural Earth download + simplification that produces coastlines.txt (stdlib only)
     gen_dispersion.py # disba (Earth-flattened ak135) script that produces surface_dispersion.csv
     gen_crust.py      # CRUST1.0 download + re-encoding that produces crust1.bin (stdlib only)
-    requirements.txt  # pinned obspy and disba versions
+    gen_ellipticity.py # EllipticiPy script that produces ak135_ellip.bin (imports gen_tables' phase choice)
+    requirements.txt  # pinned obspy, disba and ellipticipy versions
   docs/
     approximations.md
   CLAUDE.md
@@ -62,8 +64,8 @@ start with no dependence on the working directory.
 - Azimuth: degrees clockwise from north.
 - Great-circle distance: spherical Earth, geographic latitude used directly on
   the sphere (same convention as ObsPy `locations2degrees`), computed with the
-  atan2 form so it is stable from 0° to 180°. Ellipticity is ignored (see
-  `docs/approximations.md`).
+  atan2 form so it is stable from 0° to 180°. Ellipticity is ignored in distances (see
+  `docs/approximations.md`); the seismograms' times are corrected for it (see Architecture).
 - Sim time: the clock is absolute UTC. Per-event time `t = now - origin` in
   `f64` seconds, and may be negative (event not yet occurred). The GPU only
   ever receives per-event `t` (as f32), never absolute times.
@@ -98,6 +100,13 @@ start with no dependence on the working directory.
   `--traces flatcrust`; terminal `f`). The table, the tracer, the map and the slice's rays keep
   the flat crust; the desktop slice shows the crust along the cut as a depth-stretched strip
   under the half-disc (the user chose it over true scale, which is a few pixels).
+- Earth's flattening (decided 2026-10-16, `sim::ellipticity`): the seismograms' body-wave times
+  get the ellipticity correction Σ σₘ(depth, Δ) · P₂ₘ(colatitude) · cos(m·azimuth), the
+  coefficients from `assets/ak135_ellip.bin` (EllipticiPy on the table's first arrival per
+  cell, 25 km × 1°; a phase's later branches take the same; a missing grid corner is left out
+  of the weights, none at all gives 0). Geographic latitude goes in for the colatitude, like
+  EllipticiPy. Always on, no switch, both front ends; the table, the map and the slice stay
+  spherical (1 s is under a pixel on the map); not scaled by the 3D-mantle strength.
 - Map: the shader receives the travel-time table as an RG32Float 2D array
   texture (R = arrival time, G = ray parameter; one array layer per phase,
   width = distance, height = depth) and evaluates arrival time per
@@ -335,6 +344,7 @@ pip install -r tools/requirements.txt   # in a virtualenv outside the repo
 python tools/gen_tables.py              # regenerates both ak135 assets (slow: minutes)
 python tools/gen_dispersion.py          # regenerates surface_dispersion.csv (needs ak135_model.csv)
 python tools/gen_crust.py               # regenerates crust1.bin (downloads CRUST1.0, ~1 MB)
+python tools/gen_ellipticity.py         # regenerates ak135_ellip.bin (about a minute on all cores)
 ```
 
 ## Open questions (ask before deciding)

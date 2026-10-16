@@ -4,6 +4,7 @@
 //! simulates.
 
 use crate::crust::Crust;
+use crate::ellipticity::Ellipticity;
 use crate::geo::EARTH_RADIUS_KM;
 use crate::raytrace::Wave;
 use crate::slice::named_boundaries;
@@ -63,6 +64,17 @@ pub struct ModelFacts {
     pub surface_band_s: (f64, f64),
     /// The real crust, when the simulation has one.
     pub crust: Option<CrustFacts>,
+    /// The Earth's flattening, when the simulation corrects for it.
+    pub ellipticity: Option<EllipticityFacts>,
+}
+
+/// What the guide quotes about the Earth's flattening: the largest correction (s, either sign)
+/// of P from a surface source between [`NEAR_DEG`] and [`FAR_DEG`], and of any phase at any
+/// distance, over every source latitude and direction.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EllipticityFacts {
+    pub largest_p_s: f64,
+    pub largest_s: f64,
 }
 
 /// What the guide quotes about the real crust: its thinnest and thickest columns (solid ground
@@ -138,6 +150,7 @@ impl ModelFacts {
             love_group_km_s: dispersion.group_range(SurfaceWave::Love),
             surface_band_s: dispersion.band(),
             crust: None,
+            ellipticity: None,
         }
     }
 
@@ -164,6 +177,34 @@ impl ModelFacts {
             thickest_km: thickest.0,
             thinnest_p_s: crust.vertical_delay(thinnest.1, thinnest.2, Wave::P),
             thickest_p_s: crust.vertical_delay(thickest.1, thickest.2, Wave::P),
+        });
+    }
+
+    /// Add the numbers about the Earth's flattening.
+    pub fn add_ellipticity(&mut self, ellipticity: &Ellipticity) {
+        let table = ellipticity.table();
+        // Sampled every 2° of distance, 10° of latitude and 15° of azimuth.
+        let largest = |phase: &str, from_deg: f64, to_deg: f64| {
+            let mut most = 0.0f64;
+            let mut dist = from_deg;
+            while dist <= to_deg {
+                for lat in (-9..=9).map(|i| f64::from(i) * 10.0) {
+                    for az in (0..24).map(|i| f64::from(i) * 15.0) {
+                        most = most.max(ellipticity.correction(phase, 0.0, dist, lat, az).abs());
+                    }
+                }
+                dist += 2.0;
+            }
+            most
+        };
+        let axis = table.distance_axis();
+        self.ellipticity = Some(EllipticityFacts {
+            largest_p_s: largest("P", NEAR_DEG, FAR_DEG),
+            largest_s: table
+                .phases()
+                .iter()
+                .map(|p| largest(p, axis.start, axis.end()))
+                .fold(0.0, f64::max),
         });
     }
 }
@@ -264,5 +305,22 @@ mod tests {
             "{c:?}"
         );
         assert!(c.thinnest_p_s < -0.5 && c.thickest_p_s > 1.0, "{c:?}");
+    }
+
+    #[test]
+    fn ellipticity_facts_are_about_a_second() {
+        let ellipticity = Ellipticity::new(
+            crate::tables::EllipticityTable::from_bytes(include_bytes!(
+                "../../../assets/ak135_ellip.bin"
+            ))
+            .unwrap(),
+        );
+        let mut f = facts();
+        assert!(f.ellipticity.is_none());
+        f.add_ellipticity(&ellipticity);
+        let e = f.ellipticity.unwrap();
+        // About a second for teleseismic P, a few seconds at most for the slowest phases.
+        assert!(e.largest_p_s > 0.5 && e.largest_p_s < 1.5, "{e:?}");
+        assert!(e.largest_s > e.largest_p_s && e.largest_s < 5.0, "{e:?}");
     }
 }

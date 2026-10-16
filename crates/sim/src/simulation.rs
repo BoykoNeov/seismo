@@ -3,6 +3,7 @@
 use chrono::{DateTime, Utc};
 
 use crate::crust::Crust;
+use crate::ellipticity::Ellipticity;
 use crate::event::Event;
 use crate::facts::ModelFacts;
 use crate::raytrace::RayPhase;
@@ -13,8 +14,8 @@ use crate::tables::{Dispersion, EarthModel, TravelTimeTable};
 
 /// Events, the table their surface arrivals are timed by, the velocity model their rays are
 /// traced through, the dispersion their surface waves travel with, and optionally the real
-/// crust the seismograms' arrival times are corrected for. Pure: `state_at`
-/// depends only on the events, the table and `now`.
+/// crust and the Earth's flattening the seismograms' arrival times are corrected for. Pure:
+/// `state_at` depends only on the events, the table and `now`.
 #[derive(Debug, Clone)]
 pub struct Simulation {
     table: TravelTimeTable,
@@ -23,6 +24,7 @@ pub struct Simulation {
     boundaries: Vec<Boundary>,
     facts: ModelFacts,
     crust: Option<Crust>,
+    ellipticity: Option<Ellipticity>,
     pub events: Vec<Event>,
 }
 
@@ -80,6 +82,7 @@ impl Simulation {
             boundaries: named_boundaries(&model),
             facts,
             crust: None,
+            ellipticity: None,
             events,
         })
     }
@@ -95,6 +98,19 @@ impl Simulation {
     /// The real crust, if one was given.
     pub fn crust(&self) -> Option<&Crust> {
         self.crust.as_ref()
+    }
+
+    /// Give the simulation the Earth's flattening (see [`crate::ellipticity`]), for the
+    /// seismograms' arrival times; the guide's numbers about it come from it too.
+    pub fn with_ellipticity(mut self, ellipticity: Ellipticity) -> Self {
+        self.facts.add_ellipticity(&ellipticity);
+        self.ellipticity = Some(ellipticity);
+        self
+    }
+
+    /// The flattening correction, if one was given.
+    pub fn ellipticity(&self) -> Option<&Ellipticity> {
+        self.ellipticity.as_ref()
     }
 
     pub fn table(&self) -> &TravelTimeTable {

@@ -309,7 +309,8 @@ impl SeismoApp {
         let crust = real_crust(&model).context("embedded crust1.bin")?;
         let sim = Simulation::new(table, model, dispersion, shown)
             .context("ray tracer")?
-            .with_crust(crust);
+            .with_crust(crust)
+            .with_ellipticity(session::assets::ellipticity().context("embedded ak135_ellip.bin")?);
         let started = Instant::now();
         renderer
             .map

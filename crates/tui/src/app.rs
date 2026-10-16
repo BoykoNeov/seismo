@@ -157,7 +157,8 @@ impl App {
         let crust = assets::crust(&model).context("embedded crust1.bin")?;
         let sim = Simulation::new(table, model, dispersion, shown)
             .context("ray tracer")?
-            .with_crust(crust);
+            .with_crust(crust)
+            .with_ellipticity(assets::ellipticity().context("embedded ak135_ellip.bin")?);
         let mut traces = Traces::new(stations, sim.tracer().clone());
         traces.show = opts.traces;
         traces.component = opts.component;

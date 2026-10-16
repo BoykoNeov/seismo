@@ -28,6 +28,7 @@
 use std::f64::consts::{FRAC_PI_2, PI};
 
 use crate::crust::{Crust, CrustPath};
+use crate::ellipticity::Ellipticity;
 use crate::event::Event;
 use crate::geo::{EARTH_RADIUS_KM, azimuth_deg, great_circle_deg};
 use crate::mantle::{DELAY_PHASES, DelayGrid};
@@ -465,8 +466,9 @@ fn landing_fan(tracer: &RayTracer, phase: RayPhase, depth_km: f64) -> Vec<Vec<La
 /// event's origin. `spreading` must be built for the event's depth. `delays` are the event's
 /// 3D-mantle delays (P and S only), scaled by `strength`; `None` gives the 1D times. `crust`
 /// moves each body-wave arrival by the real crust along its path; `None` keeps the 1D model's
-/// crust. An earthquake with a fault ([`Event::fault`]) radiates its body waves by its pattern; surface
-/// waves leave evenly.
+/// crust. `ellipticity` adds the Earth's flattening to each body wave's time; `None` keeps the
+/// spherical times. An earthquake with a fault ([`Event::fault`]) radiates its body waves by its
+/// pattern; surface waves leave evenly.
 #[allow(clippy::too_many_arguments)]
 pub fn station_arrivals(
     table: &TravelTimeTable,
@@ -476,6 +478,7 @@ pub fn station_arrivals(
     delays: Option<&DelayGrid>,
     strength: f64,
     crust: Option<&Crust>,
+    ellipticity: Option<&Ellipticity>,
     surface: &SurfaceWaves,
 ) -> Vec<StationArrival> {
     let dist = great_circle_deg(event.lat, event.lon, station.lat, station.lon);
@@ -502,6 +505,10 @@ pub fn station_arrivals(
             t.source_wave() == Wave::P
         });
         let weight = if leaves_as_p { profile.p } else { profile.s };
+        // The flattening, from the first arrival's coefficients: the phase's later branches
+        // take the same, like the 3D-mantle delay.
+        let flattening =
+            ellipticity.map_or(0.0, |e| e.correction(name, depth, dist, event.lat, az));
         for (branch, arrival) in table.arrivals(name, depth, dist).into_iter().enumerate() {
             let tube = match (traced, name, branch) {
                 (Some(phase), _, 0) => spreading
@@ -552,7 +559,7 @@ pub fn station_arrivals(
                 phase: name,
                 branch,
                 motion,
-                time_s: arrival.time_s + delay + crust_s,
+                time_s: arrival.time_s + delay + crust_s + flattening,
                 amplitude: size * weight * boundaries * geometric,
                 components: [wv * vertical, wt * transverse],
                 period_s,
@@ -896,8 +903,17 @@ mod tests {
         let sp = Spreading::build(&rt, 29.0);
         let e = event(29.0);
         for d in [30.0, 60.0, 90.0, 120.0, 150.0] {
-            let got =
-                station_arrivals(&table, &sp, &e, &station_at(d), None, 1.0, None, &surface());
+            let got = station_arrivals(
+                &table,
+                &sp,
+                &e,
+                &station_at(d),
+                None,
+                1.0,
+                None,
+                None,
+                &surface(),
+            );
             for (name, ..) in BODY_PHASES {
                 let want = table.arrival(name, 29.0, d);
                 let have = got.iter().find(|a| a.phase == name && a.branch == 0);
@@ -935,11 +951,20 @@ mod tests {
             ("PP", 40.0),
             ("SS", 45.0),
         ] {
-            let got: Vec<StationArrival> =
-                station_arrivals(&table, &sp, &e, &station_at(d), None, 1.0, None, &surface())
-                    .into_iter()
-                    .filter(|a| a.phase == name)
-                    .collect();
+            let got: Vec<StationArrival> = station_arrivals(
+                &table,
+                &sp,
+                &e,
+                &station_at(d),
+                None,
+                1.0,
+                None,
+                None,
+                &surface(),
+            )
+            .into_iter()
+            .filter(|a| a.phase == name)
+            .collect();
             let want = table.arrivals(name, 35.0, d);
             assert!(got.len() > 1, "{name} at {d}°: {got:?}");
             // Each pulse is one of the table's branches, numbered in time order, no two the same.
@@ -1037,6 +1062,7 @@ mod tests {
             None,
             1.0,
             None,
+            None,
             &surface(),
         );
         assert_eq!(got.iter().filter(|a| a.phase == "P").count(), 1);
@@ -1047,7 +1073,17 @@ mod tests {
         let (rt, table) = (tracer(), table());
         let at = |e: &Event, d: f64| {
             let sp = Spreading::build(&rt, e.depth_km);
-            station_arrivals(&table, &sp, e, &station_at(d), None, 1.0, None, &surface())
+            station_arrivals(
+                &table,
+                &sp,
+                e,
+                &station_at(d),
+                None,
+                1.0,
+                None,
+                None,
+                &surface(),
+            )
         };
         let find =
             |arr: &[StationArrival], name: &str| arr.iter().find(|a| a.phase == name).copied();
@@ -1104,6 +1140,7 @@ mod tests {
             None,
             1.0,
             None,
+            None,
             &surface(),
         );
         if table.arrival("P", 29.0, d).is_none() {
@@ -1121,6 +1158,7 @@ mod tests {
             None,
             1.0,
             None,
+            None,
             &surface(),
         )
         .into_iter()
@@ -1136,10 +1174,20 @@ mod tests {
         let sp_deep = Spreading::build(&rt, 300.0);
         let st = station_at(60.0);
         let get = |sp: &Spreading, depth: f64, name: &str| {
-            station_arrivals(&table, sp, &event(depth), &st, None, 1.0, None, &surface())
-                .into_iter()
-                .find(|a| a.phase == name)
-                .unwrap()
+            station_arrivals(
+                &table,
+                sp,
+                &event(depth),
+                &st,
+                None,
+                1.0,
+                None,
+                None,
+                &surface(),
+            )
+            .into_iter()
+            .find(|a| a.phase == name)
+            .unwrap()
         };
         let r1 = get(&sp_shallow, 10.0, "R1");
         let r2 = get(&sp_shallow, 10.0, "R2");
@@ -1172,6 +1220,7 @@ mod tests {
             &station_at(60.0),
             None,
             1.0,
+            None,
             None,
             &sw,
         );
@@ -1216,6 +1265,7 @@ mod tests {
                     None,
                     1.0,
                     None,
+                    None,
                     &sw,
                 );
                 let tp = arr.iter().find(|a| a.phase == "P").unwrap().time_s;
@@ -1255,8 +1305,8 @@ mod tests {
         // From the mid-Atlantic (0, 0: thin oceanic crust) to Tibet, about 89° away.
         let st = Station::user("X", 32.5, 88.5);
         let e = event(10.0);
-        let one_d = station_arrivals(&table, &sp, &e, &st, None, 1.0, None, &sw);
-        let real = station_arrivals(&table, &sp, &e, &st, None, 1.0, Some(&crust), &sw);
+        let one_d = station_arrivals(&table, &sp, &e, &st, None, 1.0, None, None, &sw);
+        let real = station_arrivals(&table, &sp, &e, &st, None, 1.0, Some(&crust), None, &sw);
         assert_eq!(one_d.len(), real.len());
         let find = |v: &[StationArrival], name: &str| {
             *v.iter().find(|a| a.phase == name && a.branch == 0).unwrap()
@@ -1283,6 +1333,64 @@ mod tests {
     }
 
     #[test]
+    fn flattening_moves_every_branch_by_its_phase_correction() {
+        let (rt, table, sw) = (tracer(), table(), surface());
+        let ellipticity = Ellipticity::new(
+            crate::tables::EllipticityTable::from_bytes(include_bytes!(
+                "../../../assets/ak135_ellip.bin"
+            ))
+            .unwrap(),
+        );
+        let sp = Spreading::build(&rt, 10.0);
+        // From 40° N (where all three terms count) to stations in a fold of P (20°) and far
+        // off (85°), north-east and south.
+        let mut e = event(10.0);
+        e.lat = 40.0;
+        for (lat, lon) in [(50.0, 20.0), (-45.0, 0.0), (20.0, 15.0)] {
+            let st = Station::user("X", lat, lon);
+            let round = station_arrivals(&table, &sp, &e, &st, None, 1.0, None, None, &sw);
+            let flat = station_arrivals(
+                &table,
+                &sp,
+                &e,
+                &st,
+                None,
+                1.0,
+                None,
+                Some(&ellipticity),
+                &sw,
+            );
+            assert_eq!(round.len(), flat.len());
+            let (dist, az) = (
+                great_circle_deg(e.lat, e.lon, lat, lon),
+                azimuth_deg(e.lat, e.lon, lat, lon),
+            );
+            let mut moved = 0;
+            for a in &round {
+                let b = flat
+                    .iter()
+                    .find(|b| b.phase == a.phase && b.branch == a.branch)
+                    .unwrap();
+                let want = if a.motion.surface_wave().is_some() {
+                    0.0
+                } else {
+                    ellipticity.correction(a.phase, 10.0, dist, e.lat, az)
+                };
+                assert!(
+                    (b.time_s - a.time_s - want).abs() < 1e-9,
+                    "{} branch {} at {dist:.1}°: {} s, want {want}",
+                    a.phase,
+                    a.branch,
+                    b.time_s - a.time_s
+                );
+                assert_eq!((a.amplitude, a.components), (b.amplitude, b.components));
+                moved += usize::from(want != 0.0);
+            }
+            assert!(moved >= 3, "{moved} arrivals moved at {dist:.1}°");
+        }
+    }
+
+    #[test]
     fn three_d_delay_moves_only_p_and_s() {
         let (rt, table) = (tracer(), table());
         let sp = Spreading::build(&rt, 29.0);
@@ -1292,7 +1400,17 @@ mod tests {
             max_abs_s: 3.0,
         };
         let st = station_at(50.0);
-        let one_d = station_arrivals(&table, &sp, &event(29.0), &st, None, 1.0, None, &surface());
+        let one_d = station_arrivals(
+            &table,
+            &sp,
+            &event(29.0),
+            &st,
+            None,
+            1.0,
+            None,
+            None,
+            &surface(),
+        );
         let three_d = station_arrivals(
             &table,
             &sp,
@@ -1300,6 +1418,7 @@ mod tests {
             &st,
             Some(&grid),
             2.0,
+            None,
             None,
             &surface(),
         );
@@ -1311,7 +1430,17 @@ mod tests {
         assert_eq!(t(&three_d, "R1"), t(&one_d, "R1"));
         // In the upper-mantle triplication every branch of P and S moves with the first.
         let st = station_at(20.0);
-        let one_d = station_arrivals(&table, &sp, &event(29.0), &st, None, 1.0, None, &surface());
+        let one_d = station_arrivals(
+            &table,
+            &sp,
+            &event(29.0),
+            &st,
+            None,
+            1.0,
+            None,
+            None,
+            &surface(),
+        );
         let three_d = station_arrivals(
             &table,
             &sp,
@@ -1319,6 +1448,7 @@ mod tests {
             &st,
             Some(&grid),
             2.0,
+            None,
             None,
             &surface(),
         );
@@ -1514,6 +1644,7 @@ mod tests {
             None,
             1.0,
             None,
+            None,
             &surface(),
         );
         let b = station_arrivals(
@@ -1523,6 +1654,7 @@ mod tests {
             &station_at(70.0),
             None,
             1.0,
+            None,
             None,
             &surface(),
         );
@@ -1561,6 +1693,7 @@ mod tests {
                     None,
                     1.0,
                     None,
+                    None,
                     &sw,
                 );
                 for a in &arr {
@@ -1585,6 +1718,7 @@ mod tests {
                 &station_towards(az, 60.0),
                 None,
                 1.0,
+                None,
                 None,
                 &sw,
             );
@@ -1635,6 +1769,7 @@ mod tests {
             None,
             1.0,
             None,
+            None,
             &sw,
         );
         for name in ["SKS", "SKKS", "SP", "PS"] {
@@ -1669,8 +1804,17 @@ mod tests {
             (40.0, &["PcS", "ScP", "PKiKP", "SP"][..]),
             (100.0, &["PKKP", "SKKS", "PS", "SP", "PKiKP"][..]),
         ] {
-            let arr =
-                station_arrivals(&table, &sp, &e, &station_at(d), None, 1.0, None, &surface());
+            let arr = station_arrivals(
+                &table,
+                &sp,
+                &e,
+                &station_at(d),
+                None,
+                1.0,
+                None,
+                None,
+                &surface(),
+            );
             let direct = arr
                 .iter()
                 .filter(|a| matches!(a.phase, "P" | "S" | "Pdiff" | "Sdiff"))

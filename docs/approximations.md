@@ -2,12 +2,42 @@
 
 Every place where SEISMO deliberately departs from the physics, and what it costs.
 
-## Spherical Earth, ellipticity ignored
+## Spherical Earth; the seismograms corrected for its flattening
 
 Distances are great-circle arcs on a sphere of radius 6371 km, using geographic latitude
 directly on the sphere (the ObsPy `locations2degrees` convention). Travel times come from the
-1D ak135 model with no ellipticity correction. The real Earth's flattening shifts teleseismic
-travel times by up to about ±1 s depending on path and latitude; SEISMO ignores this.
+1D ak135 model, which is spherical.
+
+The seismograms' body-wave times add the standard ellipticity correction (`sim::ellipticity`):
+δt = Σₘ σₘ(depth, Δ) · P₂ₘ(cos θ) · cos(mζ), m = 0, 1, 2, with θ the source's colatitude and ζ
+the azimuth to the station (Dziewonski & Gilbert 1976; Kennett & Gudmundsson 1996). The
+coefficients σₘ come from EllipticiPy 1.0.1 (Russell, Rudge, Irving & Cottaar 2022), which
+integrates along ObsPy's ak135 ray path with the flattening of each layer from Clairaut's
+equation; `tools/gen_ellipticity.py` stores them in `assets/ak135_ellip.bin`. Teleseismic P
+moves by up to about ±0.9 s, the slowest phases (Sdiff, SKS, SS) by up to about ±3.6 s.
+Shortcuts:
+
+- **Coarse grid.** The coefficients are stored every 25 km of depth and 1° of distance (every
+  fifth row and fourth column of the travel-time table) and interpolated bilinearly. Off the
+  nodes they agree with EllipticiPy's own correction to within 0.05 s (tested). Near the end
+  of a phase's range some of the four nodes have no arrival; the others are weighted alone, and
+  where none has one the correction is 0.
+- **First arrival only.** Each cell's coefficients are those of the arrival the table keeps
+  there (PKP split into ab and bc as in the table). A phase's later branches (triplications,
+  PP's and SS's folds) take the same correction; their own paths differ, but only slightly.
+- **Geographic latitude.** The theory is written for geocentric colatitude and distance.
+  SEISMO, like EllipticiPy itself, puts in the geographic latitude, and its distances are on
+  the sphere. The two latitudes differ by up to 0.19° at 45°, which changes the colatitude
+  term by a few percent of the correction and the distance by up to about the same angle (so a
+  P time by up to roughly a second, the size of the correction itself). SEISMO's times are thus
+  ellipticity-corrected times for its own spherical distance, not those of a geodetic
+  calculation.
+- **Not on the map or the slice, not in the table.** The map's P and S rings would move by at
+  most about 0.2° (a correction of about 1 s over P's or S's slowness there), two thirds of a
+  pixel on a map 1080 px wide. The table, the ray tracer and the slice stay spherical, and
+  the first-arrival lookups that drive the map stay as the shader draws them. No switch: the
+  correction is always on, in both front ends.
+- **Station height and the shape of the surface** are ignored: stations sit on the sphere.
 
 ## First arrivals in the grids, later arrivals beside them (PKP as three branches)
 
@@ -450,7 +480,8 @@ their sizes only roughly physical. The UI says so.
   later arrivals, see above; PKP as three branches), plus the 3D-mantle delay for P and S (not pP
   or sP), sampled from the same grid with the same interpolation as the map, so a trace and a map
   ring agree. With the real crust on, every body-wave arrival also moves by the crust along its
-  path (see "Real crust" above), which a map ring does not. Only each phase's first arrival is
+  path (see "Real crust" above), and every one by the Earth's flattening (see "Spherical Earth"
+  above), neither of which a map ring does. Only each phase's first arrival is
   labelled; its later ones get a tick. Other phases stay 1D. Surface waves
   are dispersed trains (see above), the short way round (R1, L1) and the long way (R2, L2); their
   tick and label mark when the 20 s energy arrives, the train starting well before.
