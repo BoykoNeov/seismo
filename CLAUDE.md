@@ -107,6 +107,12 @@ start with no dependence on the working directory.
   of the weights, none at all gives 0). Geographic latitude goes in for the colatitude, like
   EllipticiPy. Always on, no switch, both front ends; the table, the map and the slice stay
   spherical (1 s is under a pixel on the map); not scaled by the 3D-mantle strength.
+- Listen (decided 2026-10-16): a seismogram played as sound, sped up (`session::sound`, pure:
+  Catmull-Rom resampling to 44.1 kHz, peak-normalised, faded); desktop only, through rodio
+  (playback feature only, no decoders; `app` is the only crate with it). The audio device opens
+  on the first press of listen, never at start, so captures, benchmarks and tests are silent.
+  One row in the Seismographs section (listen/stop, station, speed); a line on the trace follows
+  the sound. Not in the terminal version.
 - Map: the shader receives the travel-time table as an RG32Float 2D array
   texture (R = arrival time, G = ray parameter; one array layer per phase,
   width = distance, height = depth) and evaluates arrival time per

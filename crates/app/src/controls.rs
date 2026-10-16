@@ -7,6 +7,7 @@ use sim::{EventKind, RayPhase, Wave, azimuth_deg};
 
 use session::clock::{MAX_SPEED, MIN_SPEED, secs};
 use session::events::FOLLOW_MIN_MAG;
+use session::sound::SPEEDS;
 use session::traces::MAX_TRACES;
 
 use crate::{
@@ -130,7 +131,9 @@ impl SeismoApp {
             ui.radio_value(&mut tr.shared_scale, true, "shared");
         });
         ui.checkbox(&mut tr.real_crust, "real crust").on_hover_text(
-            "Arrival times include the real crust (CRUST1.0) under the quake, the station and              where a wave bounces off the surface: thin under oceans (early), thick under              mountains (late). Off: the same flat crust everywhere.",
+            "Arrival times include the real crust (CRUST1.0) under the quake, the station and \
+             where a wave bounces off the surface: thin under oceans (early), thick under \
+             mountains (late). Off: the same flat crust everywhere.",
         );
         ui.add(
             egui::Slider::new(&mut tr.gain, 0.25..=20.0)
@@ -155,6 +158,59 @@ impl SeismoApp {
             })
             .collect();
         rows.sort_by(|a, b| a.1.total_cmp(&b.1));
+        // Listening: one of the shown traces (the nearest unless another was picked), sped up.
+        let listen = &mut self.listen;
+        let playing = listen.playing();
+        let shown_ids: Vec<usize> = rows.iter().map(|&(i, _)| i).collect();
+        let mut target = listen.station.filter(|i| shown_ids.contains(i));
+        if target.is_none() {
+            target = shown_ids.first().copied();
+        }
+        let mut hear = false;
+        ui.horizontal(|ui| {
+            let label = if playing.is_some() { "stop" } else { "listen" };
+            if ui
+                .add_enabled(
+                    target.is_some() || playing.is_some(),
+                    egui::Button::new(label),
+                )
+                .on_hover_text(
+                    "Play a trace as sound, sped up: the ground shakes too slowly to hear. The \
+                     whole window plays in a few seconds; a line follows it on the trace.",
+                )
+                .clicked()
+            {
+                hear = true;
+            }
+            egui::ComboBox::from_id_salt("listen station")
+                .selected_text(target.map_or("—".to_owned(), |i| tr.stations[i].label()))
+                .width(90.0)
+                .show_ui(ui, |ui| {
+                    for &i in &shown_ids {
+                        let s = &tr.stations[i];
+                        if ui
+                            .selectable_label(
+                                target == Some(i),
+                                format!("{} {}", s.label(), s.name),
+                            )
+                            .clicked()
+                        {
+                            listen.station = Some(i);
+                            target = Some(i);
+                        }
+                    }
+                });
+            egui::ComboBox::from_id_salt("listen speed")
+                .selected_text(format!("{:.0}×", listen.speed))
+                .width(70.0)
+                .show_ui(ui, |ui| {
+                    for speed in SPEEDS {
+                        ui.selectable_value(&mut listen.speed, speed, format!("{speed:.0}×"));
+                    }
+                })
+                .response
+                .on_hover_text("How many times faster than real time");
+        });
         let (mut toggle, mut delete, mut aim) = (None, None, None);
         for (i, dist) in rows {
             let s = &tr.stations[i];
@@ -200,6 +256,20 @@ impl SeismoApp {
         }
         if let Some(az) = aim {
             self.slice.azimuth_deg = az;
+        }
+        if hear {
+            if playing.is_some() {
+                self.listen.stop();
+            } else if let Some(i) = target {
+                // A trace still being built (rays not traced yet) is not shown: nothing plays.
+                if let Some(trace) = self.traces.shown().into_iter().find(|t| t.station == i) {
+                    let (from, to) = self.traces.window();
+                    self.listen.play(i, &trace.seismogram, from, to);
+                }
+            }
+        }
+        if let Some(message) = &self.listen.message {
+            ui.colored_label(pal.text, message);
         }
         let tr = &self.traces;
         if let Some(note) = &tr.note {

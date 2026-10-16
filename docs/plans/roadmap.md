@@ -66,13 +66,18 @@ bloom's Gaussian weights come from the CPU. No measurable speed-up within the ru
 splitting bloom into threshold-downsample plus two bilinear-paired blur passes (about half the
 texture reads, changes pixels slightly), skipping the persistence copy in the modern look.
 
-### 1.2 Split `crates/app/src/main.rs`
+### 1.2 Split `crates/app/src/main.rs` — done 2026-10-16
 
 Over 2,000 lines in one file: clock, controls, event list, made-event form, station picking,
 screenshots, the worker. It works; this is only about keeping it changeable. Candidate split:
 `controls.rs`, `event_list.rs`, `make_form.rs`, `stations.rs`, `capture.rs`, with `main.rs`
 left as the eframe shell and the frame loop. No behaviour change; the UI Automation and
 `--capture-ui` screenshot tests must pass unchanged.
+
+**Done 2026-10-16** (86b74b7): `main.rs` is down to about 700 lines (startup, flags, state, the
+frame loop); `controls.rs`, `make_form.rs`, `search.rs`, `scene.rs`, `stations.rs`,
+`capture.rs` and `style.rs` hold the rest, moved unchanged. `--capture` frames are
+byte-identical before and after; `--capture-ui` frames differ only in the fps readout.
 
 ### 1.3 Repo health (debt)
 
@@ -197,6 +202,11 @@ ignored (say so in the UI and in `docs/approximations.md`). Medium effort.
 A trace sped up about 1000× is audible; "listen to the earthquake" is a known outreach trick
 and fits the CRT look. Work: resample the selected trace, play through `cpal` or `rodio`
 (one new dependency in `app` only), a play button and a speed choice. Small effort.
+
+**Done 2026-10-16** in the desktop app: rodio 0.23 (playback only), `session::sound` builds the
+sound (tested for length, pitch, smoothness, scaling and fades), a listen row in Seismographs
+(button, station, 500×–4000×, 1000× by default) and a line on the trace that follows the sound.
+The device opens on the first press only. Not in the terminal version.
 
 ### 3.3 Export and reproducible views
 

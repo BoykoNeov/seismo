@@ -181,6 +181,7 @@ Each row is the record a seismograph at one station would make: the ground's sha
 @desktop - **scale: each row** makes every row fill its band, so faint far stations are visible; **shared** uses one scale for all, so you can compare sizes.
 @desktop - **gain** magnifies the wiggles; **window min** sets how many minutes of record are shown.
 @desktop - **real crust** switches the [[crust|real crust]] off and on, so you can watch each arrival move.
+@desktop - **listen** plays one trace as sound (the nearest, or the one picked beside it), sped up {listen_speed} times or by the speed beside it: the ground shakes far too slowly to hear, but sped up a P wave becomes a click and the surface waves a long rumble. The whole window plays in a few seconds, and a line follows the sound along the trace.
 @desktop - Add stations from the list, by clicking a triangle on the map, or by clicking an empty spot to place your own. Up to {max_traces} are shown.
 @terminal - **c** switches between up-down and side-to-side shaking, **s** between each row scaled and one shared scale, **d** picks default stations, **t** hides the traces, **f** switches the [[crust|real crust]] off and on. Click a station on the map to show or hide it.
 

@@ -11,6 +11,7 @@ mod make_form;
 mod mantle;
 mod scene;
 mod search;
+mod sound;
 mod stations;
 mod style;
 
@@ -197,6 +198,8 @@ struct SeismoApp {
     guide: GuideUi,
     /// The selected earthquake's fault pattern, drawn in the event panel.
     beach_ball: BeachBall,
+    /// Seismograms played as sound.
+    listen: sound::Listen,
 }
 
 impl SeismoApp {
@@ -493,6 +496,7 @@ impl SeismoApp {
             bench,
             guide,
             beach_ball: BeachBall::default(),
+            listen: sound::Listen::default(),
         })
     }
 

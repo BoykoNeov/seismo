@@ -247,6 +247,7 @@ impl Values {
             km(EventKind::Earthquake.profile().max_depth_km),
         );
         v.set("follow_mag", num(FOLLOW_MIN_MAG));
+        v.set("listen_speed", num(crate::sound::DEFAULT_SPEED));
         v.set("default_min_mag", num(DEFAULT_MIN_MAG));
         v.set("surface_map_mag", num(sim::SURFACE_MAP_MIN_MAG));
         v.set("max_traces", MAX_TRACES.to_string());

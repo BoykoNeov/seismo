@@ -30,14 +30,15 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
 
       # eframe's X11 and Wayland back ends load their system libraries at run time, but some
-      # of their crates still look for the headers when they build.
+      # of their crates still look for the headers when they build. The app's sound (rodio's
+      # cpal) links ALSA.
       - name: Linux build dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libxkbcommon-dev libwayland-dev libxcb-render0-dev libxcb-shape0-dev \
-            libxcb-xfixes0-dev pkg-config
+            libxcb-xfixes0-dev libasound2-dev pkg-config
 
       - uses: Swatinem/rust-cache@v2
 

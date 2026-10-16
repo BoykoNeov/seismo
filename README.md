@@ -31,7 +31,8 @@ Two looks are available: a green-phosphor CRT (the default) and a modern dark on
   beach ball in the event panel. Arrival times include the real crust (CRUST1.0) under the
   quake, the station and where a wave bounces off the surface: thin ocean crust makes waves
   early, thick mountain crust late. A strip under the slice shows the crust along the cut. They
-  also include the Earth's flattening, which moves an arrival by up to a few seconds.
+  also include the Earth's flattening, which moves an arrival by up to a few seconds. Any
+  trace can be played as sound, sped up 500 to 4000 times (desktop only).
 - **Events.**
   - The live USGS feeds are polled every minute and work offline from a saved copy.
   - Past events can be searched by date and magnitude or by USGS id.

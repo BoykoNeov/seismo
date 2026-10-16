@@ -287,6 +287,7 @@ impl SeismoApp {
             grid: &grid,
             px_per_pt: ppp,
         };
+        let playhead = self.listen.playhead();
         let trace_labels: Vec<TraceLabel> = shown
             .iter()
             .zip(picks)
@@ -295,6 +296,10 @@ impl SeismoApp {
                 TraceLabel {
                     text: format!("{}  {:.1}°  {}", s.label(), tr.dist_deg, s.name),
                     picks,
+                    playhead: playhead
+                        .filter(|&(station, _)| station == tr.station)
+                        .map(|(_, at)| frac(at))
+                        .filter(|f| (0.0..=1.0).contains(f)),
                 }
             })
             .collect();
@@ -603,6 +608,14 @@ impl SeismoApp {
             );
             // Phase names at their ticks, skipping any that would overlap the previous one.
             let (base, half) = layout.band(i);
+            // Where the sound is, while this trace is played.
+            if let Some(f) = row.playhead {
+                let x = layout.x_at(f);
+                painter.line_segment(
+                    [to_ui(x, base - half), to_ui(x, base + half)],
+                    egui::Stroke::new(1.5, pal.text),
+                );
+            }
             let mut last_x = f32::NEG_INFINITY;
             for &(f, name) in &row.picks {
                 let x = layout.x_at(f);
@@ -759,6 +772,8 @@ impl SeismoApp {
 struct TraceLabel {
     text: String,
     picks: Vec<(f32, &'static str)>,
+    /// Where the sound is along the row (0–1 of the window), while it is played.
+    playhead: Option<f32>,
 }
 
 /// Depths (km below sea level) the crust strip spans: the crust model's highest ground and
