@@ -1,0 +1,4 @@
+# Link the C runtime statically on Windows, so seismo.exe runs on a PC without the
+# Visual C++ Redistributable (it would otherwise need vcruntime140.dll).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

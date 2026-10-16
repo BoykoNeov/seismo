@@ -76,6 +76,13 @@ PMSA     149° ⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤Pdiff          SS                  
 You need Rust; `rust-toolchain.toml` pins the version, and rustup installs it on first use. All
 assets are embedded in the binaries, so they run from any folder and work offline.
 
+On Windows, double-click `SEISMO.cmd` in the repo root. It builds the desktop app if the code
+has changed (a few minutes the first time), then opens it; arguments are passed to the app.
+
+To give SEISMO to someone else, send `target\release\seismo.exe` on its own. It needs no
+installer, no other files and no Visual C++ runtime (`.cargo/config.toml` links the C runtime
+statically), only Windows 10 or later with a DirectX 12 or Vulkan graphics driver.
+
 ```
 cargo run -p app --release        # the desktop app (wgpu; developed on Windows)
 cargo run -p tui --release        # the terminal version; press ? for keys

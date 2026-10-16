@@ -3,3 +3,5 @@
 # The SP12RTS model files are kept byte-identical to the authors' download (see the checksums in
 # assets/sp12rts/README.md).
 *.sph -text
+# Windows batch files need CRLF line endings for cmd.exe to read labels reliably.
+*.cmd text eol=crlf
